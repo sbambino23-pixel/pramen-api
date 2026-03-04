@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import * as fs from "fs";
 import * as path from "path";
+import { randomUUID } from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -123,6 +124,12 @@ const app = new Hono();
 // CORS for all origins (mobile app)
 app.use("*", cors());
 
+// Global error handler — always return JSON, never let Railway serve HTML
+app.onError((err, c) => {
+  console.error("Unhandled error:", err);
+  return c.json({ error: "Internal server error", detail: err.message }, 500);
+});
+
 // ─── Health ──────────────────────────────────────────────────────────
 
 app.get("/", (c) => {
@@ -154,7 +161,7 @@ app.post("/api/circles", async (c) => {
 
   const code = generateCode();
   const circle: StoredCircle = {
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     name: name || "Prayer Circle",
     code,
     emoji: emoji || "🏠",
@@ -305,7 +312,7 @@ app.post("/api/circles/:code/prayer-requests", async (c) => {
   if (!circle) return c.json({ error: "Circle not found" }, 404);
 
   circle.prayerRequests.unshift({
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     requesterUserId: body.userId,
     requesterName: body.isAnonymous ? "Anonymous" : body.userName || "Someone",
     text: body.text,
@@ -347,7 +354,7 @@ app.post("/api/circles/:code/encouragements", async (c) => {
   if (!circle) return c.json({ error: "Circle not found" }, 404);
 
   circle.encouragements.push({
-    id: crypto.randomUUID(),
+    id: randomUUID(),
     toUserId: body.toUserId,
     fromUserId: body.fromUserId,
     fromName: body.fromName || "Someone",
