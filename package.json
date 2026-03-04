@@ -1,0 +1,23 @@
+{
+  "name": "pramen-api",
+  "version": "1.0.0",
+  "description": "prAmen Prayer Circle API",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx watch server.ts"
+  },
+  "dependencies": {
+    "hono": "^4.12.5",
+    "@hono/node-server": "^1.13.8"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
