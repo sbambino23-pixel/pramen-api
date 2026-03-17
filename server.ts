@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
-import * as fs from "fs";
-import * as path from "path";
 import { randomUUID } from "crypto";
+import pg from "pg";
+
+const { Pool } = pg;
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -46,65 +47,79 @@ interface StoredCircle {
   createdAt: string;
 }
 
-// ─── Persistence Layer ───────────────────────────────────────────────
-// In-memory store with JSON file backup for persistence across restarts
+// ─── Postgres Persistence Layer ─────────────────────────────────────
 
-const DATA_FILE = path.join(process.cwd(), "data", "circles.json");
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes("localhost")
+    ? false
+    : { rejectUnauthorized: false },
+});
+
+async function initDb(): Promise<void> {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS circles (
+        code TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    console.log("Database initialized");
+  } catch (err) {
+    console.error("Failed to initialize database:", err);
+  } finally {
+    client.release();
+  }
+}
+
+// In-memory cache backed by Postgres
 const circles = new Map<string, StoredCircle>();
 
-function loadFromDisk(): void {
+async function loadAllFromDb(): Promise<void> {
   try {
-    if (fs.existsSync(DATA_FILE)) {
-      const raw = fs.readFileSync(DATA_FILE, "utf-8");
-      const data: Record<string, StoredCircle> = JSON.parse(raw);
-      for (const [key, circle] of Object.entries(data)) {
-        circles.set(key, circle);
-      }
-      console.log(`Loaded ${circles.size} circles from disk`);
+    const result = await pool.query("SELECT code, data FROM circles");
+    for (const row of result.rows) {
+      circles.set(row.code, row.data as StoredCircle);
     }
+    console.log(`Loaded ${circles.size} circles from database`);
   } catch (err) {
-    console.error("Failed to load data from disk:", err);
+    console.error("Failed to load circles from database:", err);
   }
 }
 
-function saveToDisk(): void {
+async function saveCircleToDb(circle: StoredCircle): Promise<void> {
+  const key = circle.code.toUpperCase();
+  circles.set(key, circle);
   try {
-    const dir = path.dirname(DATA_FILE);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const data: Record<string, StoredCircle> = {};
-    for (const [key, circle] of circles.entries()) {
-      data[key] = circle;
-    }
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+    await pool.query(
+      `INSERT INTO circles (code, data, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (code) DO UPDATE SET data = $2, updated_at = NOW()`,
+      [key, JSON.stringify(circle)]
+    );
   } catch (err) {
-    console.error("Failed to save data to disk:", err);
+    console.error("Failed to save circle to database:", err);
   }
 }
 
-// Debounced save — writes at most once per second
-let saveTimer: ReturnType<typeof setTimeout> | null = null;
-function debouncedSave(): void {
-  if (saveTimer) clearTimeout(saveTimer);
-  saveTimer = setTimeout(saveToDisk, 1000);
+async function deleteCircleFromDb(code: string): Promise<boolean> {
+  const key = code.toUpperCase();
+  const existed = circles.delete(key);
+  try {
+    await pool.query("DELETE FROM circles WHERE code = $1", [key]);
+  } catch (err) {
+    console.error("Failed to delete circle from database:", err);
+  }
+  return existed;
 }
 
 // ─── Circle helpers ──────────────────────────────────────────────────
 
 function getCircle(code: string): StoredCircle | undefined {
   return circles.get(code.toUpperCase());
-}
-
-function saveCircle(circle: StoredCircle): void {
-  circles.set(circle.code.toUpperCase(), circle);
-  debouncedSave();
-}
-
-function deleteCircle(code: string): boolean {
-  const deleted = circles.delete(code.toUpperCase());
-  if (deleted) debouncedSave();
-  return deleted;
 }
 
 function generateCode(): string {
@@ -136,6 +151,7 @@ app.get("/", (c) => {
   return c.json({
     status: "ok",
     service: "prAmen API",
+    storage: "postgres",
     circles: circles.size,
     timestamp: new Date().toISOString(),
   });
@@ -144,6 +160,7 @@ app.get("/", (c) => {
 app.get("/api/circles/health", (c) => {
   return c.json({
     status: "ok",
+    storage: "postgres",
     circles: circles.size,
     timestamp: new Date().toISOString(),
   });
@@ -180,7 +197,7 @@ app.post("/api/circles", async (c) => {
     createdAt: new Date().toISOString(),
   };
 
-  saveCircle(circle);
+  await saveCircleToDb(circle);
   console.log(`Circle created: ${code} by ${userName}`);
   return c.json({ circle }, 201);
 });
@@ -229,7 +246,7 @@ app.post("/api/circles/:code/join", async (c) => {
     joinedAt: new Date().toISOString(),
   });
 
-  saveCircle(circle);
+  await saveCircleToDb(circle);
   console.log(`${userName} joined circle ${code}`);
   return c.json({ circle });
 });
@@ -245,7 +262,7 @@ app.put("/api/circles/:code", async (c) => {
   if (body.name) circle.name = body.name;
   if (body.emoji) circle.emoji = body.emoji;
 
-  saveCircle(circle);
+  await saveCircleToDb(circle);
   return c.json({ circle });
 });
 
@@ -266,13 +283,13 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
   if (body.lastPrayedDate !== undefined) member.lastPrayedDate = body.lastPrayedDate;
   if (body.name !== undefined) member.name = body.name;
 
-  saveCircle(circle);
+  await saveCircleToDb(circle);
   return c.json({ circle });
 });
 
 // ─── Remove Member ───────────────────────────────────────────────────
 
-app.delete("/api/circles/:code/members/:userId", (c) => {
+app.delete("/api/circles/:code/members/:userId", async (c) => {
   const code = c.req.param("code").toUpperCase();
   const userId = c.req.param("userId");
 
@@ -280,11 +297,12 @@ app.delete("/api/circles/:code/members/:userId", (c) => {
   if (!circle) return c.json({ error: "Circle not found" }, 404);
 
   circle.members = circle.members.filter((m) => m.userId !== userId);
-  saveCircle(circle);
 
   // Auto-delete empty circles
   if (circle.members.length === 0) {
-    deleteCircle(code);
+    await deleteCircleFromDb(code);
+  } else {
+    await saveCircleToDb(circle);
   }
 
   return c.json({ success: true });
@@ -292,12 +310,12 @@ app.delete("/api/circles/:code/members/:userId", (c) => {
 
 // ─── Delete Circle ───────────────────────────────────────────────────
 
-app.delete("/api/circles/:code", (c) => {
+app.delete("/api/circles/:code", async (c) => {
   const code = c.req.param("code").toUpperCase();
   const circle = getCircle(code);
   if (!circle) return c.json({ error: "Circle not found" }, 404);
 
-  deleteCircle(code);
+  await deleteCircleFromDb(code);
   console.log(`Circle deleted: ${code}`);
   return c.json({ success: true });
 });
@@ -321,7 +339,7 @@ app.post("/api/circles/:code/prayer-requests", async (c) => {
     prayedByUserIds: [],
   });
 
-  saveCircle(circle);
+  await saveCircleToDb(circle);
   return c.json({ circle });
 });
 
@@ -340,7 +358,7 @@ app.post("/api/circles/:code/prayer-requests/:requestId/pray", async (c) => {
     request.prayedByUserIds.push(body.userId);
   }
 
-  saveCircle(circle);
+  await saveCircleToDb(circle);
   return c.json({ circle });
 });
 
@@ -362,7 +380,7 @@ app.post("/api/circles/:code/encouragements", async (c) => {
     timestamp: new Date().toISOString(),
   });
 
-  saveCircle(circle);
+  await saveCircleToDb(circle);
   return c.json({ circle });
 });
 
@@ -370,10 +388,15 @@ app.post("/api/circles/:code/encouragements", async (c) => {
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
-loadFromDisk();
+async function start() {
+  await initDb();
+  await loadAllFromDb();
 
-serve({ fetch: app.fetch, port: PORT }, (info) => {
-  console.log(`\n🙏 prAmen API running on port ${info.port}`);
-  console.log(`   Health: http://localhost:${info.port}/`);
-  console.log(`   Circles: ${circles.size} loaded\n`);
-});
+  serve({ fetch: app.fetch, port: PORT }, (info) => {
+    console.log(`\n🙏 prAmen API running on port ${info.port}`);
+    console.log(`   Storage: PostgreSQL`);
+    console.log(`   Circles: ${circles.size} loaded\n`);
+  });
+}
+
+start();
