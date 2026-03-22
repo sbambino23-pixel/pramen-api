@@ -362,6 +362,27 @@ app.post("/api/circles/:code/prayer-requests/:requestId/pray", async (c) => {
   return c.json({ circle });
 });
 
+// ─── Delete Prayer Request ──────────────────────────────────────────
+
+app.delete("/api/circles/:code/prayer-requests/:requestId", async (c) => {
+  const code = c.req.param("code").toUpperCase();
+  const requestId = c.req.param("requestId");
+
+  const circle = getCircle(code);
+  if (!circle) return c.json({ error: "Circle not found" }, 404);
+
+  const before = circle.prayerRequests.length;
+  circle.prayerRequests = circle.prayerRequests.filter((r) => r.id !== requestId);
+
+  if (circle.prayerRequests.length === before) {
+    return c.json({ error: "Prayer request not found" }, 404);
+  }
+
+  await saveCircleToDb(circle);
+  console.log(`Prayer request ${requestId} deleted from circle ${code}`);
+  return c.json({ success: true });
+});
+
 // ─── Encouragements ──────────────────────────────────────────────────
 
 app.post("/api/circles/:code/encouragements", async (c) => {
