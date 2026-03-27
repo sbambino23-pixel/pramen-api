@@ -405,6 +405,24 @@ app.post("/api/circles/:code/encouragements", async (c) => {
   return c.json({ circle });
 });
 
+// ─── Circle Info (public, for join page) ─────────────────────────────
+
+app.get("/api/circles/:code/info", (c) => {
+  const code = c.req.param("code").toUpperCase();
+  const circle = getCircle(code);
+  if (!circle) return c.json({ error: "Circle not found" }, 404);
+  return c.json({
+    name: circle.name,
+    emoji: circle.emoji,
+    memberCount: circle.members.length,
+  });
+});
+```
+
+Then commit and push to trigger Railway deploy. Once it's live, you can test it by hitting:
+```
+https://web-production-88ed0.up.railway.app/api/circles/N2QUCM/info
+
 // ─── Start Server ────────────────────────────────────────────────────
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
