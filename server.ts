@@ -417,11 +417,6 @@ app.get("/api/circles/:code/info", (c) => {
     memberCount: circle.members.length,
   });
 });
-```
-
-Then commit and push to trigger Railway deploy. Once it's live, you can test it by hitting:
-```
-https://web-production-88ed0.up.railway.app/api/circles/N2QUCM/info
 
 // ─── Start Server ────────────────────────────────────────────────────
 
