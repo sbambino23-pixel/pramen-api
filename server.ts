@@ -411,10 +411,12 @@ app.get("/api/circles/:code/info", (c) => {
   const code = c.req.param("code").toUpperCase();
   const circle = getCircle(code);
   if (!circle) return c.json({ error: "Circle not found" }, 404);
+  const creator = circle.members.find((m) => m.userId === circle.creatorUserId);
   return c.json({
     name: circle.name,
     emoji: circle.emoji,
     memberCount: circle.members.length,
+    creatorName: creator?.name || null,
   });
 });
 
