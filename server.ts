@@ -47,6 +47,52 @@ interface StoredCircle {
   createdAt: string;
 }
 
+// ─── PostHog Analytics ───────────────────────────────────────────────
+
+const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
+const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://us.i.posthog.com";
+
+function trackEvent(
+  distinctId: string,
+  event: string,
+  properties?: Record<string, any>
+) {
+  if (!POSTHOG_API_KEY) return;
+  fetch(`${POSTHOG_HOST}/capture/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      api_key: POSTHOG_API_KEY,
+      event,
+      distinct_id: distinctId,
+      properties: {
+        ...properties,
+        $lib: "pramen-backend",
+        platform: "ios",
+      },
+      timestamp: new Date().toISOString(),
+    }),
+  }).catch((err) => console.error("[PostHog] Track error:", err.message));
+}
+
+function identifyUser(
+  distinctId: string,
+  userProperties: Record<string, any>
+) {
+  if (!POSTHOG_API_KEY) return;
+  fetch(`${POSTHOG_HOST}/capture/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      api_key: POSTHOG_API_KEY,
+      event: "$identify",
+      distinct_id: distinctId,
+      properties: { $set: userProperties },
+      timestamp: new Date().toISOString(),
+    }),
+  }).catch((err) => console.error("[PostHog] Identify error:", err.message));
+}
+
 // ─── Postgres Persistence Layer ─────────────────────────────────────
 
 const pool = new Pool({
@@ -153,6 +199,7 @@ app.get("/", (c) => {
     service: "prAmen API",
     storage: "postgres",
     circles: circles.size,
+    analytics: POSTHOG_API_KEY ? "posthog" : "disabled",
     timestamp: new Date().toISOString(),
   });
 });
@@ -164,6 +211,173 @@ app.get("/api/circles/health", (c) => {
     circles: circles.size,
     timestamp: new Date().toISOString(),
   });
+});
+
+// ─── Event Capture API (for iOS app) ─────────────────────────────────
+
+app.post("/api/v1/events/capture", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { event, distinct_id, properties, timestamp } = body;
+
+    if (!event || !distinct_id) {
+      return c.json({ error: "Missing event or distinct_id" }, 400);
+    }
+
+    trackEvent(distinct_id, event, {
+      ...properties,
+      app_version: c.req.header("X-App-Version") || "unknown",
+    });
+
+    return c.json({ status: "ok" });
+  } catch (error) {
+    console.error("[Events] Capture error:", error);
+    return c.json({ error: "Internal error" }, 500);
+  }
+});
+
+app.post("/api/v1/events/capture/batch", async (c) => {
+  try {
+    const { events: eventList } = await c.req.json();
+
+    if (!Array.isArray(eventList) || eventList.length === 0) {
+      return c.json({ error: "Empty or invalid events array" }, 400);
+    }
+
+    if (eventList.length > 50) {
+      return c.json({ error: "Max 50 events per batch" }, 400);
+    }
+
+    for (const e of eventList) {
+      trackEvent(e.distinct_id, e.event, e.properties);
+    }
+
+    return c.json({ status: "ok", count: eventList.length });
+  } catch (error) {
+    console.error("[Events] Batch error:", error);
+    return c.json({ error: "Internal error" }, 500);
+  }
+});
+
+app.post("/api/v1/events/identify", async (c) => {
+  try {
+    const { distinct_id, properties } = await c.req.json();
+
+    if (!distinct_id) {
+      return c.json({ error: "Missing distinct_id" }, 400);
+    }
+
+    identifyUser(distinct_id, {
+      language: properties?.language,
+      subscription_status: properties?.subscription_status,
+      subscription_plan: properties?.subscription_plan,
+      circle_count: properties?.circle_count,
+      install_source: properties?.install_source,
+      total_prayers: properties?.total_prayers,
+      current_streak: properties?.current_streak,
+    });
+
+    return c.json({ status: "ok" });
+  } catch (error) {
+    console.error("[Events] Identify error:", error);
+    return c.json({ error: "Internal error" }, 500);
+  }
+});
+
+// ─── RevenueCat Webhook ──────────────────────────────────────────────
+
+const RC_EVENT_MAP: Record<string, string> = {
+  INITIAL_PURCHASE: "subscription_started",
+  RENEWAL: "subscription_renewed",
+  CANCELLATION: "subscription_cancelled",
+  UNCANCELLATION: "subscription_reactivated",
+  EXPIRATION: "subscription_expired",
+  BILLING_ISSUE: "billing_issue_detected",
+  PRODUCT_CHANGE: "subscription_plan_changed",
+  NON_RENEWING_PURCHASE: "lifetime_purchased",
+};
+
+function getPlanFromProductId(productId: string): string {
+  if (productId.includes("monthly")) return "monthly";
+  if (productId.includes("yearly")) return "yearly";
+  if (productId.includes("lifetime")) return "lifetime";
+  return "unknown";
+}
+
+function getStatusFromRCEvent(type: string): string {
+  switch (type) {
+    case "INITIAL_PURCHASE":
+    case "RENEWAL":
+    case "UNCANCELLATION":
+      return "active";
+    case "CANCELLATION":
+      return "cancelled";
+    case "EXPIRATION":
+      return "expired";
+    case "BILLING_ISSUE":
+      return "billing_issue";
+    case "NON_RENEWING_PURCHASE":
+      return "lifetime";
+    default:
+      return "unknown";
+  }
+}
+
+app.post("/webhooks/revenuecat", async (c) => {
+  try {
+    const authHeader = c.req.header("Authorization");
+    const expectedSecret = process.env.REVENUECAT_WEBHOOK_SECRET;
+
+    if (expectedSecret && authHeader !== `Bearer ${expectedSecret}`) {
+      console.warn("[RC Webhook] Unauthorized request");
+      return c.json({ error: "Unauthorized" }, 401);
+    }
+
+    const body = await c.req.json();
+    const rcEvent = body.event;
+
+    if (!rcEvent || !rcEvent.type) {
+      return c.json({ error: "Invalid webhook payload" }, 400);
+    }
+
+    const eventName = RC_EVENT_MAP[rcEvent.type];
+    if (!eventName) {
+      console.log("[RC Webhook] Unmapped event type:", rcEvent.type);
+      return c.json({ status: "skipped" });
+    }
+
+    const userId = rcEvent.app_user_id;
+    const productId = rcEvent.product_id || "";
+    const plan = getPlanFromProductId(productId);
+
+    trackEvent(userId, eventName, {
+      plan,
+      product_id: productId,
+      price: rcEvent.price,
+      currency: rcEvent.currency,
+      store: rcEvent.store,
+      period_type: rcEvent.period_type,
+      environment: rcEvent.environment,
+      country_code: rcEvent.country_code,
+      $revenue: rcEvent.price || 0,
+      $currency: rcEvent.currency || "USD",
+    });
+
+    identifyUser(userId, {
+      subscription_status: getStatusFromRCEvent(rcEvent.type),
+      subscription_plan: plan,
+      last_revenue_event: eventName,
+    });
+
+    console.log(
+      `[RC Webhook] ${rcEvent.type} → ${eventName} | user=${userId} plan=${plan}`
+    );
+
+    return c.json({ status: "ok" });
+  } catch (error) {
+    console.error("[RC Webhook] Error:", error);
+    return c.json({ error: "Internal error" }, 500);
+  }
 });
 
 // ─── Create Circle ───────────────────────────────────────────────────
@@ -199,6 +413,14 @@ app.post("/api/circles", async (c) => {
 
   await saveCircleToDb(circle);
   console.log(`Circle created: ${code} by ${userName}`);
+
+  // 📊 Analytics: Circle created
+  trackEvent(userId, "circle_created", {
+    circle_id: circle.id,
+    circle_code: code,
+    circle_name: name || "Prayer Circle",
+  });
+
   return c.json({ circle }, 201);
 });
 
@@ -248,6 +470,22 @@ app.post("/api/circles/:code/join", async (c) => {
 
   await saveCircleToDb(circle);
   console.log(`${userName} joined circle ${code}`);
+
+  // 📊 Analytics: Member joined circle (tracks viral loop)
+  trackEvent(userId, "circle_invite_accepted", {
+    circle_id: circle.id,
+    circle_code: code,
+    circle_size: circle.members.length,
+  });
+
+  // 📊 Analytics: Notify circle creator that someone joined
+  trackEvent(circle.creatorUserId, "circle_member_joined", {
+    circle_id: circle.id,
+    circle_code: code,
+    circle_size: circle.members.length,
+    new_member_name: userName,
+  });
+
   return c.json({ circle });
 });
 
@@ -279,11 +517,27 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
   const member = circle.members.find((m) => m.userId === userId);
   if (!member) return c.json({ error: "Member not found" }, 404);
 
+  const oldStreak = member.streakCount;
+
   if (body.streakCount !== undefined) member.streakCount = body.streakCount;
   if (body.lastPrayedDate !== undefined) member.lastPrayedDate = body.lastPrayedDate;
   if (body.name !== undefined) member.name = body.name;
 
   await saveCircleToDb(circle);
+
+  // 📊 Analytics: Streak milestone detection
+  const milestones = [3, 7, 14, 30, 60, 90, 180, 365];
+  if (
+    body.streakCount !== undefined &&
+    body.streakCount > oldStreak &&
+    milestones.includes(body.streakCount)
+  ) {
+    trackEvent(userId, "streak_milestone", {
+      streak_count: body.streakCount,
+      circle_code: code,
+    });
+  }
+
   return c.json({ circle });
 });
 
@@ -297,6 +551,12 @@ app.delete("/api/circles/:code/members/:userId", async (c) => {
   if (!circle) return c.json({ error: "Circle not found" }, 404);
 
   circle.members = circle.members.filter((m) => m.userId !== userId);
+
+  // 📊 Analytics: Member left circle
+  trackEvent(userId, "circle_left", {
+    circle_code: code,
+    remaining_members: circle.members.length,
+  });
 
   // Auto-delete empty circles
   if (circle.members.length === 0) {
@@ -315,6 +575,12 @@ app.delete("/api/circles/:code", async (c) => {
   const circle = getCircle(code);
   if (!circle) return c.json({ error: "Circle not found" }, 404);
 
+  // 📊 Analytics: Circle deleted
+  trackEvent(circle.creatorUserId, "circle_deleted", {
+    circle_code: code,
+    member_count: circle.members.length,
+  });
+
   await deleteCircleFromDb(code);
   console.log(`Circle deleted: ${code}`);
   return c.json({ success: true });
@@ -329,8 +595,9 @@ app.post("/api/circles/:code/prayer-requests", async (c) => {
   const circle = getCircle(code);
   if (!circle) return c.json({ error: "Circle not found" }, 404);
 
+  const requestId = randomUUID();
   circle.prayerRequests.unshift({
-    id: randomUUID(),
+    id: requestId,
     requesterUserId: body.userId,
     requesterName: body.isAnonymous ? "Anonymous" : body.userName || "Someone",
     text: body.text,
@@ -340,6 +607,14 @@ app.post("/api/circles/:code/prayer-requests", async (c) => {
   });
 
   await saveCircleToDb(circle);
+
+  // 📊 Analytics: Prayer request created
+  trackEvent(body.userId, "prayer_request_created", {
+    circle_code: code,
+    is_anonymous: body.isAnonymous || false,
+    word_count: (body.text || "").split(/\s+/).length,
+  });
+
   return c.json({ circle });
 });
 
@@ -356,6 +631,13 @@ app.post("/api/circles/:code/prayer-requests/:requestId/pray", async (c) => {
 
   if (!request.prayedByUserIds.includes(body.userId)) {
     request.prayedByUserIds.push(body.userId);
+
+    // 📊 Analytics: User prayed for someone's request
+    trackEvent(body.userId, "prayer_request_prayed", {
+      circle_code: code,
+      request_id: requestId,
+      total_prayers: request.prayedByUserIds.length,
+    });
   }
 
   await saveCircleToDb(circle);
@@ -402,6 +684,13 @@ app.post("/api/circles/:code/encouragements", async (c) => {
   });
 
   await saveCircleToDb(circle);
+
+  // 📊 Analytics: Encouragement sent
+  trackEvent(body.fromUserId, "encouragement_sent", {
+    circle_code: code,
+    to_user_id: body.toUserId,
+  });
+
   return c.json({ circle });
 });
 
@@ -431,6 +720,7 @@ async function start() {
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API running on port ${info.port}`);
     console.log(`   Storage: PostgreSQL`);
+    console.log(`   Analytics: ${POSTHOG_API_KEY ? "PostHog ✓" : "Disabled"}`);
     console.log(`   Circles: ${circles.size} loaded\n`);
   });
 }
