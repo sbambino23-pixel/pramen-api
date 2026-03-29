@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import pg from "pg";
 
 const { Pool } = pg;
@@ -105,6 +105,7 @@ const pool = new Pool({
 async function initDb(): Promise<void> {
   const client = await pool.connect();
   try {
+    // Circles table (existing)
     await client.query(`
       CREATE TABLE IF NOT EXISTS circles (
         code TEXT PRIMARY KEY,
@@ -113,7 +114,56 @@ async function initDb(): Promise<void> {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    console.log("Database initialized");
+
+    // Users table (NEW)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        apple_user_id TEXT UNIQUE,
+        email TEXT,
+        name TEXT NOT NULL DEFAULT '',
+        auth_token TEXT UNIQUE NOT NULL,
+        device_user_id TEXT,
+        trial_start_date TIMESTAMPTZ,
+        trial_end_date TIMESTAMPTZ,
+        subscription_status TEXT DEFAULT 'none',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    // User data table (NEW) — stores synced app data
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_data (
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        streak_count INTEGER DEFAULT 0,
+        highest_streak INTEGER DEFAULT 0,
+        total_prayers INTEGER DEFAULT 0,
+        total_minutes INTEGER DEFAULT 0,
+        last_prayed_date TIMESTAMPTZ,
+        sessions JSONB DEFAULT '[]'::jsonb,
+        preferences JSONB DEFAULT '{}'::jsonb,
+        circle_codes TEXT[] DEFAULT '{}',
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    // Index for fast Apple user lookup
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_apple_user_id ON users(apple_user_id)
+    `);
+
+    // Index for auth token lookup
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_auth_token ON users(auth_token)
+    `);
+
+    // Index for device user id migration
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_device_user_id ON users(device_user_id)
+    `);
+
+    console.log("Database initialized (circles + users + user_data)");
   } catch (err) {
     console.error("Failed to initialize database:", err);
   } finally {
@@ -121,7 +171,8 @@ async function initDb(): Promise<void> {
   }
 }
 
-// In-memory cache backed by Postgres
+// ─── In-memory circle cache backed by Postgres ──────────────────────
+
 const circles = new Map<string, StoredCircle>();
 
 async function loadAllFromDb(): Promise<void> {
@@ -162,8 +213,6 @@ async function deleteCircleFromDb(code: string): Promise<boolean> {
   return existed;
 }
 
-// ─── Circle helpers ──────────────────────────────────────────────────
-
 function getCircle(code: string): StoredCircle | undefined {
   return circles.get(code.toUpperCase());
 }
@@ -178,14 +227,58 @@ function generateCode(): string {
   return code;
 }
 
+// ─── Auth Helpers ────────────────────────────────────────────────────
+
+function generateAuthToken(): string {
+  return randomUUID() + "-" + randomUUID();
+}
+
+async function getUserByToken(token: string) {
+  if (!token) return null;
+  try {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE auth_token = $1",
+      [token]
+    );
+    return result.rows[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getUserByAppleId(appleUserId: string) {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE apple_user_id = $1",
+      [appleUserId]
+    );
+    return result.rows[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+// Auth middleware — extracts user from Bearer token
+async function authMiddleware(c: any, next: () => Promise<void>) {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const token = authHeader.replace("Bearer ", "");
+  const user = await getUserByToken(token);
+  if (!user) {
+    return c.json({ error: "Invalid or expired token" }, 401);
+  }
+  c.set("user", user);
+  await next();
+}
+
 // ─── Hono App ────────────────────────────────────────────────────────
 
 const app = new Hono();
 
-// CORS for all origins (mobile app)
 app.use("*", cors());
 
-// Global error handler — always return JSON, never let Railway serve HTML
 app.onError((err, c) => {
   console.error("Unhandled error:", err);
   return c.json({ error: "Internal server error", detail: err.message }, 500);
@@ -197,8 +290,10 @@ app.get("/", (c) => {
   return c.json({
     status: "ok",
     service: "prAmen API",
+    version: "2.0.0",
     storage: "postgres",
     circles: circles.size,
+    auth: "sign-in-with-apple",
     analytics: POSTHOG_API_KEY ? "posthog" : "disabled",
     timestamp: new Date().toISOString(),
   });
@@ -212,6 +307,378 @@ app.get("/api/circles/health", (c) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════
+// ─── AUTHENTICATION ENDPOINTS (NEW) ─────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+// POST /api/auth/apple — Sign in with Apple
+// Called after iOS AuthenticationServices returns the credential
+app.post("/api/auth/apple", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { appleUserId, email, fullName, identityToken, deviceUserId } = body;
+
+    if (!appleUserId) {
+      return c.json({ error: "appleUserId is required" }, 400);
+    }
+
+    // Check if user already exists
+    let user = await getUserByAppleId(appleUserId);
+    let isNewUser = false;
+
+    if (user) {
+      // Existing user — update name/email if provided (Apple only sends on first sign-in)
+      if (fullName && !user.name) {
+        await pool.query(
+          "UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2",
+          [fullName, user.id]
+        );
+        user.name = fullName;
+      }
+      if (email && !user.email) {
+        await pool.query(
+          "UPDATE users SET email = $1, updated_at = NOW() WHERE id = $2",
+          [email, user.id]
+        );
+        user.email = email;
+      }
+      // Update device_user_id for circle migration
+      if (deviceUserId && deviceUserId !== user.device_user_id) {
+        await pool.query(
+          "UPDATE users SET device_user_id = $1, updated_at = NOW() WHERE id = $2",
+          [deviceUserId, user.id]
+        );
+      }
+
+      console.log(`[Auth] Existing user signed in: ${user.id} (${user.name || 'unnamed'})`);
+    } else {
+      // New user — create account
+      isNewUser = true;
+      const authToken = generateAuthToken();
+      const userId = randomUUID();
+      const userName = fullName || "";
+
+      // Calculate trial dates
+      const trialStartDate = new Date();
+      const trialEndDate = new Date(trialStartDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+      await pool.query(
+        `INSERT INTO users (id, apple_user_id, email, name, auth_token, device_user_id, trial_start_date, trial_end_date, subscription_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'trial')`,
+        [userId, appleUserId, email || null, userName, authToken, deviceUserId || null, trialStartDate, trialEndDate]
+      );
+
+      // Create user_data record
+      await pool.query(
+        `INSERT INTO user_data (user_id) VALUES ($1)`,
+        [userId]
+      );
+
+      user = {
+        id: userId,
+        apple_user_id: appleUserId,
+        email,
+        name: userName,
+        auth_token: authToken,
+        device_user_id: deviceUserId,
+        trial_start_date: trialStartDate,
+        trial_end_date: trialEndDate,
+        subscription_status: "trial",
+      };
+
+      console.log(`[Auth] New user created: ${userId} (${userName})`);
+
+      // Analytics
+      trackEvent(userId, "user_signed_up", {
+        auth_provider: "apple",
+        has_email: !!email,
+        has_device_migration: !!deviceUserId,
+      });
+    }
+
+    // If user had a deviceUserId, migrate their circle memberships
+    if (deviceUserId && isNewUser) {
+      await migrateCircleMembership(deviceUserId, user.id, user.name);
+    }
+
+    // Fetch user data for response
+    const userData = await getUserData(user.id);
+
+    // Get circle codes this user belongs to
+    const userCircleCodes = getUserCircleCodes(user.device_user_id || user.id);
+
+    return c.json({
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        authToken: user.auth_token,
+        trialStartDate: user.trial_start_date,
+        trialEndDate: user.trial_end_date,
+        subscriptionStatus: user.subscription_status,
+        isNewUser,
+      },
+      data: userData,
+      circleCodes: userCircleCodes,
+    });
+  } catch (error: any) {
+    console.error("[Auth] Apple sign-in error:", error);
+    return c.json({ error: "Authentication failed", detail: error.message }, 500);
+  }
+});
+
+// POST /api/auth/verify — Verify existing token (auto-login on app launch)
+app.post("/api/auth/verify", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return c.json({ valid: false }, 401);
+  }
+  const token = authHeader.replace("Bearer ", "");
+  const user = await getUserByToken(token);
+
+  if (!user) {
+    return c.json({ valid: false }, 401);
+  }
+
+  // Fetch user data
+  const userData = await getUserData(user.id);
+  const userCircleCodes = getUserCircleCodes(user.device_user_id || user.id);
+
+  return c.json({
+    valid: true,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      authToken: user.auth_token,
+      trialStartDate: user.trial_start_date,
+      trialEndDate: user.trial_end_date,
+      subscriptionStatus: user.subscription_status,
+    },
+    data: userData,
+    circleCodes: userCircleCodes,
+  });
+});
+
+// POST /api/auth/logout — Invalidate token
+app.post("/api/auth/logout", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader) return c.json({ success: true });
+
+  const token = authHeader.replace("Bearer ", "");
+  // Generate new token to invalidate old one
+  const newToken = generateAuthToken();
+  await pool.query(
+    "UPDATE users SET auth_token = $1, updated_at = NOW() WHERE auth_token = $2",
+    [newToken, token]
+  );
+
+  return c.json({ success: true });
+});
+
+// DELETE /api/auth/account — Delete user account and all data (GDPR)
+app.delete("/api/auth/account", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const token = authHeader.replace("Bearer ", "");
+  const user = await getUserByToken(token);
+  if (!user) return c.json({ error: "User not found" }, 404);
+
+  // Delete user data
+  await pool.query("DELETE FROM user_data WHERE user_id = $1", [user.id]);
+  // Delete user
+  await pool.query("DELETE FROM users WHERE id = $1", [user.id]);
+
+  console.log(`[Auth] Account deleted: ${user.id}`);
+  trackEvent(user.id, "account_deleted", {});
+
+  return c.json({ success: true });
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// ─── DATA SYNC ENDPOINTS (NEW) ──────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+
+// GET /api/user/data — Fetch all user data (for restore on reinstall)
+app.get("/api/user/data", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const token = authHeader.replace("Bearer ", "");
+  const user = await getUserByToken(token);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const userData = await getUserData(user.id);
+  const userCircleCodes = getUserCircleCodes(user.device_user_id || user.id);
+
+  return c.json({
+    user: {
+      id: user.id,
+      name: user.name,
+      trialStartDate: user.trial_start_date,
+      trialEndDate: user.trial_end_date,
+      subscriptionStatus: user.subscription_status,
+    },
+    data: userData,
+    circleCodes: userCircleCodes,
+  });
+});
+
+// PUT /api/user/data — Sync user data to server
+app.put("/api/user/data", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const token = authHeader.replace("Bearer ", "");
+  const user = await getUserByToken(token);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const body = await c.req.json();
+
+  try {
+    await pool.query(
+      `INSERT INTO user_data (user_id, streak_count, highest_streak, total_prayers, total_minutes, last_prayed_date, sessions, preferences, circle_codes, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+       ON CONFLICT (user_id) DO UPDATE SET
+         streak_count = GREATEST(user_data.streak_count, $2),
+         highest_streak = GREATEST(user_data.highest_streak, $3),
+         total_prayers = GREATEST(user_data.total_prayers, $4),
+         total_minutes = GREATEST(user_data.total_minutes, $5),
+         last_prayed_date = GREATEST(user_data.last_prayed_date, $6),
+         sessions = CASE WHEN jsonb_array_length($7::jsonb) > jsonb_array_length(user_data.sessions) THEN $7 ELSE user_data.sessions END,
+         preferences = $8,
+         circle_codes = $9,
+         updated_at = NOW()`,
+      [
+        user.id,
+        body.streakCount || 0,
+        body.highestStreak || 0,
+        body.totalPrayers || 0,
+        body.totalMinutes || 0,
+        body.lastPrayedDate || null,
+        JSON.stringify(body.sessions || []),
+        JSON.stringify(body.preferences || {}),
+        body.circleCodes || [],
+      ]
+    );
+
+    // Update user name if provided
+    if (body.userName && body.userName !== user.name) {
+      await pool.query(
+        "UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2",
+        [body.userName, user.id]
+      );
+    }
+
+    return c.json({ status: "ok", synced: true });
+  } catch (error: any) {
+    console.error("[Sync] Data sync error:", error);
+    return c.json({ error: "Sync failed", detail: error.message }, 500);
+  }
+});
+
+// PUT /api/user/name — Update display name
+app.put("/api/user/name", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const token = authHeader.replace("Bearer ", "");
+  const user = await getUserByToken(token);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const { name } = await c.req.json();
+  if (!name || name.trim().length === 0) {
+    return c.json({ error: "Name is required" }, 400);
+  }
+
+  await pool.query(
+    "UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2",
+    [name.trim(), user.id]
+  );
+
+  // Also update name in all circles this user belongs to
+  for (const [, circle] of circles) {
+    const member = circle.members.find(
+      (m) => m.userId === user.id || m.userId === user.device_user_id
+    );
+    if (member) {
+      member.name = name.trim();
+      await saveCircleToDb(circle);
+    }
+  }
+
+  return c.json({ success: true, name: name.trim() });
+});
+
+// ─── Helpers for auth endpoints ──────────────────────────────────────
+
+async function getUserData(userId: string) {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM user_data WHERE user_id = $1",
+      [userId]
+    );
+    if (result.rows[0]) {
+      const d = result.rows[0];
+      return {
+        streakCount: d.streak_count,
+        highestStreak: d.highest_streak,
+        totalPrayers: d.total_prayers,
+        totalMinutes: d.total_minutes,
+        lastPrayedDate: d.last_prayed_date,
+        sessions: d.sessions || [],
+        preferences: d.preferences || {},
+        circleCodes: d.circle_codes || [],
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getUserCircleCodes(userId: string): string[] {
+  const codes: string[] = [];
+  for (const [code, circle] of circles) {
+    if (circle.members.some((m) => m.userId === userId)) {
+      codes.push(code);
+    }
+  }
+  return codes;
+}
+
+async function migrateCircleMembership(
+  oldDeviceId: string,
+  newUserId: string,
+  userName: string
+) {
+  for (const [, circle] of circles) {
+    const member = circle.members.find((m) => m.userId === oldDeviceId);
+    if (member) {
+      member.userId = newUserId;
+      if (userName) member.name = userName;
+      await saveCircleToDb(circle);
+      console.log(
+        `[Migration] Migrated circle ${circle.code} membership: ${oldDeviceId} → ${newUserId}`
+      );
+    }
+    // Also update creatorUserId if needed
+    if (circle.creatorUserId === oldDeviceId) {
+      circle.creatorUserId = newUserId;
+      await saveCircleToDb(circle);
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ─── EXISTING ENDPOINTS (UNCHANGED) ─────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
 
 // ─── Event Capture API (for iOS app) ─────────────────────────────────
 
@@ -350,6 +817,15 @@ app.post("/webhooks/revenuecat", async (c) => {
     const productId = rcEvent.product_id || "";
     const plan = getPlanFromProductId(productId);
 
+    // Update user subscription status in DB
+    const status = getStatusFromRCEvent(rcEvent.type);
+    await pool
+      .query(
+        "UPDATE users SET subscription_status = $1, updated_at = NOW() WHERE id = $2 OR device_user_id = $2",
+        [status, userId]
+      )
+      .catch(() => {});
+
     trackEvent(userId, eventName, {
       plan,
       product_id: productId,
@@ -364,7 +840,7 @@ app.post("/webhooks/revenuecat", async (c) => {
     });
 
     identifyUser(userId, {
-      subscription_status: getStatusFromRCEvent(rcEvent.type),
+      subscription_status: status,
       subscription_plan: plan,
       last_revenue_event: eventName,
     });
@@ -380,7 +856,7 @@ app.post("/webhooks/revenuecat", async (c) => {
   }
 });
 
-// ─── Create Circle ───────────────────────────────────────────────────
+// ─── Circle CRUD (unchanged) ─────────────────────────────────────────
 
 app.post("/api/circles", async (c) => {
   const body = await c.req.json();
@@ -414,7 +890,6 @@ app.post("/api/circles", async (c) => {
   await saveCircleToDb(circle);
   console.log(`Circle created: ${code} by ${userName}`);
 
-  // 📊 Analytics: Circle created
   trackEvent(userId, "circle_created", {
     circle_id: circle.id,
     circle_code: code,
@@ -424,16 +899,12 @@ app.post("/api/circles", async (c) => {
   return c.json({ circle }, 201);
 });
 
-// ─── Get Circle ──────────────────────────────────────────────────────
-
 app.get("/api/circles/:code", (c) => {
   const code = c.req.param("code").toUpperCase();
   const circle = getCircle(code);
   if (!circle) return c.json({ error: "Circle not found" }, 404);
   return c.json({ circle });
 });
-
-// ─── Join Circle ─────────────────────────────────────────────────────
 
 app.post("/api/circles/:code/join", async (c) => {
   const code = c.req.param("code").toUpperCase();
@@ -451,10 +922,12 @@ app.post("/api/circles/:code/join", async (c) => {
 
   const circle = getCircle(code);
   if (!circle) {
-    return c.json({ error: "Circle not found. Check the code and try again." }, 404);
+    return c.json(
+      { error: "Circle not found. Check the code and try again." },
+      404
+    );
   }
 
-  // Already a member — just return the circle
   const existing = circle.members.find((m) => m.userId === userId);
   if (existing) {
     return c.json({ circle });
@@ -471,14 +944,12 @@ app.post("/api/circles/:code/join", async (c) => {
   await saveCircleToDb(circle);
   console.log(`${userName} joined circle ${code}`);
 
-  // 📊 Analytics: Member joined circle (tracks viral loop)
   trackEvent(userId, "circle_invite_accepted", {
     circle_id: circle.id,
     circle_code: code,
     circle_size: circle.members.length,
   });
 
-  // 📊 Analytics: Notify circle creator that someone joined
   trackEvent(circle.creatorUserId, "circle_member_joined", {
     circle_id: circle.id,
     circle_code: code,
@@ -488,8 +959,6 @@ app.post("/api/circles/:code/join", async (c) => {
 
   return c.json({ circle });
 });
-
-// ─── Update Circle ───────────────────────────────────────────────────
 
 app.put("/api/circles/:code", async (c) => {
   const code = c.req.param("code").toUpperCase();
@@ -503,8 +972,6 @@ app.put("/api/circles/:code", async (c) => {
   await saveCircleToDb(circle);
   return c.json({ circle });
 });
-
-// ─── Update Member Status ────────────────────────────────────────────
 
 app.put("/api/circles/:code/members/:userId/status", async (c) => {
   const code = c.req.param("code").toUpperCase();
@@ -520,12 +987,12 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
   const oldStreak = member.streakCount;
 
   if (body.streakCount !== undefined) member.streakCount = body.streakCount;
-  if (body.lastPrayedDate !== undefined) member.lastPrayedDate = body.lastPrayedDate;
+  if (body.lastPrayedDate !== undefined)
+    member.lastPrayedDate = body.lastPrayedDate;
   if (body.name !== undefined) member.name = body.name;
 
   await saveCircleToDb(circle);
 
-  // 📊 Analytics: Streak milestone detection
   const milestones = [3, 7, 14, 30, 60, 90, 180, 365];
   if (
     body.streakCount !== undefined &&
@@ -541,8 +1008,6 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
   return c.json({ circle });
 });
 
-// ─── Remove Member ───────────────────────────────────────────────────
-
 app.delete("/api/circles/:code/members/:userId", async (c) => {
   const code = c.req.param("code").toUpperCase();
   const userId = c.req.param("userId");
@@ -552,13 +1017,11 @@ app.delete("/api/circles/:code/members/:userId", async (c) => {
 
   circle.members = circle.members.filter((m) => m.userId !== userId);
 
-  // 📊 Analytics: Member left circle
   trackEvent(userId, "circle_left", {
     circle_code: code,
     remaining_members: circle.members.length,
   });
 
-  // Auto-delete empty circles
   if (circle.members.length === 0) {
     await deleteCircleFromDb(code);
   } else {
@@ -568,14 +1031,11 @@ app.delete("/api/circles/:code/members/:userId", async (c) => {
   return c.json({ success: true });
 });
 
-// ─── Delete Circle ───────────────────────────────────────────────────
-
 app.delete("/api/circles/:code", async (c) => {
   const code = c.req.param("code").toUpperCase();
   const circle = getCircle(code);
   if (!circle) return c.json({ error: "Circle not found" }, 404);
 
-  // 📊 Analytics: Circle deleted
   trackEvent(circle.creatorUserId, "circle_deleted", {
     circle_code: code,
     member_count: circle.members.length,
@@ -608,7 +1068,6 @@ app.post("/api/circles/:code/prayer-requests", async (c) => {
 
   await saveCircleToDb(circle);
 
-  // 📊 Analytics: Prayer request created
   trackEvent(body.userId, "prayer_request_created", {
     circle_code: code,
     is_anonymous: body.isAnonymous || false,
@@ -632,7 +1091,6 @@ app.post("/api/circles/:code/prayer-requests/:requestId/pray", async (c) => {
   if (!request.prayedByUserIds.includes(body.userId)) {
     request.prayedByUserIds.push(body.userId);
 
-    // 📊 Analytics: User prayed for someone's request
     trackEvent(body.userId, "prayer_request_prayed", {
       circle_code: code,
       request_id: requestId,
@@ -644,8 +1102,6 @@ app.post("/api/circles/:code/prayer-requests/:requestId/pray", async (c) => {
   return c.json({ circle });
 });
 
-// ─── Delete Prayer Request ──────────────────────────────────────────
-
 app.delete("/api/circles/:code/prayer-requests/:requestId", async (c) => {
   const code = c.req.param("code").toUpperCase();
   const requestId = c.req.param("requestId");
@@ -654,7 +1110,9 @@ app.delete("/api/circles/:code/prayer-requests/:requestId", async (c) => {
   if (!circle) return c.json({ error: "Circle not found" }, 404);
 
   const before = circle.prayerRequests.length;
-  circle.prayerRequests = circle.prayerRequests.filter((r) => r.id !== requestId);
+  circle.prayerRequests = circle.prayerRequests.filter(
+    (r) => r.id !== requestId
+  );
 
   if (circle.prayerRequests.length === before) {
     return c.json({ error: "Prayer request not found" }, 404);
@@ -685,7 +1143,6 @@ app.post("/api/circles/:code/encouragements", async (c) => {
 
   await saveCircleToDb(circle);
 
-  // 📊 Analytics: Encouragement sent
   trackEvent(body.fromUserId, "encouragement_sent", {
     circle_code: code,
     to_user_id: body.toUserId,
@@ -700,7 +1157,9 @@ app.get("/api/circles/:code/info", (c) => {
   const code = c.req.param("code").toUpperCase();
   const circle = getCircle(code);
   if (!circle) return c.json({ error: "Circle not found" }, 404);
-  const creator = circle.members.find((m) => m.userId === circle.creatorUserId);
+  const creator = circle.members.find(
+    (m) => m.userId === circle.creatorUserId
+  );
   return c.json({
     name: circle.name,
     emoji: circle.emoji,
@@ -718,8 +1177,9 @@ async function start() {
   await loadAllFromDb();
 
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API running on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v2.0 running on port ${info.port}`);
     console.log(`   Storage: PostgreSQL`);
+    console.log(`   Auth: Sign in with Apple`);
     console.log(`   Analytics: ${POSTHOG_API_KEY ? "PostHog ✓" : "Disabled"}`);
     console.log(`   Circles: ${circles.size} loaded\n`);
   });
