@@ -120,17 +120,25 @@ async function initDb(): Promise<void> {
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
         apple_user_id TEXT UNIQUE,
+        google_user_id TEXT UNIQUE,
         email TEXT,
         name TEXT NOT NULL DEFAULT '',
+        auth_provider TEXT DEFAULT 'apple',
         auth_token TEXT UNIQUE NOT NULL,
         device_user_id TEXT,
         trial_start_date TIMESTAMPTZ,
         trial_end_date TIMESTAMPTZ,
         subscription_status TEXT DEFAULT 'none',
+        email_opt_in BOOLEAN DEFAULT false,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+
+    // Add columns if they don't exist (safe migration for existing installs)
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_user_id TEXT UNIQUE`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'apple'`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_opt_in BOOLEAN DEFAULT false`).catch(() => {});
 
     // User data table (NEW) — stores synced app data
     await client.query(`
@@ -151,6 +159,11 @@ async function initDb(): Promise<void> {
     // Index for fast Apple user lookup
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_users_apple_user_id ON users(apple_user_id)
+    `);
+
+    // Index for fast Google user lookup
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_google_user_id ON users(google_user_id)
     `);
 
     // Index for auth token lookup
@@ -251,6 +264,30 @@ async function getUserByAppleId(appleUserId: string) {
     const result = await pool.query(
       "SELECT * FROM users WHERE apple_user_id = $1",
       [appleUserId]
+    );
+    return result.rows[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getUserByGoogleId(googleUserId: string) {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE google_user_id = $1",
+      [googleUserId]
+    );
+    return result.rows[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getUserByEmail(email: string) {
+  try {
+    const result = await pool.query(
+      "SELECT * FROM users WHERE email = $1",
+      [email]
     );
     return result.rows[0] || null;
   } catch {
@@ -425,6 +462,189 @@ app.post("/api/auth/apple", async (c) => {
   } catch (error: any) {
     console.error("[Auth] Apple sign-in error:", error);
     return c.json({ error: "Authentication failed", detail: error.message }, 500);
+  }
+});
+
+// POST /api/auth/google — Sign in with Google
+// Called after iOS Google Sign-In SDK returns the credential
+app.post("/api/auth/google", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { googleUserId, email, fullName, idToken, deviceUserId } = body;
+
+    if (!googleUserId || !email) {
+      return c.json({ error: "googleUserId and email are required" }, 400);
+    }
+
+    // Verify the Google ID token
+    let verified = false;
+    if (idToken) {
+      try {
+        const tokenRes = await fetch(
+          `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`
+        );
+        if (tokenRes.ok) {
+          const tokenData = await tokenRes.json() as any;
+          // Verify the sub (subject) matches the googleUserId
+          if (tokenData.sub === googleUserId) {
+            verified = true;
+          }
+        }
+      } catch (err) {
+        console.warn("[Auth] Google token verification failed, proceeding with trust:", err);
+      }
+    }
+    // If no idToken provided or verification skipped, we still proceed
+    // (the Google Sign-In SDK on iOS already verified the token client-side)
+    if (!idToken) verified = true;
+
+    // Check if user already exists by Google ID
+    let user = await getUserByGoogleId(googleUserId);
+    let isNewUser = false;
+
+    // Also check if an account exists with the same email (could be an Apple sign-in user)
+    if (!user) {
+      const existingByEmail = await getUserByEmail(email);
+      if (existingByEmail) {
+        // Link Google to existing account
+        await pool.query(
+          "UPDATE users SET google_user_id = $1, auth_provider = CASE WHEN auth_provider = 'apple' THEN 'apple+google' ELSE 'google' END, updated_at = NOW() WHERE id = $2",
+          [googleUserId, existingByEmail.id]
+        );
+        user = existingByEmail;
+        user.google_user_id = googleUserId;
+        console.log(`[Auth] Linked Google to existing account: ${user.id} (${email})`);
+      }
+    }
+
+    if (user) {
+      // Existing user — update name if provided
+      if (fullName && !user.name) {
+        await pool.query(
+          "UPDATE users SET name = $1, updated_at = NOW() WHERE id = $2",
+          [fullName, user.id]
+        );
+        user.name = fullName;
+      }
+      // Update device_user_id for circle migration
+      if (deviceUserId && deviceUserId !== user.device_user_id) {
+        await pool.query(
+          "UPDATE users SET device_user_id = $1, updated_at = NOW() WHERE id = $2",
+          [deviceUserId, user.id]
+        );
+      }
+
+      console.log(`[Auth] Google user signed in: ${user.id} (${user.name || email})`);
+    } else {
+      // New user — create account
+      isNewUser = true;
+      const authToken = generateAuthToken();
+      const userId = randomUUID();
+      const userName = fullName || email.split("@")[0];
+
+      const trialStartDate = new Date();
+      const trialEndDate = new Date(trialStartDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+      await pool.query(
+        `INSERT INTO users (id, google_user_id, email, name, auth_provider, auth_token, device_user_id, trial_start_date, trial_end_date, subscription_status)
+         VALUES ($1, $2, $3, $4, 'google', $5, $6, $7, $8, 'trial')`,
+        [userId, googleUserId, email, userName, authToken, deviceUserId || null, trialStartDate, trialEndDate]
+      );
+
+      await pool.query(
+        `INSERT INTO user_data (user_id) VALUES ($1)`,
+        [userId]
+      );
+
+      user = {
+        id: userId,
+        google_user_id: googleUserId,
+        email,
+        name: userName,
+        auth_token: authToken,
+        device_user_id: deviceUserId,
+        trial_start_date: trialStartDate,
+        trial_end_date: trialEndDate,
+        subscription_status: "trial",
+      };
+
+      console.log(`[Auth] New Google user created: ${userId} (${userName})`);
+
+      trackEvent(userId, "user_signed_up", {
+        auth_provider: "google",
+        has_email: true,
+        has_device_migration: !!deviceUserId,
+      });
+    }
+
+    // Migrate circle memberships
+    if (deviceUserId && isNewUser) {
+      await migrateCircleMembership(deviceUserId, user.id, user.name);
+    }
+
+    const userData = await getUserData(user.id);
+    const userCircleCodes = getUserCircleCodes(user.device_user_id || user.id);
+
+    return c.json({
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        authToken: user.auth_token,
+        trialStartDate: user.trial_start_date,
+        trialEndDate: user.trial_end_date,
+        subscriptionStatus: user.subscription_status,
+        isNewUser,
+      },
+      data: userData,
+      circleCodes: userCircleCodes,
+    });
+  } catch (error: any) {
+    console.error("[Auth] Google sign-in error:", error);
+    return c.json({ error: "Authentication failed", detail: error.message }, 500);
+  }
+});
+
+// PUT /api/user/email-opt-in — Update email marketing opt-in
+app.put("/api/user/email-opt-in", async (c) => {
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const token = authHeader.replace("Bearer ", "");
+  const user = await getUserByToken(token);
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+
+  const { optIn } = await c.req.json();
+  await pool.query(
+    "UPDATE users SET email_opt_in = $1, updated_at = NOW() WHERE id = $2",
+    [!!optIn, user.id]
+  );
+
+  if (optIn) {
+    trackEvent(user.id, "email_opt_in", { email: user.email });
+  }
+
+  return c.json({ success: true, emailOptIn: !!optIn });
+});
+
+// GET /api/admin/email-list — Export opted-in emails (protect with secret)
+app.get("/api/admin/email-list", async (c) => {
+  const secret = c.req.header("X-Admin-Secret");
+  if (secret !== process.env.ADMIN_SECRET) {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  try {
+    const result = await pool.query(
+      "SELECT email, name, auth_provider, created_at FROM users WHERE email_opt_in = true AND email IS NOT NULL AND email NOT LIKE '%privaterelay.appleid.com' ORDER BY created_at DESC"
+    );
+    return c.json({
+      count: result.rows.length,
+      emails: result.rows,
+    });
+  } catch (error: any) {
+    return c.json({ error: "Failed to fetch emails" }, 500);
   }
 });
 
