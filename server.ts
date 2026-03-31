@@ -27,6 +27,7 @@ const ASC_KEY_ID = process.env.ASC_KEY_ID || "";
 const ASC_ISSUER_ID = process.env.ASC_ISSUER_ID || "";
 const ASC_PRIVATE_KEY = (process.env.ASC_PRIVATE_KEY || "").replace(/\\n/g, "\n");
 const PRAMEN_APP_ID = "6759958354";
+const REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_KEY || "";
 
 // ─── PostHog Helpers ─────────────────────────────────────────────────
 function trackEvent(distinctId: string, event: string, properties?: Record<string, any>) {
@@ -118,7 +119,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.2.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.2.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -267,6 +268,104 @@ app.get("/api/dashboard/events", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── REVENUECAT API ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+app.get("/api/dashboard/revenuecat", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  if (!REVENUECAT_SECRET_KEY) return c.json({ error: "REVENUECAT_SECRET_KEY not set" }, 500);
+  try {
+    // Get all user IDs from our database
+    const usersResult = await pool.query("SELECT id, device_user_id, subscription_status, name, email FROM users ORDER BY created_at DESC LIMIT 100");
+    const subscribers: any[] = [];
+    let totalRevenue = 0; let activeCount = 0; let trialCount = 0; let mrr = 0;
+
+    // Query RevenueCat for each user
+    for (const user of usersResult.rows) {
+      const ids = [user.id, user.device_user_id].filter(Boolean);
+      for (const uid of ids) {
+        try {
+          const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(uid)}`, {
+            headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }
+          });
+          if (!rcRes.ok) continue;
+          const rcData = (await rcRes.json()) as any;
+          const sub = rcData.subscriber;
+          if (!sub) continue;
+          const entitlements = sub.entitlements || {};
+          const subscriptions = sub.subscriptions || {};
+          const nonSubs = sub.non_subscriptions || {};
+          const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > new Date());
+          const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > new Date());
+          
+          // Calculate revenue from subscriptions
+          let userRevenue = 0;
+          for (const [pid, s] of Object.entries(subscriptions) as any[]) {
+            if (s.store === "app_store" || s.store === "play_store") {
+              // Estimate from product ID
+              if (pid.includes("yearly")) userRevenue += 29.99;
+              else if (pid.includes("monthly")) userRevenue += 3.99;
+              else if (pid.includes("lifetime")) userRevenue += 149.99;
+            }
+          }
+          
+          if (hasActive) activeCount++;
+          if (hasTrial) trialCount++;
+          totalRevenue += userRevenue;
+          
+          // Calculate MRR
+          for (const [pid, s] of Object.entries(subscriptions) as any[]) {
+            const expires = new Date(s.expires_date);
+            if (expires > new Date() && s.period_type !== "trial") {
+              if (pid.includes("yearly")) mrr += 29.99 / 12;
+              else if (pid.includes("monthly")) mrr += 3.99;
+            }
+          }
+
+          subscribers.push({
+            user_id: uid,
+            name: user.name || null,
+            email: user.email || null,
+            db_status: user.subscription_status,
+            has_active: hasActive,
+            has_trial: hasTrial,
+            revenue: userRevenue,
+            entitlements: Object.keys(entitlements),
+            subscriptions: Object.entries(subscriptions).map(([pid, s]: [string, any]) => ({
+              product: pid,
+              store: s.store,
+              purchase_date: s.purchase_date,
+              expires_date: s.expires_date,
+              period_type: s.period_type,
+              is_active: new Date(s.expires_date) > new Date(),
+              auto_resume_date: s.auto_resume_date,
+              unsubscribe_detected_at: s.unsubscribe_detected_at,
+            })),
+            first_seen: sub.first_seen,
+          });
+          break; // Found this user, don't check device_user_id
+        } catch { continue; }
+      }
+    }
+
+    return c.json({
+      generated_at: new Date().toISOString(),
+      summary: {
+        active_subscriptions: activeCount,
+        active_trials: trialCount,
+        total_revenue_estimated: totalRevenue,
+        mrr_estimated: Math.round(mrr * 100) / 100,
+        net_mrr: Math.round(mrr * (1 - APPLE_CUT) * 100) / 100,
+        total_users_checked: usersResult.rows.length,
+        subscribers_found: subscribers.filter(s => s.has_active || s.has_trial).length,
+      },
+      subscribers: subscribers.filter(s => s.subscriptions.length > 0 || s.has_active || s.has_trial),
+      all_users: subscribers,
+    });
+  } catch (err: any) { return c.json({ error: "RevenueCat query failed", detail: err.message }, 500); }
+});
 // ─── APPLE APP STORE ────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 app.get("/api/dashboard/appstore", async (c) => {
