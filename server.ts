@@ -244,7 +244,7 @@ app.get("/api/dashboard/events", async (c) => {
     const limit = parseInt(c.req.query("limit") || "500");
     const daysBack = parseInt(c.req.query("days") || "14");
     const afterDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
-    const res = await fetch(`${POSTHOG_READ_HOST}/api/projects/${POSTHOG_PROJECT_ID}/events/?limit=${limit}&after=${afterDate}&orderBy=-timestamp`, { headers: { Authorization: `Bearer ${POSTHOG_PERSONAL_KEY}` } });
+    const res = await fetch(`${POSTHOG_READ_HOST}/api/projects/${POSTHOG_PROJECT_ID}/events/?limit=${limit}&after=${afterDate}`
     if (!res.ok) { const txt = await res.text().catch(() => ""); console.error("[PostHog Read]", res.status, txt.substring(0,200)); return c.json({ error: "PostHog " + res.status, detail: txt.substring(0,200) }, 500); }
     const raw = ((await res.json()) as any).results || [];
     const exclude = new Set(["samy_setup", "samy_test"]);
