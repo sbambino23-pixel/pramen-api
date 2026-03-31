@@ -51,7 +51,7 @@ function generateASCToken(): string {
     const payload = Buffer.from(JSON.stringify({ iss: ASC_ISSUER_ID, iat: now, exp: now + 1200, aud: "appstoreconnect-v1" })).toString("base64url");
     const signer = createSign("SHA256");
     signer.update(`${header}.${payload}`);
-    const signature = signer.sign(ASC_PRIVATE_KEY, "base64url");
+    const signature = signer.sign({ key: ASC_PRIVATE_KEY, dsaEncoding: "ieee-p1363" }, "base64url");
     return `${header}.${payload}.${signature}`;
   } catch (err: any) { console.error("[ASC] JWT error:", err.message); return ""; }
 }
