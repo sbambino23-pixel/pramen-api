@@ -114,6 +114,71 @@ async function pullPlausibleMetrics(): Promise<void> {
   } catch (err: any) { console.error("[Plausible]", err.message); }
 }
 
+// Backfill last 30 days from Plausible timeseries API
+async function backfillPlausible(): Promise<void> {
+  if (!PLAUSIBLE_API_KEY) return;
+  try {
+    const h = { Authorization: `Bearer ${PLAUSIBLE_API_KEY}` }; const base = "https://plausible.io/api/v1/stats";
+    // Check if we already have historical data
+    const existing = await pool.query("SELECT COUNT(*) as c FROM daily_web_metrics"); 
+    if (parseInt(existing.rows[0]?.c || "0") > 3) { console.log("[Plausible] Historical data exists, skipping backfill"); return; }
+    // Pull 30-day timeseries
+    const tsRes = await fetch(`${base}/timeseries?site_id=${PLAUSIBLE_SITE_ID}&period=30d&metrics=visitors,pageviews,bounce_rate,visit_duration`, { headers: h });
+    if (!tsRes.ok) { console.error("[Plausible] Timeseries failed:", tsRes.status); return; }
+    const tsData = (await tsRes.json()) as any;
+    const days = tsData?.results || [];
+    // Also pull App Store clicks per day
+    let clicksByDay: Record<string, number> = {};
+    try {
+      const clRes = await fetch(`${base}/timeseries?site_id=${PLAUSIBLE_SITE_ID}&period=30d&metrics=events&filters=event:name==App%20Store%20Click`, { headers: h });
+      if (clRes.ok) { const clData = (await clRes.json()) as any; for (const d of (clData?.results || [])) clicksByDay[d.date] = d.events || 0; }
+    } catch {}
+    // Insert each day
+    let inserted = 0;
+    for (const day of days) {
+      if (!day.date || day.visitors === 0) continue;
+      await pool.query(`INSERT INTO daily_web_metrics (date,visitors,pageviews,bounce_rate,visit_duration_avg,app_store_clicks,updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date) DO UPDATE SET visitors=$2,pageviews=$3,bounce_rate=$4,visit_duration_avg=$5,app_store_clicks=$6,updated_at=NOW()`,
+        [day.date, day.visitors||0, day.pageviews||0, day.bounce_rate||0, day.visit_duration||0, clicksByDay[day.date]||0]);
+      inserted++;
+    }
+    console.log(`[Plausible] Backfilled ${inserted} days of historical data`);
+  } catch (err: any) { console.error("[Plausible] Backfill error:", err.message); }
+}
+
+// Pull Apple Sales Reports (downloads, proceeds)
+async function pullAppleSalesReport(): Promise<void> {
+  const token = generateASCToken();
+  if (!token) return;
+  try {
+    // Get yesterday's date (Apple reports have 1-day delay)
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0].replace(/-/g, "");
+    // Try to fetch sales report — requires vendor number, try to discover it
+    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/a]gzip, application/json" }
+    });
+    if (vendorRes.ok) {
+      const text = await vendorRes.text();
+      console.log("[Apple Sales] Got report, length:", text.length);
+      // Parse TSV data if available
+      const lines = text.split("\n").filter(l => l.trim());
+      if (lines.length > 1) {
+        let totalUnits = 0; let totalProceeds = 0;
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split("\t");
+          totalUnits += parseInt(cols[7] || "0") || 0; // Units column
+          totalProceeds += parseFloat(cols[8] || "0") || 0; // Developer proceeds
+        }
+        const dateStr = yesterday.substring(0,4) + "-" + yesterday.substring(4,6) + "-" + yesterday.substring(6,8);
+        await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=$2,proceeds=$3,updated_at=NOW()`, [dateStr, totalUnits, totalProceeds]);
+        console.log(`[Apple Sales] ${dateStr}: ${totalUnits} units, $${totalProceeds} proceeds`);
+      }
+    } else {
+      const errText = await vendorRes.text().catch(() => "");
+      console.log("[Apple Sales] Report not available:", vendorRes.status, errText.substring(0, 200));
+    }
+  } catch (err: any) { console.error("[Apple Sales]", err.message); }
+}
+
 // ─── Hono App ────────────────────────────────────────────────────────
 const app = new Hono();
 app.use("*", cors());
@@ -391,7 +456,7 @@ app.get("/api/dashboard", async (c) => {
     const uc = await pool.query("SELECT COUNT(*) as count FROM users");
     let tm = 0, te = 0, tp = 0; for (const [, ci] of circles) { tm += ci.members.length; te += ci.encouragements.length; tp += ci.prayerRequests.length; }
     const rv = await pool.query(`SELECT * FROM daily_revenue WHERE date >= CURRENT_DATE - INTERVAL '30 days' ORDER BY date DESC`).catch(() => ({ rows: [] }));
-    const wd = await pool.query(`SELECT * FROM daily_web_metrics WHERE date >= CURRENT_DATE - INTERVAL '7 days' ORDER BY date DESC`).catch(() => ({ rows: [] }));
+    const wd = await pool.query(`SELECT * FROM daily_web_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' ORDER BY date DESC`).catch(() => ({ rows: [] }));
     const ad = await pool.query(`SELECT * FROM daily_app_store_metrics WHERE date >= CURRENT_DATE - INTERVAL '7 days' ORDER BY date DESC`).catch(() => ({ rows: [] }));
     const re = await pool.query(`SELECT * FROM revenue_events ORDER BY created_at DESC LIMIT 20`).catch(() => ({ rows: [] }));
     const ss = await pool.query(`SELECT subscription_status, COUNT(*) as count FROM users GROUP BY subscription_status`).catch(() => ({ rows: [] }));
@@ -411,8 +476,11 @@ app.get("/dashboard", (c) => {
 const PORT = parseInt(process.env.PORT || "3000", 10);
 async function start() {
   await initDb(); await loadAllFromDb();
+  backfillPlausible().catch(() => {});
   pullPlausibleMetrics().catch(() => {});
+  pullAppleSalesReport().catch(() => {});
   setInterval(() => { pullPlausibleMetrics().catch(() => {}); }, 60 * 60 * 1000);
+  setInterval(() => { pullAppleSalesReport().catch(() => {}); }, 6 * 60 * 60 * 1000); // Every 6 hours
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API v2.2 on port ${info.port}`);
     console.log(`   PostHog write: ${POSTHOG_API_KEY ? "✓" : "✗"} | PostHog read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"}`);
