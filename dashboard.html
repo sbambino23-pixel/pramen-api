@@ -86,8 +86,8 @@ var B=location.origin,K=new URLSearchParams(location.search).get("key")||"",
     RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all";
 
 // Event colors & labels
-var C={app_opened:"#6366f1",prayer_logged:"#f59e0b",paywall_viewed:"#ef4444",paywall_plan_selected:"#ec4899",onboarding_completed:"#22c55e",circle_created:"#06b6d4",circle_left:"#64748b",prayer_request_created:"#8b5cf6",share_tapped:"#14b8a6",scripture_viewed:"#a78bfa",circle_invite_accepted:"#06b6d4",circle_member_joined:"#22d3ee",encouragement_sent:"#14b8a6",user_signed_up:"#22c55e",account_deleted:"#ef4444",email_opt_in:"#34d399",streak_milestone:"#f59e0b"};
-var L={app_opened:"App Open",prayer_logged:"Prayer",paywall_viewed:"Paywall",paywall_plan_selected:"Plan Tap",onboarding_completed:"Onboarding",circle_created:"Circle +",circle_left:"Circle Left",prayer_request_created:"Request",share_tapped:"Share",scripture_viewed:"Scripture",circle_invite_accepted:"Invite ✓",circle_member_joined:"Member +",encouragement_sent:"Encourage",user_signed_up:"Signup",account_deleted:"Delete",email_opt_in:"Email Opt-in",streak_milestone:"Streak 🔥"};
+var C={app_opened:"#6366f1",prayer_logged:"#f59e0b",paywall_viewed:"#ef4444",paywall_plan_selected:"#ec4899",onboarding_completed:"#22c55e",circle_created:"#06b6d4",circle_left:"#64748b",prayer_request_created:"#8b5cf6",share_tapped:"#14b8a6",scripture_viewed:"#a78bfa",circle_invite_accepted:"#06b6d4",circle_member_joined:"#22d3ee",encouragement_sent:"#14b8a6",user_signed_up:"#22c55e",account_deleted:"#ef4444",email_opt_in:"#34d399",streak_milestone:"#f59e0b",subscription_started:"#22c55e",subscription_cancelled:"#ef4444",subscription_renewed:"#14b8a6",subscription_expired:"#ef4444",lifetime_purchased:"#C9A44A",billing_issue_detected:"#f97316"};
+var L={app_opened:"App Open",prayer_logged:"Prayer",paywall_viewed:"Paywall",paywall_plan_selected:"Plan Tap",onboarding_completed:"Onboarding",circle_created:"Circle +",circle_left:"Circle Left",prayer_request_created:"Request",share_tapped:"Share",scripture_viewed:"Scripture",circle_invite_accepted:"Invite ✓",circle_member_joined:"Member +",encouragement_sent:"Encourage",user_signed_up:"Signup",account_deleted:"Delete",email_opt_in:"Email Opt-in",streak_milestone:"Streak 🔥",subscription_started:"💰 Subscribed",subscription_cancelled:"❌ Cancelled",subscription_renewed:"🔄 Renewed",subscription_expired:"Expired",lifetime_purchased:"💎 Lifetime",billing_issue_detected:"⚠️ Billing Issue"};
 
 // ─── Date helpers ──────────────────────────────────────────────
 function daysAgo(n){var d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-n);return d}
@@ -157,7 +157,7 @@ function computeMetrics(events){
   var users=new Set(),pTaps=0,prayers=0,signups=0,pwViews=0,circles=0,scrip=0,onboard=0,enc=0;
   var pwUsers=new Set(),ptUsers=new Set();
   var ec={},topics={},plans={},dauMap={};
-  var fnSets={first_open:new Set(),onboarding:new Set(),paywall:new Set(),plan_tap:new Set(),prayer:new Set(),circle:new Set(),signup:new Set(),scripture:new Set()};
+  var fnSets={first_open:new Set(),onboarding:new Set(),paywall:new Set(),plan_tap:new Set(),subscribed:new Set(),cancelled:new Set(),prayer:new Set(),circle:new Set(),signup:new Set(),scripture:new Set()};
   for(var i=0;i<events.length;i++){
     var e=events[i];
     if(e.event==="$identify")continue;
@@ -172,6 +172,8 @@ function computeMetrics(events){
     if(e.event==="scripture_viewed"){scrip++;fnSets.scripture.add(e.full_user_id)}
     if(e.event==="onboarding_completed"){onboard++;fnSets.onboarding.add(e.full_user_id)}
     if(e.event==="encouragement_sent")enc++;
+    if(e.event==="subscription_started"||e.event==="lifetime_purchased")fnSets.subscribed.add(e.full_user_id);
+    if(e.event==="subscription_cancelled")fnSets.cancelled.add(e.full_user_id);
     if(e.properties.is_first_open===true||e.properties.is_first_open==="True")fnSets.first_open.add(e.full_user_id);
   }
   var dau=Object.entries(dauMap).map(function(x){return{date:x[0],dau:x[1].size}}).sort(function(a,b){return b.date.localeCompare(a.date)});
@@ -307,13 +309,18 @@ function rFn(){
     {l:"Paywall View",c:fn.paywall.size,cl:"var(--red)",k:"paywall"},
     {l:"Plan Tapped",c:fn.plan_tap.size,cl:"var(--pink)",k:"plan_tap"},
     {l:"Signed Up",c:fn.signup.size,cl:"var(--indigo)",k:"signup"},
+    {l:"💰 Subscribed",c:fn.subscribed.size,cl:"var(--gold)",k:"subscribed"},
     {l:"First Prayer",c:fn.prayer.size,cl:"var(--orange)",k:"prayer"},
     {l:"Scripture",c:fn.scripture.size,cl:"var(--purple)",k:"scripture"},
     {l:"Circle Created",c:fn.circle.size,cl:"var(--teal)",k:"circle"}
   ];
   var mx=steps[0].c||1;
 
-  var html='<div class="cd"><h3>Activation Funnel ('+RANGE+'d)'+
+  var html='';
+  // Cancelled / Churned alert
+  if(fn.cancelled.size>0)html+='<div class="insight insight-crit"><span class="insight-icon">❌</span>'+fn.cancelled.size+' user'+(fn.cancelled.size>1?'s':'')+' cancelled subscription in this period</div>';
+
+  html+='<div class="cd"><h3>Activation Funnel ('+RANGE+'d)'+
     (COMPARE?' <span style="color:var(--blue);font-size:8px">vs previous '+RANGE+'d</span>':'')+'</h3>';
   html+=steps.map(function(s,i){
     var p2=s.c/mx*100;
@@ -335,8 +342,10 @@ function rFn(){
     {l:"Onboarding → Paywall",v:pct(fn.paywall.size,fn.onboarding.size)},
     {l:"Paywall → Plan Tap",v:pct(fn.plan_tap.size,fn.paywall.size)},
     {l:"Plan Tap → Signup",v:pct(fn.signup.size,fn.plan_tap.size)},
+    {l:"Signup → Subscribed",v:pct(fn.subscribed.size,fn.signup.size)},
     {l:"Signup → Prayer",v:pct(fn.prayer.size,fn.signup.size)},
     {l:"Signup → Circle",v:pct(fn.circle.size,fn.signup.size)},
+    {l:"Open → Subscribed (overall)",v:pct(fn.subscribed.size,fn.first_open.size)},
     {l:"Open → Signup (overall)",v:pct(fn.signup.size,fn.first_open.size)},
     {l:"Open → Circle (overall)",v:pct(fn.circle.size,fn.first_open.size)},
   ];
