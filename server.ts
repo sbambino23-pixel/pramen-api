@@ -268,18 +268,46 @@ app.post("/webhooks/revenuecat", async (c) => {
     if (sec && ah !== `Bearer ${sec}`) return c.json({ error: "Unauthorized" }, 401);
     const body = await c.req.json(); const ev = body.event; if (!ev?.type) return c.json({ error: "Invalid" }, 400);
     const name = RC_MAP[ev.type]; if (!name) return c.json({ status: "skipped" });
-    const uid = ev.app_user_id; const pid = ev.product_id || ""; const plan = rcPlan(pid); const status = rcStatus(ev.type);
-    await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, uid]).catch(() => {});
-    trackEvent(uid, name, { plan, product_id: pid, price: ev.price, currency: ev.currency, store: ev.store, environment: ev.environment, $revenue: ev.price || 0, $currency: ev.currency || "USD" });
-    identifyUser(uid, { subscription_status: status, subscription_plan: plan, last_revenue_event: name });
+    const rcUid = ev.app_user_id; const pid = ev.product_id || ""; const plan = rcPlan(pid); const status = rcStatus(ev.type);
+
+    // ─── Resolve RC anonymous ID to backend user UUID ─────────
+    // RC sends app_user_id which could be $RCAnonymousID:xxx or our backend UUID
+    // Also check aliases and original_app_user_id for the real user
+    let resolvedUid = rcUid;
+    const candidateIds = [rcUid, ev.original_app_user_id, ...(ev.aliases || [])].filter(Boolean);
+    
+    // Try each candidate ID against our users table
+    for (const candidateId of candidateIds) {
+      if (!candidateId || candidateId.startsWith("$RCAnonymous")) continue;
+      try {
+        const match = await pool.query("SELECT id FROM users WHERE id=$1 OR device_user_id=$1 LIMIT 1", [candidateId]);
+        if (match.rows.length > 0) { resolvedUid = match.rows[0].id; break; }
+      } catch {}
+    }
+    
+    // If still anonymous, try to find user who most recently tapped a plan (best-effort match)
+    if (resolvedUid.startsWith("$RCAnonymous")) {
+      try {
+        // Check if any user has this RC ID stored as device_user_id
+        const match = await pool.query("SELECT id FROM users WHERE device_user_id=$1 LIMIT 1", [rcUid]);
+        if (match.rows.length > 0) resolvedUid = match.rows[0].id;
+      } catch {}
+    }
+
+    await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, resolvedUid]).catch(() => {});
+    // Also try updating by the original RC ID in case device_user_id matches
+    if (resolvedUid !== rcUid) await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, rcUid]).catch(() => {});
+    
+    trackEvent(resolvedUid, name, { plan, product_id: pid, price: ev.price, currency: ev.currency, store: ev.store, environment: ev.environment, rc_original_id: rcUid, $revenue: ev.price || 0, $currency: ev.currency || "USD" });
+    identifyUser(resolvedUid, { subscription_status: status, subscription_plan: plan, last_revenue_event: name });
     try {
       const price = ev.price || 0; const net = price * (1 - APPLE_CUT); const today = new Date().toISOString().split("T")[0];
-      await pool.query(`INSERT INTO revenue_events (user_id,event_type,plan,product_id,price,currency,environment) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [uid, name, plan, pid, price, ev.currency||"USD", ev.environment||"production"]);
+      await pool.query(`INSERT INTO revenue_events (user_id,event_type,plan,product_id,price,currency,environment) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [resolvedUid, name, plan, pid, price, ev.currency||"USD", ev.environment||"production"]);
       if (name === "subscription_started" || name === "lifetime_purchased") await pool.query(`INSERT INTO daily_revenue (date,new_subscribers,revenue_gross,revenue_net) VALUES ($1,1,$2,$3) ON CONFLICT (date) DO UPDATE SET new_subscribers=daily_revenue.new_subscribers+1,revenue_gross=daily_revenue.revenue_gross+$2,revenue_net=daily_revenue.revenue_net+$3,updated_at=NOW()`, [today, price, net]);
       else if (name === "subscription_renewed") await pool.query(`INSERT INTO daily_revenue (date,renewals,revenue_gross,revenue_net) VALUES ($1,1,$2,$3) ON CONFLICT (date) DO UPDATE SET renewals=daily_revenue.renewals+1,revenue_gross=daily_revenue.revenue_gross+$2,revenue_net=daily_revenue.revenue_net+$3,updated_at=NOW()`, [today, price, net]);
       else if (name === "subscription_cancelled" || name === "subscription_expired") await pool.query(`INSERT INTO daily_revenue (date,cancellations) VALUES ($1,1) ON CONFLICT (date) DO UPDATE SET cancellations=daily_revenue.cancellations+1,updated_at=NOW()`, [today]);
     } catch (e: any) { console.error("[Revenue]", e.message); }
-    console.log(`[RC] ${ev.type} → ${name} | ${uid} ${plan}`); return c.json({ status: "ok" });
+    console.log(`[RC] ${ev.type} → ${name} | rc:${rcUid.substring(0,12)} → resolved:${resolvedUid.substring(0,12)} ${plan}`); return c.json({ status: "ok" });
   } catch (e) { console.error("[RC]", e); return c.json({ error: "Error" }, 500); }
 });
 
