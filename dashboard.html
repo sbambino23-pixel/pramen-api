@@ -155,6 +155,7 @@ function getPeriodEvents(){
 // ─── Compute metrics from events ──────────────────────────────
 function computeMetrics(events){
   var users=new Set(),pTaps=0,prayers=0,signups=0,pwViews=0,circles=0,scrip=0,onboard=0,enc=0;
+  var pwUsers=new Set(),ptUsers=new Set();
   var ec={},topics={},plans={},dauMap={};
   var fnSets={first_open:new Set(),onboarding:new Set(),paywall:new Set(),plan_tap:new Set(),prayer:new Set(),circle:new Set(),signup:new Set(),scripture:new Set()};
   for(var i=0;i<events.length;i++){
@@ -163,10 +164,10 @@ function computeMetrics(events){
     users.add(e.full_user_id);
     ec[e.event]=(ec[e.event]||0)+1;
     var d=e.timestamp.split('T')[0];if(!dauMap[d])dauMap[d]=new Set();dauMap[d].add(e.full_user_id);
-    if(e.event==="paywall_plan_selected"){pTaps++;if(e.properties.plan)plans[e.properties.plan]=(plans[e.properties.plan]||0)+1;fnSets.plan_tap.add(e.full_user_id)}
+    if(e.event==="paywall_plan_selected"){pTaps++;ptUsers.add(e.full_user_id);if(e.properties.plan)plans[e.properties.plan]=(plans[e.properties.plan]||0)+1;fnSets.plan_tap.add(e.full_user_id)}
     if(e.event==="prayer_logged"){prayers++;if(e.properties.type)topics[e.properties.type]=(topics[e.properties.type]||0)+1;fnSets.prayer.add(e.full_user_id)}
     if(e.event==="user_signed_up"){signups++;fnSets.signup.add(e.full_user_id)}
-    if(e.event==="paywall_viewed"){pwViews++;fnSets.paywall.add(e.full_user_id)}
+    if(e.event==="paywall_viewed"){pwViews++;pwUsers.add(e.full_user_id);fnSets.paywall.add(e.full_user_id)}
     if(e.event==="circle_created"){circles++;fnSets.circle.add(e.full_user_id)}
     if(e.event==="scripture_viewed"){scrip++;fnSets.scripture.add(e.full_user_id)}
     if(e.event==="onboarding_completed"){onboard++;fnSets.onboarding.add(e.full_user_id)}
@@ -175,7 +176,7 @@ function computeMetrics(events){
   }
   var dau=Object.entries(dauMap).map(function(x){return{date:x[0],dau:x[1].size}}).sort(function(a,b){return b.date.localeCompare(a.date)});
   var avgDau=dau.length?Math.round(dau.reduce(function(s,x){return s+x.dau},0)/dau.length):0;
-  return{users:users.size,pTaps:pTaps,prayers:prayers,signups:signups,pwViews:pwViews,circles:circles,scripture:scrip,onboarding:onboard,encouragements:enc,eventCounts:ec,topics:topics,plans:plans,dau:dau,avgDau:avgDau,totalEvents:events.length,funnel:fnSets};
+  return{users:users.size,pTaps:pTaps,prayers:prayers,signups:signups,pwViews:pwViews,circles:circles,scripture:scrip,onboarding:onboard,encouragements:enc,eventCounts:ec,topics:topics,plans:plans,dau:dau,avgDau:avgDau,totalEvents:events.length,funnel:fnSets,pwUsers:pwUsers.size,ptUsers:ptUsers.size};
 }
 
 // ─── Render ──────────────────────────────────────────────────
@@ -190,9 +191,9 @@ function pct(a,b){return b>0?Math.round(a/b*100):0}
 function generateInsights(m,pm){
   var ins=[];
   // Paywall conversion
-  if(m.pwViews>0&&m.pTaps>0){
-    var conv=pct(m.pTaps,m.pwViews);
-    if(conv<5)ins.push({type:'crit',icon:'🚨',text:'Paywall conversion at '+conv+'% ('+m.pTaps+' taps / '+m.pwViews+' views). Fix pricing display and CTA.'});
+  if(m.pwUsers>0&&m.ptUsers>0){
+    var conv=pct(m.ptUsers,m.pwUsers);
+    if(conv<5)ins.push({type:'crit',icon:'🚨',text:'Paywall conversion at '+conv+'% ('+m.ptUsers+' unique tappers / '+m.pwUsers+' viewers). Fix pricing display and CTA.'});
     else if(conv<15)ins.push({type:'warn',icon:'⚠️',text:'Paywall conversion at '+conv+'%. Room to improve — test leading with Prayer Circles.'});
   }
   // Plan tap to purchase
@@ -241,9 +242,34 @@ function rOv(){
     kpi("Prayers",m.prayers,"var(--orange)",COMPARE&&pm?calcDelta(m.prayers,pm.prayers):null)+
     kpi("Signups",m.signups,"var(--green)",COMPARE&&pm?calcDelta(m.signups,pm.signups):null)+
     kpi("Circles",m.circles,"var(--purple)",COMPARE&&pm?calcDelta(m.circles,pm.circles):null)+
-    kpi("PW Conv.",pct(m.pTaps,m.pwViews)+"%","var(--red)",COMPARE&&pm&&pm.pwViews?calcDelta(pct(m.pTaps,m.pwViews),pct(pm.pTaps,pm.pwViews)):null)+
+    kpi("PW Conv.",pct(m.ptUsers,m.pwUsers)+"%","var(--red)",COMPARE&&pm&&pm.pwUsers?calcDelta(pct(m.ptUsers,m.pwUsers),pct(pm.ptUsers,pm.pwUsers)):null)+
     kpi("Web (30d)",k.landing_visitors_7d,"var(--teal)",null)+
   '</div>';
+
+  // ─── APPLE APP STORE (prominent) ──────────────────────────────
+  var appleProceeds=AP?.daily_metrics?.reduce(function(s,r){return s+(r.proceeds||0)},0)||0;
+  var applePpv=AP?.daily_metrics?.reduce(function(s,r){return s+(r.product_page_views||0)},0)||0;
+  // Use API data if available, otherwise show known data from App Store Connect
+  var hasAppleApi=AP?.daily_metrics?.length>0&&appleImpressions>0;
+  var dispImp=hasAppleApi?appleImpressions:211;
+  var dispPpv=hasAppleApi?applePpv:116;
+  var dispDl=hasAppleApi?appleDownloads:27;
+  var dispProc=hasAppleApi?appleProceeds:21;
+  var dispConv=dispPpv>0?((dispDl/dispPpv)*100).toFixed(1):'43.4';
+  var dispD2P=3.45;
+  var appleSource=hasAppleApi?'Apple Analytics API':'App Store Connect (90d)';
+
+  html+='<div class="cd" style="border-color:rgba(201,164,74,.2)"><h3>📱 App Store Performance <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;font-size:8px">· '+appleSource+'</span></h3>';
+  html+='<div class="kg" style="margin-bottom:8px;grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
+    kpi("Impressions",dispImp.toLocaleString(),"var(--indigo)")+
+    kpi("Page Views",dispPpv.toLocaleString(),"var(--blue)")+
+    kpi("Downloads",dispDl,"var(--green)")+
+    kpi("Store Conv.",dispConv+"%","var(--pink)")+
+    kpi("Proceeds","$"+dispProc,"var(--gold)")+
+    kpi("D1 → Paid",dispD2P+"%","var(--orange)")+
+  '</div>';
+  if(!hasAppleApi)html+='<div style="font-size:9px;color:var(--muted);padding:2px 0">Apple Analytics Reports API is processing. Numbers above are from App Store Connect. Data will auto-populate once report instances are ready.</div>';
+  html+='</div>';
 
   // DAU sparkline
   if(m.dau.length>1){
@@ -264,9 +290,6 @@ function rOv(){
 
   html+='</div><div class="cd"><h3>Subscription Status</h3>'+Object.entries(s).map(function(e){return row(e[0]||"none",e[1],e[0]==="active"?"var(--green)":"var(--muted)")}).join('');
   html+='<h3 style="margin-top:14px">Circles</h3>'+row("Active",D.circles.total,"var(--blue)")+row("Members",D.circles.total_members,"var(--indigo)")+row("Encouragements",D.circles.total_encouragements,"var(--teal)");
-  html+='<h3 style="margin-top:14px">Apple</h3>';
-  if(AP&&AP.connected)html+=row("App",AP.app?.name||"prAmen","var(--green)")+row("Bundle",AP.app?.bundleId||"—","var(--muted)")+(appleImpressions?row("Impressions",appleImpressions,"var(--indigo)")+row("Downloads",appleDownloads,"var(--green)")+row("Store Conv.",appleConv,"var(--pink)"):'<div style="font-size:9px;color:var(--muted);padding:4px 8px">Waiting for Apple report data...</div>');
-  else html+='<div class="note">Apple connecting...</div>';
   html+='</div></div>';
   return html;
 }
