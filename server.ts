@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { serve } from "@hono/node-server";
 import { randomUUID, createHash, createSign } from "crypto";
 import { readFileSync } from "fs";
+import http2 from "http2";
 import pg from "pg";
 
 const { Pool } = pg;
@@ -28,6 +29,15 @@ const ASC_ISSUER_ID = process.env.ASC_ISSUER_ID || "";
 const ASC_PRIVATE_KEY = (process.env.ASC_PRIVATE_KEY || "").replace(/\\n/g, "\n");
 const PRAMEN_APP_ID = "6759958354";
 const REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_KEY || "";
+
+// ─── APNs Config ─────────────────────────────────────────────────────
+const APNS_KEY_ID = process.env.APNS_KEY_ID || "";
+const APNS_TEAM_ID = process.env.APNS_TEAM_ID || "5QTJL794PU";
+const APNS_BUNDLE_ID = process.env.APNS_BUNDLE_ID || "app.rork.faithlock-app-vkrdyww";
+const APNS_PRIVATE_KEY = (process.env.APNS_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+const APNS_HOST = process.env.APNS_SANDBOX === "true"
+  ? "api.sandbox.push.apple.com"
+  : "api.push.apple.com";
 
 // ─── PostHog Helpers ─────────────────────────────────────────────────
 function trackEvent(distinctId: string, event: string, properties?: Record<string, any>) {
@@ -57,6 +67,143 @@ function generateASCToken(): string {
   } catch (err: any) { console.error("[ASC] JWT error:", err.message); return ""; }
 }
 
+// ─── APNs JWT & Push ─────────────────────────────────────────────────
+let apnsJwtCache: { token: string; generatedAt: number } | null = null;
+
+function generateAPNsJWT(): string {
+  if (!APNS_KEY_ID || !APNS_PRIVATE_KEY || !APNS_TEAM_ID) return "";
+  // Reuse token if less than 50 minutes old (Apple allows up to 60)
+  if (apnsJwtCache && Date.now() - apnsJwtCache.generatedAt < 50 * 60 * 1000) {
+    return apnsJwtCache.token;
+  }
+  try {
+    const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: APNS_KEY_ID })).toString("base64url");
+    const now = Math.floor(Date.now() / 1000);
+    const payload = Buffer.from(JSON.stringify({ iss: APNS_TEAM_ID, iat: now })).toString("base64url");
+    const signer = createSign("SHA256");
+    signer.update(`${header}.${payload}`);
+    const signature = signer.sign({ key: APNS_PRIVATE_KEY, dsaEncoding: "ieee-p1363" }, "base64url");
+    const jwt = `${header}.${payload}.${signature}`;
+    apnsJwtCache = { token: jwt, generatedAt: Date.now() };
+    return jwt;
+  } catch (err: any) {
+    console.error("[APNs] JWT error:", err.message);
+    return "";
+  }
+}
+
+interface PushPayload {
+  title: string;
+  body: string;
+  type: string;
+  circleCode?: string;
+  circleName?: string;
+}
+
+function sendPush(deviceToken: string, payload: PushPayload): void {
+  const jwt = generateAPNsJWT();
+  if (!jwt || !deviceToken) return;
+
+  const apnsPayload = JSON.stringify({
+    aps: {
+      alert: { title: payload.title, body: payload.body },
+      sound: "default",
+      badge: 1,
+      "mutable-content": 1,
+    },
+    type: payload.type,
+    circleCode: payload.circleCode || "",
+    circleName: payload.circleName || "",
+  });
+
+  try {
+    const client = http2.connect(`https://${APNS_HOST}`);
+    client.on("error", (err) => {
+      console.error("[APNs] Connection error:", err.message);
+      client.close();
+    });
+
+    const req = client.request({
+      ":method": "POST",
+      ":path": `/3/device/${deviceToken}`,
+      authorization: `bearer ${jwt}`,
+      "apns-topic": APNS_BUNDLE_ID,
+      "apns-push-type": "alert",
+      "apns-priority": "10",
+      "apns-expiration": "0",
+      "content-type": "application/json",
+    });
+
+    req.on("response", (headers) => {
+      const status = headers[":status"];
+      if (status !== 200) {
+        // Read error body
+        let body = "";
+        req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+        req.on("end", () => {
+          console.log(`[APNs] Push failed status=${status} token=${deviceToken.substring(0, 8)}... body=${body}`);
+          client.close();
+        });
+        return;
+      }
+    });
+
+    req.on("error", (err) => {
+      console.error("[APNs] Request error:", err.message);
+    });
+
+    req.on("end", () => {
+      client.close();
+    });
+
+    req.write(apnsPayload);
+    req.end();
+  } catch (err: any) {
+    console.error("[APNs] Send error:", err.message);
+  }
+}
+
+// Send push to a specific user by their backend user ID
+async function pushToUser(userId: string, payload: PushPayload): Promise<void> {
+  try {
+    const result = await pool.query(
+      "SELECT device_token FROM users WHERE id=$1 AND device_token IS NOT NULL",
+      [userId]
+    );
+    if (result.rows[0]?.device_token) {
+      sendPush(result.rows[0].device_token, payload);
+    }
+  } catch (err: any) {
+    console.error("[APNs] pushToUser error:", err.message);
+  }
+}
+
+// Send push to all members of a circle EXCEPT the sender
+async function pushToCircleMembers(
+  circle: StoredCircle,
+  excludeUserId: string,
+  payload: PushPayload
+): Promise<void> {
+  const memberIds = circle.members
+    .map((m) => m.userId)
+    .filter((id) => id !== excludeUserId);
+  if (memberIds.length === 0) return;
+
+  try {
+    const result = await pool.query(
+      "SELECT device_token FROM users WHERE id = ANY($1) AND device_token IS NOT NULL",
+      [memberIds]
+    );
+    for (const row of result.rows) {
+      if (row.device_token) {
+        sendPush(row.device_token, payload);
+      }
+    }
+  } catch (err: any) {
+    console.error("[APNs] pushToCircleMembers error:", err.message);
+  }
+}
+
 // ─── Postgres ────────────────────────────────────────────────────────
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_URL?.includes("localhost") ? false : { rejectUnauthorized: false } });
 
@@ -68,6 +215,8 @@ async function initDb(): Promise<void> {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_user_id TEXT UNIQUE`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT DEFAULT 'apple'`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_opt_in BOOLEAN DEFAULT false`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_token TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_token_updated_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, streak_count INTEGER DEFAULT 0, highest_streak INTEGER DEFAULT 0, total_prayers INTEGER DEFAULT 0, total_minutes INTEGER DEFAULT 0, last_prayed_date TIMESTAMPTZ, sessions JSONB DEFAULT '[]'::jsonb, preferences JSONB DEFAULT '{}'::jsonb, circle_codes TEXT[] DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_apple_user_id ON users(apple_user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_google_user_id ON users(google_user_id)`);
@@ -78,7 +227,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS daily_product_metrics (date DATE PRIMARY KEY, dau INT DEFAULT 0, new_users INT DEFAULT 0, prayers_logged INT DEFAULT 0, circles_created INT DEFAULT 0, invites_accepted INT DEFAULT 0, encouragements_sent INT DEFAULT 0, paywall_views INT DEFAULT 0, plan_taps INT DEFAULT 0, scripture_views INT DEFAULT 0, signups INT DEFAULT 0, account_deletions INT DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_app_store_metrics (date DATE PRIMARY KEY, impressions INT DEFAULT 0, product_page_views INT DEFAULT 0, app_units INT DEFAULT 0, conversion_rate REAL DEFAULT 0, proceeds REAL DEFAULT 0, active_devices INT DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS revenue_events (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT, event_type TEXT NOT NULL, plan TEXT, product_id TEXT, price REAL DEFAULT 0, currency TEXT DEFAULT 'USD', environment TEXT DEFAULT 'production', created_at TIMESTAMPTZ DEFAULT NOW())`);
-    console.log("DB initialized (circles + users + analytics)");
+    console.log("DB initialized (circles + users + analytics + apns)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -119,21 +268,17 @@ async function backfillPlausible(): Promise<void> {
   if (!PLAUSIBLE_API_KEY) return;
   try {
     const h = { Authorization: `Bearer ${PLAUSIBLE_API_KEY}` }; const base = "https://plausible.io/api/v1/stats";
-    // Check if we already have historical data
     const existing = await pool.query("SELECT COUNT(*) as c FROM daily_web_metrics"); 
     if (parseInt(existing.rows[0]?.c || "0") > 3) { console.log("[Plausible] Historical data exists, skipping backfill"); return; }
-    // Pull 30-day timeseries
     const tsRes = await fetch(`${base}/timeseries?site_id=${PLAUSIBLE_SITE_ID}&period=30d&metrics=visitors,pageviews,bounce_rate,visit_duration`, { headers: h });
     if (!tsRes.ok) { console.error("[Plausible] Timeseries failed:", tsRes.status); return; }
     const tsData = (await tsRes.json()) as any;
     const days = tsData?.results || [];
-    // Also pull App Store clicks per day
     let clicksByDay: Record<string, number> = {};
     try {
       const clRes = await fetch(`${base}/timeseries?site_id=${PLAUSIBLE_SITE_ID}&period=30d&metrics=events&filters=event:name==App%20Store%20Click`, { headers: h });
       if (clRes.ok) { const clData = (await clRes.json()) as any; for (const d of (clData?.results || [])) clicksByDay[d.date] = d.events || 0; }
     } catch {}
-    // Insert each day
     let inserted = 0;
     for (const day of days) {
       if (!day.date || day.visitors === 0) continue;
@@ -150,23 +295,20 @@ async function pullAppleSalesReport(): Promise<void> {
   const token = generateASCToken();
   if (!token) return;
   try {
-    // Get yesterday's date (Apple reports have 1-day delay)
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0].replace(/-/g, "");
-    // Try to fetch sales report — requires vendor number, try to discover it
     const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/a]gzip, application/json" }
     });
     if (vendorRes.ok) {
       const text = await vendorRes.text();
       console.log("[Apple Sales] Got report, length:", text.length);
-      // Parse TSV data if available
       const lines = text.split("\n").filter(l => l.trim());
       if (lines.length > 1) {
         let totalUnits = 0; let totalProceeds = 0;
         for (let i = 1; i < lines.length; i++) {
           const cols = lines[i].split("\t");
-          totalUnits += parseInt(cols[7] || "0") || 0; // Units column
-          totalProceeds += parseFloat(cols[8] || "0") || 0; // Developer proceeds
+          totalUnits += parseInt(cols[7] || "0") || 0;
+          totalProceeds += parseFloat(cols[8] || "0") || 0;
         }
         const dateStr = yesterday.substring(0,4) + "-" + yesterday.substring(4,6) + "-" + yesterday.substring(6,8);
         await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=$2,proceeds=$3,updated_at=NOW()`, [dateStr, totalUnits, totalProceeds]);
@@ -184,7 +326,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.3.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.4.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -248,6 +390,21 @@ app.get("/api/user/data", async (c) => { const ah = c.req.header("Authorization"
 app.put("/api/user/data", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const b = await c.req.json(); try { await pool.query(`INSERT INTO user_data (user_id,streak_count,highest_streak,total_prayers,total_minutes,last_prayed_date,sessions,preferences,circle_codes,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()) ON CONFLICT (user_id) DO UPDATE SET streak_count=GREATEST(user_data.streak_count,$2),highest_streak=GREATEST(user_data.highest_streak,$3),total_prayers=GREATEST(user_data.total_prayers,$4),total_minutes=GREATEST(user_data.total_minutes,$5),last_prayed_date=GREATEST(user_data.last_prayed_date,$6),sessions=CASE WHEN jsonb_array_length($7::jsonb)>jsonb_array_length(user_data.sessions) THEN $7 ELSE user_data.sessions END,preferences=$8,circle_codes=$9,updated_at=NOW()`, [u.id, b.streakCount||0, b.highestStreak||0, b.totalPrayers||0, b.totalMinutes||0, b.lastPrayedDate||null, JSON.stringify(b.sessions||[]), JSON.stringify(b.preferences||{}), b.circleCodes||[]]); if (b.userName && b.userName !== u.name) await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [b.userName, u.id]); return c.json({ status: "ok", synced: true }); } catch (e: any) { return c.json({ error: "Sync failed", detail: e.message }, 500); } });
 app.put("/api/user/name", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { name } = await c.req.json(); if (!name?.trim()) return c.json({ error: "Name required" }, 400); await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [name.trim(), u.id]); for (const [, ci] of circles) { const m = ci.members.find(m => m.userId === u.id || m.userId === u.device_user_id); if (m) { m.name = name.trim(); await saveCircleToDb(ci); } } return c.json({ success: true, name: name.trim() }); });
 
+// ─── Device Token ────────────────────────────────────────────────────
+app.put("/api/user/device-token", async (c) => {
+  const ah = c.req.header("Authorization");
+  if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401);
+  const u = await getUserByToken(ah.replace("Bearer ", ""));
+  if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const { deviceToken } = await c.req.json();
+  if (!deviceToken) return c.json({ error: "deviceToken required" }, 400);
+  await pool.query(
+    "UPDATE users SET device_token=$1, device_token_updated_at=NOW(), updated_at=NOW() WHERE id=$2",
+    [deviceToken, u.id]
+  );
+  return c.json({ success: true });
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // ─── EVENT CAPTURE ──────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
@@ -270,13 +427,9 @@ app.post("/webhooks/revenuecat", async (c) => {
     const name = RC_MAP[ev.type]; if (!name) return c.json({ status: "skipped" });
     const rcUid = ev.app_user_id; const pid = ev.product_id || ""; const plan = rcPlan(pid); const status = rcStatus(ev.type);
 
-    // ─── Resolve RC anonymous ID to backend user UUID ─────────
-    // RC sends app_user_id which could be $RCAnonymousID:xxx or our backend UUID
-    // Also check aliases and original_app_user_id for the real user
     let resolvedUid = rcUid;
     const candidateIds = [rcUid, ev.original_app_user_id, ...(ev.aliases || [])].filter(Boolean);
     
-    // Try each candidate ID against our users table
     for (const candidateId of candidateIds) {
       if (!candidateId || candidateId.startsWith("$RCAnonymous")) continue;
       try {
@@ -285,17 +438,14 @@ app.post("/webhooks/revenuecat", async (c) => {
       } catch {}
     }
     
-    // If still anonymous, try to find user who most recently tapped a plan (best-effort match)
     if (resolvedUid.startsWith("$RCAnonymous")) {
       try {
-        // Check if any user has this RC ID stored as device_user_id
         const match = await pool.query("SELECT id FROM users WHERE device_user_id=$1 LIMIT 1", [rcUid]);
         if (match.rows.length > 0) resolvedUid = match.rows[0].id;
       } catch {}
     }
 
     await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, resolvedUid]).catch(() => {});
-    // Also try updating by the original RC ID in case device_user_id matches
     if (resolvedUid !== rcUid) await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, rcUid]).catch(() => {});
     
     trackEvent(resolvedUid, name, { plan, product_id: pid, price: ev.price, currency: ev.currency, store: ev.store, environment: ev.environment, rc_original_id: rcUid, $revenue: ev.price || 0, $currency: ev.currency || "USD" });
@@ -316,15 +466,91 @@ app.post("/webhooks/revenuecat", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const code = generateCode(); const ci: StoredCircle = { id: randomUUID(), name: b.name || "Prayer Circle", code, emoji: b.emoji || "🏠", creatorUserId: b.userId, members: [{ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }], prayerRequests: [], encouragements: [], createdAt: new Date().toISOString() }; await saveCircleToDb(ci); trackEvent(b.userId, "circle_created", { circle_id: ci.id, circle_code: code, circle_name: ci.name }); return c.json({ circle: ci }, 201); });
 app.get("/api/circles/:code", (c) => { const ci = getCircle(c.req.param("code")); return ci ? c.json({ circle: ci }) : c.json({ error: "Not found" }, 404); });
-app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); return c.json({ circle: ci }); });
+
+app.post("/api/circles/:code/join", async (c) => {
+  const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName });
+  // Push notification to circle creator
+  pushToUser(ci.creatorUserId, {
+    title: "👥 " + (b.userName || "Someone") + " joined " + ci.name + "!",
+    body: ci.members.length + " members are now praying together",
+    type: "member_joined",
+    circleCode: code,
+    circleName: ci.name,
+  });
+  return c.json({ circle: ci });
+});
+
 app.put("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (b.name) ci.name = b.name; if (b.emoji) ci.emoji = b.emoji; await saveCircleToDb(ci); return c.json({ circle: ci }); });
-app.put("/api/circles/:code/members/:userId/status", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const b = await c.req.json(); const old = m.streakCount; if (b.streakCount !== undefined) m.streakCount = b.streakCount; if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate; if (b.name !== undefined) m.name = b.name; await saveCircleToDb(ci); if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() }); return c.json({ circle: ci }); });
+
+app.put("/api/circles/:code/members/:userId/status", async (c) => {
+  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const b = await c.req.json(); const old = m.streakCount; if (b.streakCount !== undefined) m.streakCount = b.streakCount; if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate; if (b.name !== undefined) m.name = b.name; await saveCircleToDb(ci);
+  if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) {
+    trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() });
+    // Push notification to other circle members about milestone
+    pushToCircleMembers(ci, c.req.param("userId"), {
+      title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!",
+      body: "Celebrate their dedication in " + ci.name,
+      type: "streak_milestone",
+      circleCode: c.req.param("code").toUpperCase(),
+      circleName: ci.name,
+    });
+  }
+  return c.json({ circle: ci });
+});
+
 app.delete("/api/circles/:code/members/:userId", async (c) => { const code = c.req.param("code").toUpperCase(); const uid = c.req.param("userId"); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); ci.members = ci.members.filter(m => m.userId !== uid); trackEvent(uid, "circle_left", { circle_code: code }); ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci); return c.json({ success: true }); });
 app.delete("/api/circles/:code", async (c) => { const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); trackEvent(ci.creatorUserId, "circle_deleted", { circle_code: code }); await deleteCircleFromDb(code); return c.json({ success: true }); });
-app.post("/api/circles/:code/prayer-requests", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.prayerRequests.unshift({ id: randomUUID(), requesterUserId: b.userId, requesterName: b.isAnonymous ? "Anonymous" : b.userName || "Someone", text: b.text, timestamp: new Date().toISOString(), isAnonymous: b.isAnonymous || false, prayedByUserIds: [] }); await saveCircleToDb(ci); trackEvent(b.userId, "prayer_request_created", { circle_code: c.req.param("code").toUpperCase(), is_anonymous: b.isAnonymous || false }); return c.json({ circle: ci }); });
-app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const req = ci.prayerRequests.find(r => r.id === c.req.param("rid")); if (!req) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (!req.prayedByUserIds.includes(b.userId)) { req.prayedByUserIds.push(b.userId); trackEvent(b.userId, "prayer_request_prayed", { circle_code: c.req.param("code").toUpperCase() }); } await saveCircleToDb(ci); return c.json({ circle: ci }); });
+
+app.post("/api/circles/:code/prayer-requests", async (c) => {
+  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.prayerRequests.unshift({ id: randomUUID(), requesterUserId: b.userId, requesterName: b.isAnonymous ? "Anonymous" : b.userName || "Someone", text: b.text, timestamp: new Date().toISOString(), isAnonymous: b.isAnonymous || false, prayedByUserIds: [] }); await saveCircleToDb(ci); trackEvent(b.userId, "prayer_request_created", { circle_code: c.req.param("code").toUpperCase(), is_anonymous: b.isAnonymous || false });
+  // Push notification to circle members
+  pushToCircleMembers(ci, b.userId, {
+    title: "📿 New prayer request in " + ci.name,
+    body: b.isAnonymous
+      ? "Someone shared a prayer request"
+      : (b.userName || "Someone") + " shared a prayer request",
+    type: "prayer_request",
+    circleCode: c.req.param("code").toUpperCase(),
+    circleName: ci.name,
+  });
+  return c.json({ circle: ci });
+});
+
+app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => {
+  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const req = ci.prayerRequests.find(r => r.id === c.req.param("rid")); if (!req) return c.json({ error: "Not found" }, 404); const b = await c.req.json();
+  if (!req.prayedByUserIds.includes(b.userId)) {
+    req.prayedByUserIds.push(b.userId);
+    trackEvent(b.userId, "prayer_request_prayed", { circle_code: c.req.param("code").toUpperCase() });
+    // Push notification to the prayer request creator
+    if (req.requesterUserId !== b.userId) {
+      const prayerName = ci.members.find(m => m.userId === b.userId)?.name || "Someone";
+      pushToUser(req.requesterUserId, {
+        title: "🙏 " + prayerName + " is praying for you",
+        body: req.text.length > 60 ? req.text.substring(0, 60) + "..." : req.text,
+        type: "prayer_request_prayed",
+        circleCode: c.req.param("code").toUpperCase(),
+        circleName: ci.name,
+      });
+    }
+  }
+  await saveCircleToDb(ci); return c.json({ circle: ci });
+});
+
 app.delete("/api/circles/:code/prayer-requests/:rid", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const before = ci.prayerRequests.length; ci.prayerRequests = ci.prayerRequests.filter(r => r.id !== c.req.param("rid")); if (ci.prayerRequests.length === before) return c.json({ error: "Not found" }, 404); await saveCircleToDb(ci); return c.json({ success: true }); });
-app.post("/api/circles/:code/encouragements", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.encouragements.push({ id: randomUUID(), toUserId: b.toUserId, fromUserId: b.fromUserId, fromName: b.fromName || "Someone", message: b.message, timestamp: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.fromUserId, "encouragement_sent", { circle_code: c.req.param("code").toUpperCase(), to_user_id: b.toUserId }); return c.json({ circle: ci }); });
+
+app.post("/api/circles/:code/encouragements", async (c) => {
+  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.encouragements.push({ id: randomUUID(), toUserId: b.toUserId, fromUserId: b.fromUserId, fromName: b.fromName || "Someone", message: b.message, timestamp: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.fromUserId, "encouragement_sent", { circle_code: c.req.param("code").toUpperCase(), to_user_id: b.toUserId });
+  // Push notification to recipient
+  pushToUser(b.toUserId, {
+    title: "🙏 " + (b.fromName || "Someone") + " sent you encouragement",
+    body: b.message || "Keep going — you're not alone!",
+    type: "encouragement",
+    circleCode: c.req.param("code").toUpperCase(),
+    circleName: ci.name,
+  });
+  return c.json({ circle: ci });
+});
+
 app.get("/api/circles/:code/info", (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const cr = ci.members.find(m => m.userId === ci.creatorUserId); return c.json({ name: ci.name, emoji: ci.emoji, memberCount: ci.members.length, creatorName: cr?.name || null }); });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -368,12 +594,10 @@ app.get("/api/dashboard/revenuecat", async (c) => {
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
   if (!REVENUECAT_SECRET_KEY) return c.json({ error: "REVENUECAT_SECRET_KEY not set" }, 500);
   try {
-    // Get all user IDs from our database
     const usersResult = await pool.query("SELECT id, device_user_id, subscription_status, name, email FROM users ORDER BY created_at DESC LIMIT 100");
     const subscribers: any[] = [];
     let totalRevenue = 0; let activeCount = 0; let trialCount = 0; let mrr = 0;
 
-    // Query RevenueCat for each user
     for (const user of usersResult.rows) {
       const ids = [user.id, user.device_user_id].filter(Boolean);
       for (const uid of ids) {
@@ -391,11 +615,9 @@ app.get("/api/dashboard/revenuecat", async (c) => {
           const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > new Date());
           const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > new Date());
           
-          // Calculate revenue from subscriptions
           let userRevenue = 0;
           for (const [pid, s] of Object.entries(subscriptions) as any[]) {
             if (s.store === "app_store" || s.store === "play_store") {
-              // Estimate from product ID
               if (pid.includes("yearly")) userRevenue += 29.99;
               else if (pid.includes("monthly")) userRevenue += 3.99;
               else if (pid.includes("lifetime")) userRevenue += 149.99;
@@ -406,7 +628,6 @@ app.get("/api/dashboard/revenuecat", async (c) => {
           if (hasTrial) trialCount++;
           totalRevenue += userRevenue;
           
-          // Calculate MRR
           for (const [pid, s] of Object.entries(subscriptions) as any[]) {
             const expires = new Date(s.expires_date);
             if (expires > new Date() && s.period_type !== "trial") {
@@ -436,7 +657,7 @@ app.get("/api/dashboard/revenuecat", async (c) => {
             })),
             first_seen: sub.first_seen,
           });
-          break; // Found this user, don't check device_user_id
+          break;
         } catch { continue; }
       }
     }
@@ -462,18 +683,15 @@ app.get("/api/dashboard/revenuecat", async (c) => {
 // ─── APPLE APP STORE ────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 
-// Initialize Apple Analytics Report Request (creates ONGOING request if none exists)
 async function initAppleAnalytics(): Promise<string | null> {
   const token = generateASCToken();
   if (!token) return null;
   try {
-    // Check for existing report requests
     const existingRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}/analyticsReportRequests?filter[accessType]=ONGOING`, { headers: { Authorization: `Bearer ${token}` } });
     if (existingRes.ok) {
       const existing = (await existingRes.json()) as any;
       if (existing.data?.length > 0) { console.log("[Apple] Existing report request found:", existing.data[0].id); return existing.data[0].id; }
     }
-    // Create new ONGOING report request
     const createRes = await fetch("https://api.appstoreconnect.apple.com/v1/analyticsReportRequests", {
       method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ data: { type: "analyticsReportRequests", attributes: { accessType: "ONGOING" }, relationships: { app: { data: { type: "apps", id: PRAMEN_APP_ID } } } } })
@@ -483,7 +701,6 @@ async function initAppleAnalytics(): Promise<string | null> {
   } catch (err: any) { console.error("[Apple] Init error:", err.message); return null; }
 }
 
-// Pull Apple Analytics data — tries ALL report categories and multiple column formats
 async function pullAppleAnalytics(): Promise<any> {
   const token = generateASCToken();
   if (!token) return null;
@@ -491,7 +708,6 @@ async function pullAppleAnalytics(): Promise<any> {
     const requestId = await initAppleAnalytics();
     if (!requestId) return null;
 
-    // Fetch ALL available reports (no category filter — catches everything)
     const reportsRes = await fetch(
       `https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/${requestId}/reports`,
       { headers: { Authorization: `Bearer ${token}` } }
@@ -510,7 +726,6 @@ async function pullAppleAnalytics(): Promise<any> {
 
     console.log("[Apple] Available reports:", reports.map((r: any) => `${r.attributes?.name} (${r.attributes?.category})`).join(", "));
 
-    // Sort reports: prefer Standard Discovery/Engagement reports
     const targetKeywords = ["discovery", "engagement", "download", "impression", "standard"];
     const sortedReports = [...reports].sort((a: any, b: any) => {
       const aName = (a.attributes?.name || "").toLowerCase();
@@ -525,7 +740,6 @@ async function pullAppleAnalytics(): Promise<any> {
     for (const report of sortedReports) {
       console.log("[Apple] Trying report:", report.attributes?.name, "id:", report.id);
 
-      // Get instances (most recent first)
       const instancesRes = await fetch(
         `https://api.appstoreconnect.apple.com/v1/analyticsReports/${report.id}/instances?limit=7`,
         { headers: { Authorization: `Bearer ${token}` } }
@@ -541,7 +755,6 @@ async function pullAppleAnalytics(): Promise<any> {
         continue;
       }
 
-      // Try each instance
       for (const instance of instances.slice(0, 3)) {
         console.log("[Apple] Instance:", instance.id, "granularity:", instance.attributes?.granularity);
 
@@ -576,7 +789,6 @@ async function pullAppleAnalytics(): Promise<any> {
           rows.push(row);
         }
 
-        // Store metrics — handle various Apple column name formats
         let stored = 0;
         for (const row of rows) {
           const date = row.date || row.report_date || row.day || row.calendar_date;
@@ -621,7 +833,6 @@ async function pullAppleAnalytics(): Promise<any> {
       }
     }
 
-    // No report had usable data
     return lastResult || { connected: true, status: "no_data", reports_available: reports.map((r: any) => r.attributes?.name) };
   } catch (err: any) {
     console.error("[Apple] Analytics error:", err.message);
@@ -629,7 +840,6 @@ async function pullAppleAnalytics(): Promise<any> {
   }
 }
 
-// Manual Apple metrics seeding (for when Analytics Reports API is still pending)
 app.post("/api/dashboard/appstore/seed", async (c) => {
   const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
@@ -658,13 +868,10 @@ app.get("/api/dashboard/appstore", async (c) => {
   const token = generateASCToken();
   if (!token) return c.json({ connected: false, error: "Apple API not configured" });
   try {
-    // Basic app info
     const appRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}`, { headers: { Authorization: `Bearer ${token}` } });
     if (!appRes.ok) return c.json({ connected: false, error: "Apple API " + appRes.status });
     const appData = (await appRes.json()) as any;
-    // Pull analytics
     const analytics = await pullAppleAnalytics();
-    // Get stored metrics from DB
     const stored = await pool.query(`SELECT * FROM daily_app_store_metrics ORDER BY date DESC LIMIT 30`).catch(() => ({ rows: [] }));
     return c.json({
       connected: true,
@@ -712,12 +919,12 @@ async function start() {
   initAppleAnalytics().catch(() => {});
   setInterval(() => { pullPlausibleMetrics().catch(() => {}); }, 60 * 60 * 1000);
   setInterval(() => { pullAppleSalesReport().catch(() => {}); }, 6 * 60 * 60 * 1000);
-  setInterval(() => { pullAppleAnalytics().catch(() => {}); }, 12 * 60 * 60 * 1000); // Twice daily
+  setInterval(() => { pullAppleAnalytics().catch(() => {}); }, 12 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v2.3 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v2.4 on port ${info.port}`);
     console.log(`   PostHog write: ${POSTHOG_API_KEY ? "✓" : "✗"} | PostHog read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"}`);
     console.log(`   Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"} | Apple: ${ASC_KEY_ID ? "✓" : "✗"} (pk ${ASC_PRIVATE_KEY.length} chars)`);
-    console.log(`   RevenueCat API: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"}`);
+    console.log(`   RevenueCat API: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Dashboard: /dashboard?key=...`);
     console.log(`   Circles: ${circles.size}\n`);
   });
