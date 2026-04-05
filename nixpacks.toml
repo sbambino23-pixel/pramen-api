@@ -2,7 +2,7 @@
 nixPkgs = ["nodejs_18"]
 
 [phases.install]
-cmds = ["npm ci || npm install --include=dev"]
+cmds = ["rm -rf node_modules && npm install --include=dev"]
 
 [phases.build]
 cmds = ["npm run build"]
