@@ -302,7 +302,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.0.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.1.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -544,7 +544,7 @@ async function generateDailyReflection(): Promise<{ verse: string; reference: st
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           system_instruction: { parts: [{ text: "You are a Bible verse curator. Respond ONLY with valid JSON, no markdown, no backticks, no extra text." }] },
-          contents: [{ role: "user", parts: [{ text: `Select a meaningful Bible verse for day ${dayOfYear} of the year. Choose from across the entire Bible — Psalms, Proverbs, Gospels, Epistles, Prophets. Do not repeat popular verses too often. Return JSON: {"verse": "the full verse text", "reference": "Book Chapter:Verse", "reflection": "2-3 warm sentences about what this verse means and why it matters today, written in the voice of a gentle pastoral guide named Lumi"}` }] }],
+          contents: [{ role: "user", parts: [{ text: `Select a meaningful Bible verse for the ${getLiturgicalSeason()} liturgical season, day ${dayOfYear} of the year. Choose verses appropriate to this season's themes. Return JSON: {"verse": "the full verse text", "reference": "Book Chapter:Verse", "reflection": "2-3 warm sentences about what this verse means and why it matters today, written in the voice of a gentle pastoral guide named Lumi"}` }] }],
         }),
       }
     );
@@ -561,6 +561,89 @@ async function generateDailyReflection(): Promise<{ verse: string; reference: st
     return null;
   } catch (err: any) { console.error("[Lumi] Generation error:", err.message); return null; }
 }
+
+// ─── Liturgical Season (server-side) ─────────────────────────────────
+function computeEasterDate(year: number): Date {
+  const a = year % 19, b = Math.floor(year / 100), c2 = year % 100;
+  const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c2 / 4), k = c2 % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+
+function getLiturgicalSeason(date: Date = new Date()): string {
+  const y = date.getFullYear(); const m = date.getMonth(); const d = date.getDate();
+  const easter = computeEasterDate(y);
+  const eDay = easter.getTime();
+  const today = new Date(y, m, d).getTime();
+  const day = 86400000;
+
+  // Ash Wednesday = Easter - 46 days
+  const ashWed = eDay - 46 * day;
+  // Palm Sunday = Easter - 7 days
+  const palmSun = eDay - 7 * day;
+  // Pentecost = Easter + 49 days
+  const pentecost = eDay + 49 * day;
+
+  // Advent: 4 Sundays before Dec 25
+  const christmas = new Date(y, 11, 25).getTime();
+  let adventStart = christmas;
+  let count = 0;
+  for (let i = 1; i <= 28; i++) {
+    const check = new Date(christmas - i * day);
+    if (check.getDay() === 0) { count++; if (count === 4) { adventStart = check.getTime(); break; } }
+  }
+
+  if (today >= adventStart && today < christmas) return "advent";
+  if (today >= christmas && today <= new Date(y, 0, 6).getTime() + (m === 11 ? 365 * day : 0)) return "christmas";
+  // Handle Jan 1-6 for Christmas
+  if (m === 0 && d <= 6) return "christmas";
+  if (today >= palmSun && today < eDay) return "holyWeek";
+  if (today >= ashWed && today < palmSun) return "lent";
+  if (today >= eDay && today <= pentecost) return "easter";
+  return "ordinaryTime";
+}
+
+app.get("/api/seasonal/verse-of-the-day", async (c) => {
+  const season = getLiturgicalSeason();
+  const today = new Date().toISOString().split("T")[0];
+
+  // Try existing daily reflection first
+  try {
+    const existing = await pool.query("SELECT * FROM daily_reflections WHERE date=$1", [today]);
+    if (existing.rows[0]) {
+      return c.json({ verse: existing.rows[0].verse, reference: existing.rows[0].reference, season });
+    }
+  } catch {}
+
+  // Generate on-demand if not yet available
+  if (GEMINI_API_KEY) {
+    const seasonNames: Record<string, string> = { advent: "Advent", christmas: "Christmas", lent: "Lent", holyWeek: "Holy Week", easter: "Easter", ordinaryTime: "Ordinary Time" };
+    try {
+      const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: "You are a Bible verse curator. Respond ONLY with valid JSON, no markdown, no backticks." }] },
+          contents: [{ role: "user", parts: [{ text: `Select a Bible verse appropriate for the ${seasonNames[season] || "Ordinary Time"} liturgical season, day ${dayOfYear}. Return JSON: {"verse": "full verse text", "reference": "Book Chapter:Verse"}` }] }],
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+        if (parsed.verse && parsed.reference) return c.json({ verse: parsed.verse, reference: parsed.reference, season });
+      }
+    } catch {}
+  }
+
+  // Fallback
+  return c.json({ verse: "Be still, and know that I am God.", reference: "Psalm 46:10", season });
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── FAVORITES ──────────────────────────────────────────────────
@@ -1019,7 +1102,7 @@ async function start() {
   generateDailyReflection().catch(() => {});
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.1 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
