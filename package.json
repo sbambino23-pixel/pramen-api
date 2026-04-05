@@ -1,4 +1,4 @@
-cat > package.json << 'EOF'
+
 {
   "name": "pramen-api",
   "version": "2.5.0",
@@ -25,4 +25,4 @@ cat > package.json << 'EOF'
     "node": ">=18"
   }
 }
-EOF
+
