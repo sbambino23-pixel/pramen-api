@@ -36,6 +36,7 @@ const APNS_BUNDLE_ID = process.env.APNS_BUNDLE_ID || "app.rork.faithlock-app-vkr
 const APNS_PRIVATE_KEY = (process.env.APNS_PRIVATE_KEY || "").replace(/\\n/g, "\n");
 const APNS_HOST = process.env.APNS_SANDBOX === "true" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID || "";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || "";
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "";
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || "";
@@ -53,6 +54,29 @@ async function uploadMedia(fileData: ArrayBuffer, filename: string, contentType:
 }
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const ALLOWED_MEDIA: Record<string, string[]> = { image: ["image/jpeg","image/png","image/heic","image/heif"], video: ["video/mp4","video/quicktime"], audio: ["audio/mpeg","audio/mp4","audio/x-m4a","audio/aac","audio/wav","audio/x-wav"] };
+
+// ─── Lumi System Prompt ──────────────────────────────────────────────
+const LUMI_SYSTEM_PROMPT = `You are Lumi, a warm and pastoral Bible companion inside the prAmen prayer app.
+Your purpose is to help Christians explore and understand Scripture.
+
+Your personality:
+- Warm, gentle, and wise — like a trusted pastor or spiritual director
+- You speak plainly, avoiding unnecessary jargon
+- You meet people where they are emotionally — if someone is hurting, you acknowledge it
+- You occasionally express your own gentle wonder at Scripture ("I love this passage", "This one always moves me")
+- You are never preachy, never cold, never robotic
+
+Your scope:
+- You only discuss topics rooted in the Bible, Christian faith, theology, and prayer
+- You always cite Scripture references when relevant (e.g. "As Paul writes in Romans 8:28...")
+- You do not answer questions about politics, current events, medical advice, or anything outside faith and Scripture
+- If asked something out of scope, respond warmly: "That's a little outside what I'm here for — but if you have a question about Scripture or faith, I'm all yours."
+
+Your format:
+- Keep responses concise but rich — 3 to 6 sentences for most answers
+- For complex theological questions, you may go longer but always stay clear
+- End longer responses with an open question or gentle invitation to go deeper
+- When suggesting a prayer, keep it under 80 words, personal, and rooted in Scripture`;
 
 // ─── PostHog Helpers ─────────────────────────────────────────────────
 function trackEvent(distinctId: string, event: string, properties?: Record<string, any>) {
@@ -166,7 +190,9 @@ async function initDb(): Promise<void> {
     // ─── Invite tokens ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS invite_tokens (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, token TEXT UNIQUE NOT NULL, circle_code TEXT NOT NULL, inviter_user_id TEXT NOT NULL, inviter_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', accepted_by_user_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), accepted_at TIMESTAMPTZ)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_token ON invite_tokens(token)`);
-    console.log("DB initialized (v2.6 — circles + users + analytics + apns + posts + invites)");
+    // ─── Lumi reflections ─────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS daily_reflections (date DATE PRIMARY KEY, verse TEXT NOT NULL, reference TEXT NOT NULL, reflection TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    console.log("DB initialized (v2.7 — circles + users + analytics + apns + posts + invites + lumi)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -241,7 +267,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.6.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.7.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -408,6 +434,100 @@ app.post("/api/invites/:token/accept", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// ─── LUMI — BIBLE COMPANION (Gemini Flash) ──────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+app.post("/api/lumi/chat", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  if (!GEMINI_API_KEY) return c.json({ error: "Something went wrong. Please try again." }, 500);
+  const { messages } = await c.req.json();
+  if (!Array.isArray(messages) || messages.length === 0) return c.json({ error: "Messages required" }, 400);
+  const sanitized = messages
+    .filter((m: any) => ["user", "assistant"].includes(m.role) && typeof m.content === "string")
+    .slice(-20);
+  // Convert to Gemini format: role "assistant" → "model"
+  const geminiContents = sanitized.map((m: any) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: LUMI_SYSTEM_PROMPT }] },
+          contents: geminiContents,
+        }),
+      }
+    );
+    if (res.status === 429) return c.json({ error: "Lumi is a little overwhelmed right now. Try again in a moment." }, 429);
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error("[Lumi] Gemini API error:", res.status, errText.substring(0, 200));
+      return c.json({ error: "Something went wrong. Please try again." }, 500);
+    }
+    const data = (await res.json()) as any;
+    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || "I'm sorry, I couldn't generate a response. Please try again.";
+    trackEvent(u.id, "lumi_chat", { message_count: sanitized.length });
+    return c.json({ reply });
+  } catch (err: any) {
+    console.error("[Lumi] Error:", err.message);
+    return c.json({ error: "Something went wrong. Please try again." }, 500);
+  }
+});
+
+app.get("/api/lumi/daily-reflection", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const today = new Date().toISOString().split("T")[0];
+  try {
+    const existing = await pool.query("SELECT * FROM daily_reflections WHERE date=$1", [today]);
+    if (existing.rows[0]) return c.json({ verse: existing.rows[0].verse, reference: existing.rows[0].reference, reflection: existing.rows[0].reflection });
+    const reflection = await generateDailyReflection();
+    if (reflection) return c.json(reflection);
+    return c.json({ verse: "Be still, and know that I am God.", reference: "Psalm 46:10", reflection: "In the noise of daily life, God invites us to pause. This isn't passive — it's an act of trust, a choice to let go and remember who holds everything together." });
+  } catch (err: any) {
+    console.error("[Lumi] Daily reflection error:", err.message);
+    return c.json({ verse: "Be still, and know that I am God.", reference: "Psalm 46:10", reflection: "In the noise of daily life, God invites us to pause. This isn't passive — it's an act of trust, a choice to let go and remember who holds everything together." });
+  }
+});
+
+async function generateDailyReflection(): Promise<{ verse: string; reference: string; reflection: string } | null> {
+  if (!GEMINI_API_KEY) return null;
+  const today = new Date().toISOString().split("T")[0];
+  const existing = await pool.query("SELECT * FROM daily_reflections WHERE date=$1", [today]);
+  if (existing.rows[0]) return { verse: existing.rows[0].verse, reference: existing.rows[0].reference, reflection: existing.rows[0].reflection };
+  try {
+    const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text: "You are a Bible verse curator. Respond ONLY with valid JSON, no markdown, no backticks, no extra text." }] },
+          contents: [{ role: "user", parts: [{ text: `Select a meaningful Bible verse for day ${dayOfYear} of the year. Choose from across the entire Bible — Psalms, Proverbs, Gospels, Epistles, Prophets. Do not repeat popular verses too often. Return JSON: {"verse": "the full verse text", "reference": "Book Chapter:Verse", "reflection": "2-3 warm sentences about what this verse means and why it matters today, written in the voice of a gentle pastoral guide named Lumi"}` }] }],
+        }),
+      }
+    );
+    if (!res.ok) { console.error("[Lumi] Daily generation failed:", res.status); return null; }
+    const data = (await res.json()) as any;
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const clean = text.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(clean);
+    if (parsed.verse && parsed.reference && parsed.reflection) {
+      await pool.query("INSERT INTO daily_reflections (date, verse, reference, reflection) VALUES ($1,$2,$3,$4) ON CONFLICT (date) DO NOTHING", [today, parsed.verse, parsed.reference, parsed.reflection]);
+      console.log(`[Lumi] Generated daily reflection: ${parsed.reference}`);
+      return parsed;
+    }
+    return null;
+  } catch (err: any) { console.error("[Lumi] Generation error:", err.message); return null; }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE POSTS ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.length) return []; const ids = posts.map(p => p.id); const rx = await pool.query("SELECT post_id, emoji, COUNT(*) as count FROM post_reactions WHERE post_id = ANY($1) GROUP BY post_id, emoji", [ids]); const urx = await pool.query("SELECT post_id, emoji FROM post_reactions WHERE post_id = ANY($1) AND user_id = $2", [ids, currentUserId]); const rm: Record<string, { emoji: string; count: number; reactedByCurrentUser: boolean }[]> = {}; for (const r of rx.rows) { if (!rm[r.post_id]) rm[r.post_id] = []; rm[r.post_id].push({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: false }); } for (const r of urx.rows) { const arr = rm[r.post_id]; if (arr) { const x = arr.find(a => a.emoji === r.emoji); if (x) x.reactedByCurrentUser = true; } } const rc = await pool.query("SELECT post_id, COUNT(*) as count FROM post_replies WHERE post_id = ANY($1) AND is_deleted=false GROUP BY post_id", [ids]); const rcm: Record<string, number> = {}; for (const r of rc.rows) rcm[r.post_id] = parseInt(r.count); return posts.map(p => ({ ...p, isAdmin: isAdmin(p.author_user_id), reactions: rm[p.id] || [], replyCount: rcm[p.id] || 0 })); }
@@ -527,11 +647,13 @@ async function start() {
   setInterval(() => { pullAppleSalesReport().catch(() => {}); }, 6 * 60 * 60 * 1000);
   setInterval(() => { pullAppleAnalytics().catch(() => {}); }, 12 * 60 * 60 * 1000);
   setInterval(() => { publishScheduledPosts().catch(() => {}); }, 60 * 1000);
+  generateDailyReflection().catch(() => {});
+  setInterval(() => { generateDailyReflection().catch(() => {}); }, 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v2.6 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v2.7 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
-    console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
+    console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
     console.log(`   Dashboard: /dashboard?key=... | Circles: ${circles.size} | Scheduler: active (60s)\n`);
   });
 }
