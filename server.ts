@@ -143,13 +143,32 @@ function sendPush(deviceToken: string, payload: PushPayload): void {
 }
 
 async function pushToUser(userId: string, payload: PushPayload): Promise<void> {
+  // Store notification in DB
+  try {
+    await pool.query("INSERT INTO notifications (user_id, type, title, body, data) VALUES ($1,$2,$3,$4,$5)",
+      [userId, payload.type, payload.title, payload.body, JSON.stringify({ circleCode: payload.circleCode || "", circleName: payload.circleName || "" })]);
+  } catch (err: any) { console.error("[Notify] Store error:", err.message); }
+
+  // Check user preferences — default is ON for all types
+  let shouldPush = true;
+  try {
+    const prefs = await pool.query("SELECT * FROM notification_preferences WHERE user_id=$1", [userId]);
+    if (prefs.rows[0]) {
+      const p = prefs.rows[0];
+      const prefMap: Record<string, string> = { encouragement: "encouragements", prayer_shared: "prayers_shared", prayer_request: "prayer_requests", new_post: "circle_posts", post_reply: "post_replies", post_reaction: "post_reactions", member_joined: "circle_members", streak_milestone: "streak_milestones", streak_freeze: "streak_freeze", prayer_request_prayed: "prayer_requests" };
+      const col = prefMap[payload.type];
+      if (col && p[col] === false) shouldPush = false;
+    }
+  } catch {}
+
+  if (!shouldPush) return;
+
   try { const result = await pool.query("SELECT device_token FROM users WHERE id=$1 AND device_token IS NOT NULL", [userId]); if (result.rows[0]?.device_token) sendPush(result.rows[0].device_token, payload); } catch (err: any) { console.error("[APNs] pushToUser error:", err.message); }
 }
 
 async function pushToCircleMembers(circle: StoredCircle, excludeUserId: string, payload: PushPayload): Promise<void> {
   const memberIds = circle.members.filter((m) => m.userId !== excludeUserId && !m.notificationsMuted).map((m) => m.userId);
-  if (memberIds.length === 0) return;
-  try { const result = await pool.query("SELECT device_token FROM users WHERE id = ANY($1) AND device_token IS NOT NULL", [memberIds]); for (const row of result.rows) { if (row.device_token) sendPush(row.device_token, payload); } } catch (err: any) { console.error("[APNs] pushToCircleMembers error:", err.message); }
+  for (const uid of memberIds) { pushToUser(uid, payload); }
 }
 
 // ─── Admin Helpers ───────────────────────────────────────────────────
@@ -195,7 +214,17 @@ async function initDb(): Promise<void> {
     // ─── Favorites ────────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS favorites (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, title TEXT, source TEXT NOT NULL DEFAULT 'app', prayer_text TEXT, prayer_id TEXT, media_url TEXT, media_type TEXT, media_filename TEXT, transcript TEXT, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, is_deleted, created_at DESC)`);
-    console.log("DB initialized (v2.8 — circles + users + analytics + apns + posts + invites + lumi + favorites)");
+    // ─── Notifications ────────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, data JSONB DEFAULT '{}', is_read BOOLEAN DEFAULT false, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_deleted, created_at DESC)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS notification_preferences (user_id TEXT PRIMARY KEY, encouragements BOOLEAN DEFAULT true, prayers_shared BOOLEAN DEFAULT true, prayer_requests BOOLEAN DEFAULT true, circle_posts BOOLEAN DEFAULT true, post_replies BOOLEAN DEFAULT true, post_reactions BOOLEAN DEFAULT true, circle_members BOOLEAN DEFAULT true, streak_milestones BOOLEAN DEFAULT true, streak_freeze BOOLEAN DEFAULT true, updated_at TIMESTAMPTZ DEFAULT NOW())`);
+    // ─── Encouragements ───────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS encouragements (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', recipient_user_id TEXT NOT NULL, message TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_encouragements_recipient ON encouragements(recipient_user_id, created_at DESC)`);
+    // ─── Prayer shares ────────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS prayer_shares (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', recipient_user_id TEXT NOT NULL, prayer_id TEXT, prayer_title TEXT, prayer_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_shares_recipient ON prayer_shares(recipient_user_id, created_at DESC)`);
+    console.log("DB initialized (v2.9 — all features + notifications + encouragements + sharing)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -270,7 +299,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.8.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.9.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -675,6 +704,132 @@ app.post("/api/favorites/transcribe", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// ─── NOTIFICATIONS ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/api/notifications", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const filter = c.req.query("filter") || "all";
+  let q = "SELECT * FROM notifications WHERE user_id=$1 AND is_deleted=false";
+  if (filter === "unread") q += " AND is_read=false";
+  q += " ORDER BY created_at DESC LIMIT 100";
+  const r = await pool.query(q, [u.id]);
+  const unread = await pool.query("SELECT COUNT(*) as count FROM notifications WHERE user_id=$1 AND is_deleted=false AND is_read=false", [u.id]);
+  return c.json({ notifications: r.rows, unreadCount: parseInt(unread.rows[0]?.count || "0") });
+});
+
+app.post("/api/notifications/read", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const { notificationIds, all } = await c.req.json();
+  if (all) {
+    await pool.query("UPDATE notifications SET is_read=true WHERE user_id=$1 AND is_read=false", [u.id]);
+  } else if (Array.isArray(notificationIds) && notificationIds.length > 0) {
+    await pool.query("UPDATE notifications SET is_read=true WHERE id = ANY($1) AND user_id=$2", [notificationIds, u.id]);
+  }
+  return c.json({ success: true });
+});
+
+app.delete("/api/notifications/:notificationId", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  await pool.query("UPDATE notifications SET is_deleted=true WHERE id=$1 AND user_id=$2", [c.req.param("notificationId"), u.id]);
+  return c.body(null, 204);
+});
+
+app.get("/api/notifications/preferences", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const r = await pool.query("SELECT * FROM notification_preferences WHERE user_id=$1", [u.id]);
+  if (r.rows[0]) {
+    const p = r.rows[0];
+    return c.json({ encouragements: p.encouragements, prayers_shared: p.prayers_shared, prayer_requests: p.prayer_requests, circle_posts: p.circle_posts, post_replies: p.post_replies, post_reactions: p.post_reactions, circle_members: p.circle_members, streak_milestones: p.streak_milestones, streak_freeze: p.streak_freeze });
+  }
+  return c.json({ encouragements: true, prayers_shared: true, prayer_requests: true, circle_posts: true, post_replies: true, post_reactions: true, circle_members: true, streak_milestones: true, streak_freeze: true });
+});
+
+app.patch("/api/notifications/preferences", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const body = await c.req.json();
+  const cols = ["encouragements","prayers_shared","prayer_requests","circle_posts","post_replies","post_reactions","circle_members","streak_milestones","streak_freeze"];
+  // Ensure row exists
+  await pool.query("INSERT INTO notification_preferences (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [u.id]);
+  for (const col of cols) {
+    if (body[col] !== undefined) {
+      await pool.query(`UPDATE notification_preferences SET ${col}=$1, updated_at=NOW() WHERE user_id=$2`, [!!body[col], u.id]);
+    }
+  }
+  const r = await pool.query("SELECT * FROM notification_preferences WHERE user_id=$1", [u.id]);
+  const p = r.rows[0];
+  return c.json({ encouragements: p.encouragements, prayers_shared: p.prayers_shared, prayer_requests: p.prayer_requests, circle_posts: p.circle_posts, post_replies: p.post_replies, post_reactions: p.post_reactions, circle_members: p.circle_members, streak_milestones: p.streak_milestones, streak_freeze: p.streak_freeze });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── ENCOURAGEMENTS ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+app.post("/api/encouragements", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const { recipientId, message } = await c.req.json();
+  if (!recipientId || !message) return c.json({ error: "recipientId and message required" }, 400);
+  if (message.length > 140) return c.json({ error: "Message too long. Maximum 140 characters." }, 422);
+  if (recipientId === u.id) return c.json({ error: "You can't send an encouragement to yourself." }, 422);
+
+  // Rate limit: 1 per sender per recipient per 24h
+  const recent = await pool.query("SELECT id FROM encouragements WHERE sender_user_id=$1 AND recipient_user_id=$2 AND created_at > NOW() - INTERVAL '24 hours'", [u.id, recipientId]);
+  if (recent.rows.length > 0) {
+    const recipient = await pool.query("SELECT name FROM users WHERE id=$1", [recipientId]);
+    const recipientName = recipient.rows[0]?.name || "this person";
+    return c.json({ error: `You already encouraged ${recipientName} today. Come back tomorrow.` }, 429);
+  }
+
+  const r = await pool.query("INSERT INTO encouragements (sender_user_id, sender_name, recipient_user_id, message) VALUES ($1,$2,$3,$4) RETURNING *", [u.id, u.name || "Someone", recipientId, message]);
+  trackEvent(u.id, "encouragement_sent_direct", { recipient_id: recipientId });
+
+  pushToUser(recipientId, {
+    title: "Someone is praying for you 🙏",
+    body: `${u.name || "Someone"} sent you an encouragement`,
+    type: "encouragement",
+  });
+
+  return c.json({ encouragementId: r.rows[0].id, sentAt: r.rows[0].created_at });
+});
+
+app.get("/api/encouragements/:encouragementId", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const r = await pool.query("SELECT * FROM encouragements WHERE id=$1 AND (sender_user_id=$2 OR recipient_user_id=$2)", [c.req.param("encouragementId"), u.id]);
+  if (!r.rows[0]) return c.json({ error: "Not found" }, 404);
+  return c.json({ encouragement: r.rows[0] });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── PRAYER SHARING ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+app.post("/api/prayers/share", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const { recipientId, prayerId, prayerTitle, prayerText } = await c.req.json();
+  if (!recipientId) return c.json({ error: "recipientId required" }, 400);
+  if (!prayerText && !prayerId) return c.json({ error: "prayerText or prayerId required" }, 400);
+
+  const r = await pool.query("INSERT INTO prayer_shares (sender_user_id, sender_name, recipient_user_id, prayer_id, prayer_title, prayer_text) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [u.id, u.name || "Someone", recipientId, prayerId || null, prayerTitle || null, prayerText || null]);
+  trackEvent(u.id, "prayer_shared", { recipient_id: recipientId });
+
+  pushToUser(recipientId, {
+    title: "A prayer was shared with you 🕯️",
+    body: `${u.name || "Someone"} shared a prayer with you${prayerTitle ? ": " + prayerTitle : ""}`,
+    type: "prayer_shared",
+  });
+
+  return c.json({ shareId: r.rows[0].id, sentAt: r.rows[0].created_at });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE POSTS ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.length) return []; const ids = posts.map(p => p.id); const rx = await pool.query("SELECT post_id, emoji, COUNT(*) as count FROM post_reactions WHERE post_id = ANY($1) GROUP BY post_id, emoji", [ids]); const urx = await pool.query("SELECT post_id, emoji FROM post_reactions WHERE post_id = ANY($1) AND user_id = $2", [ids, currentUserId]); const rm: Record<string, { emoji: string; count: number; reactedByCurrentUser: boolean }[]> = {}; for (const r of rx.rows) { if (!rm[r.post_id]) rm[r.post_id] = []; rm[r.post_id].push({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: false }); } for (const r of urx.rows) { const arr = rm[r.post_id]; if (arr) { const x = arr.find(a => a.emoji === r.emoji); if (x) x.reactedByCurrentUser = true; } } const rc = await pool.query("SELECT post_id, COUNT(*) as count FROM post_replies WHERE post_id = ANY($1) AND is_deleted=false GROUP BY post_id", [ids]); const rcm: Record<string, number> = {}; for (const r of rc.rows) rcm[r.post_id] = parseInt(r.count); return posts.map(p => ({ ...p, isAdmin: isAdmin(p.author_user_id), reactions: rm[p.id] || [], replyCount: rcm[p.id] || 0 })); }
@@ -797,7 +952,7 @@ async function start() {
   generateDailyReflection().catch(() => {});
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v2.8 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v2.9 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
