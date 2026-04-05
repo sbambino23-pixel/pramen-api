@@ -37,6 +37,7 @@ const APNS_PRIVATE_KEY = (process.env.APNS_PRIVATE_KEY || "").replace(/\\n/g, "\
 const APNS_HOST = process.env.APNS_SANDBOX === "true" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID || "";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || "";
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || "";
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "";
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || "";
@@ -233,7 +234,12 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS referrals (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, referred_user_id TEXT, referred_email TEXT, status TEXT NOT NULL DEFAULT 'pending', confirmed_at TIMESTAMPTZ, reversed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_user_id, status)`);
     await client.query(`CREATE TABLE IF NOT EXISTS referral_rewards (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, tier INT NOT NULL, reward_type TEXT NOT NULL, granted_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(user_id, tier))`);
-    console.log("DB initialized (v3.2 — full feature set + referrals)");
+    // ─── Churches ─────────────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS church_profiles (place_id TEXT PRIMARY KEY, name TEXT, address TEXT, lat REAL, lng REAL, phone TEXT, website TEXT, rating REAL, rating_count INT, denomination TEXT, opening_hours JSONB, photos JSONB DEFAULT '[]', enrichment_status TEXT DEFAULT 'pending', year_founded TEXT, architectural_style TEXT, patron_saint TEXT, diocese TEXT, description TEXT, notable_features JSONB DEFAULT '[]', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE TABLE IF NOT EXISTS saved_churches (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, place_id TEXT NOT NULL, church_name TEXT, address TEXT, lat REAL, lng REAL, tags TEXT[] DEFAULT '{}', review TEXT, notes TEXT, rating INT, photos JSONB DEFAULT '[]', is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_saved_churches_user ON saved_churches(user_id, is_deleted)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS church_shares (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', saved_church_id TEXT NOT NULL, circle_code TEXT NOT NULL, note TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    console.log("DB initialized (v3.3 — full feature set + churches)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -308,7 +314,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.2.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.3.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1169,6 +1175,199 @@ app.get("/api/referrals/circle/:code", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// ─── FIND MY CHURCH ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+async function enrichChurch(placeId: string, name: string, address: string): Promise<void> {
+  if (!GEMINI_API_KEY) { await pool.query("UPDATE church_profiles SET enrichment_status='unavailable' WHERE place_id=$1", [placeId]); return; }
+  try {
+    // Query Wikipedia for context
+    let wikiText = "";
+    try {
+      const wRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`);
+      if (wRes.ok) { const wd = (await wRes.json()) as any; wikiText = wd.extract || ""; }
+    } catch {}
+    if (!wikiText) {
+      try {
+        const wRes2 = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name + " church")}`);
+        if (wRes2.ok) { const wd2 = (await wRes2.json()) as any; wikiText = wd2.extract || ""; }
+      } catch {}
+    }
+
+    const prompt = wikiText
+      ? `Given this Wikipedia text about "${name}" at "${address}": "${wikiText.substring(0, 1500)}"\n\nExtract JSON: {"year_founded":"year or century or null","architectural_style":"style or null","patron_saint":"name or null","diocese":"name or null","description":"2-3 sentence historical description","notable_features":["feature1","feature2"]}`
+      : `For the church "${name}" at "${address}", provide what you know. Return JSON: {"year_founded":"year or century or null","architectural_style":"style or null","patron_saint":"name or null","diocese":"name or null","description":"2-3 sentence description or null","notable_features":[]}. If you don't know, use null for that field.`;
+
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ system_instruction: { parts: [{ text: "You enrich church profiles. Respond ONLY with valid JSON, no markdown, no backticks." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }] }),
+    });
+    if (!res.ok) { await pool.query("UPDATE church_profiles SET enrichment_status='unavailable' WHERE place_id=$1", [placeId]); return; }
+    const data = (await res.json()) as any;
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+    const status = parsed.description ? "enriched" : "partial";
+    await pool.query(`UPDATE church_profiles SET enrichment_status=$1, year_founded=$2, architectural_style=$3, patron_saint=$4, diocese=$5, description=$6, notable_features=$7, updated_at=NOW() WHERE place_id=$8`,
+      [status, parsed.year_founded || null, parsed.architectural_style || null, parsed.patron_saint || null, parsed.diocese || null, parsed.description || null, JSON.stringify(parsed.notable_features || []), placeId]);
+    console.log(`[Church] Enriched ${name}: ${status}`);
+  } catch (err: any) {
+    console.error("[Church] Enrichment error:", err.message);
+    await pool.query("UPDATE church_profiles SET enrichment_status='unavailable' WHERE place_id=$1", [placeId]);
+  }
+}
+
+app.get("/api/churches/search", async (c) => {
+  if (!GOOGLE_PLACES_API_KEY) return c.json({ error: "Church search not configured" }, 500);
+  const lat = c.req.query("lat"); const lng = c.req.query("lng");
+  if (!lat || !lng) return c.json({ error: "lat and lng required" }, 400);
+  const radius = c.req.query("radius") || "5000";
+  const keyword = c.req.query("keyword") || "church";
+  const denomination = c.req.query("denomination") || "";
+  const searchKeyword = denomination ? `${denomination} church` : keyword;
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=church&keyword=${encodeURIComponent(searchKeyword)}&key=${GOOGLE_PLACES_API_KEY}`;
+    const res = await fetch(url);
+    if (!res.ok) return c.json({ error: "Search failed" }, 500);
+    const data = (await res.json()) as any;
+    const results = (data.results || []).map((p: any) => ({
+      placeId: p.place_id, name: p.name, address: p.vicinity || p.formatted_address || "",
+      lat: p.geometry?.location?.lat, lng: p.geometry?.location?.lng,
+      rating: p.rating || null, ratingCount: p.user_ratings_total || 0,
+      openNow: p.opening_hours?.open_now ?? null,
+      photoRef: p.photos?.[0]?.photo_reference || null,
+    }));
+
+    // Apply filters
+    let filtered = results;
+    const minRating = c.req.query("minRating"); if (minRating) filtered = filtered.filter((r: any) => r.rating >= parseFloat(minRating));
+    const openNow = c.req.query("openNow"); if (openNow === "true") filtered = filtered.filter((r: any) => r.openNow === true);
+
+    return c.json({ churches: filtered });
+  } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); }
+});
+
+app.get("/api/churches/:placeId", async (c) => {
+  const placeId = c.req.param("placeId");
+  // Check cache
+  const cached = await pool.query("SELECT * FROM church_profiles WHERE place_id=$1", [placeId]);
+  if (cached.rows[0] && cached.rows[0].enrichment_status !== "pending") {
+    return c.json({ church: cached.rows[0], enrichmentStatus: cached.rows[0].enrichment_status });
+  }
+
+  if (!GOOGLE_PLACES_API_KEY) return c.json({ error: "Not configured" }, 500);
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,geometry,formatted_phone_number,website,rating,user_ratings_total,opening_hours,photos,types&key=${GOOGLE_PLACES_API_KEY}`;
+    const res = await fetch(url);
+    if (!res.ok) return c.json({ error: "Church not found." }, 404);
+    const data = (await res.json()) as any;
+    const r = data.result;
+    if (!r) return c.json({ error: "Church not found." }, 404);
+
+    const photos = (r.photos || []).slice(0, 5).map((p: any) => `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photo_reference=${p.photo_reference}&key=${GOOGLE_PLACES_API_KEY}`);
+
+    // Upsert into cache
+    await pool.query(`INSERT INTO church_profiles (place_id, name, address, lat, lng, phone, website, rating, rating_count, opening_hours, photos, enrichment_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending') ON CONFLICT (place_id) DO UPDATE SET name=$2, address=$3, phone=$6, website=$7, rating=$8, rating_count=$9, opening_hours=$10, photos=$11, updated_at=NOW()`,
+      [placeId, r.name, r.formatted_address, r.geometry?.location?.lat, r.geometry?.location?.lng, r.formatted_phone_number || null, r.website || null, r.rating || null, r.user_ratings_total || 0, JSON.stringify(r.opening_hours || {}), JSON.stringify(photos)]);
+
+    // Trigger async enrichment
+    enrichChurch(placeId, r.name, r.formatted_address).catch(() => {});
+
+    const profile = (await pool.query("SELECT * FROM church_profiles WHERE place_id=$1", [placeId])).rows[0];
+    return c.json({ church: profile, enrichmentStatus: "pending" });
+  } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); }
+});
+
+app.get("/api/churches/:placeId/enrichment", async (c) => {
+  const r = await pool.query("SELECT enrichment_status, year_founded, architectural_style, patron_saint, diocese, description, notable_features FROM church_profiles WHERE place_id=$1", [c.req.param("placeId")]);
+  if (!r.rows[0]) return c.json({ status: "unavailable" });
+  return c.json({ status: r.rows[0].enrichment_status, enrichedData: r.rows[0].enrichment_status !== "pending" ? r.rows[0] : null });
+});
+
+app.get("/api/churches/saved", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const r = await pool.query("SELECT * FROM saved_churches WHERE user_id=$1 AND is_deleted=false ORDER BY created_at DESC", [u.id]);
+  return c.json({ savedChurches: r.rows });
+});
+
+app.post("/api/churches/saved", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const body = await c.req.parseBody();
+  const placeId = body.placeId as string; const churchName = body.churchName as string; const address = body.address as string;
+  const lat = parseFloat(body.lat as string || "0"); const lng = parseFloat(body.lng as string || "0");
+  const tags = body.tags ? JSON.parse(body.tags as string) : [];
+  const review = (body.review as string) || null; const notes = (body.notes as string) || null;
+  const rating = body.rating ? parseInt(body.rating as string) : null;
+  if (!placeId) return c.json({ error: "placeId required" }, 400);
+
+  // Handle photos
+  let photoUrls: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    const photo = body[`photo${i}`] as File | undefined;
+    if (photo && photo.size > 0) {
+      if (photo.size > 10 * 1024 * 1024) return c.json({ error: "Photo too large. Maximum size is 10 MB." }, 413);
+      try {
+        const ext = photo.name.split(".").pop() || "jpg";
+        const key = `churches/${Date.now()}-${randomUUID().substring(0, 8)}.${ext}`;
+        if (s3) { await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await photo.arrayBuffer()), ContentType: photo.type })); photoUrls.push(`${R2_PUBLIC_URL}/${key}`); }
+      } catch {}
+    }
+  }
+
+  const r = await pool.query(`INSERT INTO saved_churches (user_id, place_id, church_name, address, lat, lng, tags, review, notes, rating, photos) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+    [u.id, placeId, churchName, address, lat, lng, tags, review, notes, rating, JSON.stringify(photoUrls)]);
+  trackEvent(u.id, "church_saved", { place_id: placeId });
+  return c.json({ savedChurch: r.rows[0] }, 201);
+});
+
+app.patch("/api/churches/saved/:savedId", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const body = await c.req.json();
+  const sets: string[] = []; const vals: any[] = []; let idx = 1;
+  if (body.tags !== undefined) { sets.push(`tags=$${idx++}`); vals.push(body.tags); }
+  if (body.review !== undefined) { sets.push(`review=$${idx++}`); vals.push(body.review); }
+  if (body.notes !== undefined) { sets.push(`notes=$${idx++}`); vals.push(body.notes); }
+  if (body.rating !== undefined) { sets.push(`rating=$${idx++}`); vals.push(body.rating); }
+  if (sets.length === 0) return c.json({ error: "Nothing to update" }, 400);
+  sets.push(`updated_at=NOW()`);
+  vals.push(c.req.param("savedId"), u.id);
+  const r = await pool.query(`UPDATE saved_churches SET ${sets.join(",")} WHERE id=$${idx++} AND user_id=$${idx} AND is_deleted=false RETURNING *`, vals);
+  if (!r.rows[0]) return c.json({ error: "Not found" }, 404);
+  return c.json({ savedChurch: r.rows[0] });
+});
+
+app.delete("/api/churches/saved/:savedId", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  await pool.query("UPDATE saved_churches SET is_deleted=true, updated_at=NOW() WHERE id=$1 AND user_id=$2", [c.req.param("savedId"), u.id]);
+  return c.body(null, 204);
+});
+
+app.post("/api/churches/share", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const { savedChurchId, circleCode, note } = await c.req.json();
+  if (!savedChurchId || !circleCode) return c.json({ error: "savedChurchId and circleCode required" }, 400);
+  if (note && note.length > 140) return c.json({ error: "Note too long. Maximum 140 characters." }, 422);
+
+  const saved = await pool.query("SELECT * FROM saved_churches WHERE id=$1 AND user_id=$2 AND is_deleted=false", [savedChurchId, u.id]);
+  if (!saved.rows[0]) return c.json({ error: "Saved church not found" }, 404);
+  const ci = getCircle(circleCode); if (!ci) return c.json({ error: "Circle not found" }, 404);
+  if (!isMemberOfCircle(u.id, ci)) return c.json({ error: "You can only share churches with your circles." }, 403);
+
+  const r = await pool.query("INSERT INTO church_shares (sender_user_id, sender_name, saved_church_id, circle_code, note) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+    [u.id, u.name || "Someone", savedChurchId, circleCode, note || null]);
+
+  pushToCircleMembers(ci, u.id, {
+    title: `${u.name || "Someone"} shared a church with ${ci.name} ⛪`,
+    body: saved.rows[0].church_name + (note ? ` — "${note}"` : ""),
+    type: "church_shared", circleCode, circleName: ci.name,
+  });
+
+  trackEvent(u.id, "church_shared", { place_id: saved.rows[0].place_id, circle_code: circleCode });
+  return c.json({ shareId: r.rows[0].id, sharedAt: r.rows[0].created_at });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE POSTS ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.length) return []; const ids = posts.map(p => p.id); const rx = await pool.query("SELECT post_id, emoji, COUNT(*) as count FROM post_reactions WHERE post_id = ANY($1) GROUP BY post_id, emoji", [ids]); const urx = await pool.query("SELECT post_id, emoji FROM post_reactions WHERE post_id = ANY($1) AND user_id = $2", [ids, currentUserId]); const rm: Record<string, { emoji: string; count: number; reactedByCurrentUser: boolean }[]> = {}; for (const r of rx.rows) { if (!rm[r.post_id]) rm[r.post_id] = []; rm[r.post_id].push({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: false }); } for (const r of urx.rows) { const arr = rm[r.post_id]; if (arr) { const x = arr.find(a => a.emoji === r.emoji); if (x) x.reactedByCurrentUser = true; } } const rc = await pool.query("SELECT post_id, COUNT(*) as count FROM post_replies WHERE post_id = ANY($1) AND is_deleted=false GROUP BY post_id", [ids]); const rcm: Record<string, number> = {}; for (const r of rc.rows) rcm[r.post_id] = parseInt(r.count); return posts.map(p => ({ ...p, isAdmin: isAdmin(p.author_user_id), reactions: rm[p.id] || [], replyCount: rcm[p.id] || 0 })); }
@@ -1291,7 +1490,7 @@ async function start() {
   generateDailyReflection().catch(() => {});
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.2 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.3 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
