@@ -5,11 +5,12 @@ import { randomUUID, createHash, createSign } from "crypto";
 import { readFileSync } from "fs";
 import http2 from "http2";
 import pg from "pg";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const { Pool } = pg;
 
 // ─── Types ───────────────────────────────────────────────────────────
-interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; joinedAt: string; }
+interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; joinedAt: string; canPost?: boolean; notificationsMuted?: boolean; }
 interface StoredPrayerRequest { id: string; requesterUserId: string; requesterName: string; text: string; timestamp: string; isAnonymous: boolean; prayedByUserIds: string[]; }
 interface StoredEncouragement { id: string; toUserId: string; fromUserId: string; fromName: string; message: string; timestamp: string; }
 interface StoredCircle { id: string; name: string; code: string; emoji: string; creatorUserId: string; members: StoredMember[]; prayerRequests: StoredPrayerRequest[]; encouragements: StoredEncouragement[]; createdAt: string; }
@@ -17,7 +18,7 @@ interface StoredCircle { id: string; name: string; code: string; emoji: string; 
 // ─── Config ──────────────────────────────────────────────────────────
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
 const POSTHOG_HOST = process.env.POSTHOG_HOST || "https://us.i.posthog.com";
-const POSTHOG_READ_HOST = "https://us.posthog.com"; // Read API is different from ingestion!
+const POSTHOG_READ_HOST = "https://us.posthog.com";
 const POSTHOG_PERSONAL_KEY = process.env.POSTHOG_PERSONAL_API_KEY || "";
 const POSTHOG_PROJECT_ID = "359922";
 const PLAUSIBLE_API_KEY = process.env.PLAUSIBLE_API_KEY || "";
@@ -29,15 +30,29 @@ const ASC_ISSUER_ID = process.env.ASC_ISSUER_ID || "";
 const ASC_PRIVATE_KEY = (process.env.ASC_PRIVATE_KEY || "").replace(/\\n/g, "\n");
 const PRAMEN_APP_ID = "6759958354";
 const REVENUECAT_SECRET_KEY = process.env.REVENUECAT_SECRET_KEY || "";
-
-// ─── APNs Config ─────────────────────────────────────────────────────
 const APNS_KEY_ID = process.env.APNS_KEY_ID || "";
 const APNS_TEAM_ID = process.env.APNS_TEAM_ID || "5QTJL794PU";
 const APNS_BUNDLE_ID = process.env.APNS_BUNDLE_ID || "app.rork.faithlock-app-vkrdyww";
 const APNS_PRIVATE_KEY = (process.env.APNS_PRIVATE_KEY || "").replace(/\\n/g, "\n");
-const APNS_HOST = process.env.APNS_SANDBOX === "true"
-  ? "api.sandbox.push.apple.com"
-  : "api.push.apple.com";
+const APNS_HOST = process.env.APNS_SANDBOX === "true" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+const ADMIN_USER_ID = process.env.ADMIN_USER_ID || "";
+const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || "";
+const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "";
+const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || "";
+const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || "pramen-media";
+const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL || "";
+
+// ─── R2 Storage ──────────────────────────────────────────────────────
+const s3 = R2_ACCOUNT_ID ? new S3Client({ region: "auto", endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`, credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY } }) : null;
+async function uploadMedia(fileData: ArrayBuffer, filename: string, contentType: string): Promise<string> {
+  if (!s3) throw new Error("Storage not configured");
+  const ext = filename.split(".").pop() || "bin";
+  const key = `posts/${Date.now()}-${randomUUID().substring(0, 8)}.${ext}`;
+  await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(fileData), ContentType: contentType }));
+  return `${R2_PUBLIC_URL}/${key}`;
+}
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const ALLOWED_MEDIA: Record<string, string[]> = { image: ["image/jpeg","image/png","image/heic","image/heif"], video: ["video/mp4","video/quicktime"], audio: ["audio/mpeg","audio/mp4","audio/x-m4a","audio/aac","audio/wav","audio/x-wav"] };
 
 // ─── PostHog Helpers ─────────────────────────────────────────────────
 function trackEvent(distinctId: string, event: string, properties?: Record<string, any>) {
@@ -72,10 +87,7 @@ let apnsJwtCache: { token: string; generatedAt: number } | null = null;
 
 function generateAPNsJWT(): string {
   if (!APNS_KEY_ID || !APNS_PRIVATE_KEY || !APNS_TEAM_ID) return "";
-  // Reuse token if less than 50 minutes old (Apple allows up to 60)
-  if (apnsJwtCache && Date.now() - apnsJwtCache.generatedAt < 50 * 60 * 1000) {
-    return apnsJwtCache.token;
-  }
+  if (apnsJwtCache && Date.now() - apnsJwtCache.generatedAt < 50 * 60 * 1000) return apnsJwtCache.token;
   try {
     const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: APNS_KEY_ID })).toString("base64url");
     const now = Math.floor(Date.now() / 1000);
@@ -86,123 +98,40 @@ function generateAPNsJWT(): string {
     const jwt = `${header}.${payload}.${signature}`;
     apnsJwtCache = { token: jwt, generatedAt: Date.now() };
     return jwt;
-  } catch (err: any) {
-    console.error("[APNs] JWT error:", err.message);
-    return "";
-  }
+  } catch (err: any) { console.error("[APNs] JWT error:", err.message); return ""; }
 }
 
-interface PushPayload {
-  title: string;
-  body: string;
-  type: string;
-  circleCode?: string;
-  circleName?: string;
-}
+interface PushPayload { title: string; body: string; type: string; circleCode?: string; circleName?: string; }
 
 function sendPush(deviceToken: string, payload: PushPayload): void {
   const jwt = generateAPNsJWT();
   if (!jwt || !deviceToken) return;
-
-  const apnsPayload = JSON.stringify({
-    aps: {
-      alert: { title: payload.title, body: payload.body },
-      sound: "default",
-      badge: 1,
-      "mutable-content": 1,
-    },
-    type: payload.type,
-    circleCode: payload.circleCode || "",
-    circleName: payload.circleName || "",
-  });
-
+  const apnsPayload = JSON.stringify({ aps: { alert: { title: payload.title, body: payload.body }, sound: "default", badge: 1, "mutable-content": 1 }, type: payload.type, circleCode: payload.circleCode || "", circleName: payload.circleName || "" });
   try {
     const client = http2.connect(`https://${APNS_HOST}`);
-    client.on("error", (err) => {
-      console.error("[APNs] Connection error:", err.message);
-      client.close();
-    });
-
-    const req = client.request({
-      ":method": "POST",
-      ":path": `/3/device/${deviceToken}`,
-      authorization: `bearer ${jwt}`,
-      "apns-topic": APNS_BUNDLE_ID,
-      "apns-push-type": "alert",
-      "apns-priority": "10",
-      "apns-expiration": "0",
-      "content-type": "application/json",
-    });
-
-    req.on("response", (headers) => {
-      const status = headers[":status"];
-      if (status !== 200) {
-        // Read error body
-        let body = "";
-        req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
-        req.on("end", () => {
-          console.log(`[APNs] Push failed status=${status} token=${deviceToken.substring(0, 8)}... body=${body}`);
-          client.close();
-        });
-        return;
-      }
-    });
-
-    req.on("error", (err) => {
-      console.error("[APNs] Request error:", err.message);
-    });
-
-    req.on("end", () => {
-      client.close();
-    });
-
-    req.write(apnsPayload);
-    req.end();
-  } catch (err: any) {
-    console.error("[APNs] Send error:", err.message);
-  }
+    client.on("error", (err) => { console.error("[APNs] Connection error:", err.message); client.close(); });
+    const req = client.request({ ":method": "POST", ":path": `/3/device/${deviceToken}`, authorization: `bearer ${jwt}`, "apns-topic": APNS_BUNDLE_ID, "apns-push-type": "alert", "apns-priority": "10", "apns-expiration": "0", "content-type": "application/json" });
+    req.on("response", (headers) => { const status = headers[":status"]; if (status !== 200) { let body = ""; req.on("data", (chunk: Buffer) => { body += chunk.toString(); }); req.on("end", () => { console.log(`[APNs] Push failed status=${status} token=${deviceToken.substring(0, 8)}... body=${body}`); client.close(); }); return; } });
+    req.on("error", (err) => { console.error("[APNs] Request error:", err.message); });
+    req.on("end", () => { client.close(); });
+    req.write(apnsPayload); req.end();
+  } catch (err: any) { console.error("[APNs] Send error:", err.message); }
 }
 
-// Send push to a specific user by their backend user ID
 async function pushToUser(userId: string, payload: PushPayload): Promise<void> {
-  try {
-    const result = await pool.query(
-      "SELECT device_token FROM users WHERE id=$1 AND device_token IS NOT NULL",
-      [userId]
-    );
-    if (result.rows[0]?.device_token) {
-      sendPush(result.rows[0].device_token, payload);
-    }
-  } catch (err: any) {
-    console.error("[APNs] pushToUser error:", err.message);
-  }
+  try { const result = await pool.query("SELECT device_token FROM users WHERE id=$1 AND device_token IS NOT NULL", [userId]); if (result.rows[0]?.device_token) sendPush(result.rows[0].device_token, payload); } catch (err: any) { console.error("[APNs] pushToUser error:", err.message); }
 }
 
-// Send push to all members of a circle EXCEPT the sender
-async function pushToCircleMembers(
-  circle: StoredCircle,
-  excludeUserId: string,
-  payload: PushPayload
-): Promise<void> {
-  const memberIds = circle.members
-    .map((m) => m.userId)
-    .filter((id) => id !== excludeUserId);
+async function pushToCircleMembers(circle: StoredCircle, excludeUserId: string, payload: PushPayload): Promise<void> {
+  const memberIds = circle.members.filter((m) => m.userId !== excludeUserId && !m.notificationsMuted).map((m) => m.userId);
   if (memberIds.length === 0) return;
-
-  try {
-    const result = await pool.query(
-      "SELECT device_token FROM users WHERE id = ANY($1) AND device_token IS NOT NULL",
-      [memberIds]
-    );
-    for (const row of result.rows) {
-      if (row.device_token) {
-        sendPush(row.device_token, payload);
-      }
-    }
-  } catch (err: any) {
-    console.error("[APNs] pushToCircleMembers error:", err.message);
-  }
+  try { const result = await pool.query("SELECT device_token FROM users WHERE id = ANY($1) AND device_token IS NOT NULL", [memberIds]); for (const row of result.rows) { if (row.device_token) sendPush(row.device_token, payload); } } catch (err: any) { console.error("[APNs] pushToCircleMembers error:", err.message); }
 }
+
+// ─── Admin Helpers ───────────────────────────────────────────────────
+function isAdmin(userId: string): boolean { return ADMIN_USER_ID !== "" && userId === ADMIN_USER_ID; }
+function canPostInCircle(userId: string, circle: StoredCircle): boolean { if (isAdmin(userId)) return true; const m = circle.members.find(m => m.userId === userId); return m?.canPost === true; }
+function isMemberOfCircle(userId: string, circle: StoredCircle): boolean { return circle.members.some(m => m.userId === userId) || isAdmin(userId); }
 
 // ─── Postgres ────────────────────────────────────────────────────────
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_URL?.includes("localhost") ? false : { rejectUnauthorized: false } });
@@ -227,7 +156,17 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS daily_product_metrics (date DATE PRIMARY KEY, dau INT DEFAULT 0, new_users INT DEFAULT 0, prayers_logged INT DEFAULT 0, circles_created INT DEFAULT 0, invites_accepted INT DEFAULT 0, encouragements_sent INT DEFAULT 0, paywall_views INT DEFAULT 0, plan_taps INT DEFAULT 0, scripture_views INT DEFAULT 0, signups INT DEFAULT 0, account_deletions INT DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_app_store_metrics (date DATE PRIMARY KEY, impressions INT DEFAULT 0, product_page_views INT DEFAULT 0, app_units INT DEFAULT 0, conversion_rate REAL DEFAULT 0, proceeds REAL DEFAULT 0, active_devices INT DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS revenue_events (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT, event_type TEXT NOT NULL, plan TEXT, product_id TEXT, price REAL DEFAULT 0, currency TEXT DEFAULT 'USD', environment TEXT DEFAULT 'production', created_at TIMESTAMPTZ DEFAULT NOW())`);
-    console.log("DB initialized (circles + users + analytics + apns)");
+    // ─── Posts tables ──────────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS circle_posts (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, author_user_id TEXT NOT NULL, author_name TEXT NOT NULL DEFAULT '', content TEXT, media_type TEXT, media_url TEXT, media_filename TEXT, media_size_bytes INTEGER, status TEXT NOT NULL DEFAULT 'published', scheduled_at TIMESTAMPTZ, published_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_posts_circle_feed ON circle_posts(circle_code, status, published_at DESC)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS post_reactions (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, post_id TEXT NOT NULL, user_id TEXT NOT NULL, emoji TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(post_id, user_id, emoji))`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_reactions_post ON post_reactions(post_id)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS post_replies (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, post_id TEXT NOT NULL, author_user_id TEXT NOT NULL, author_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_replies_post ON post_replies(post_id, created_at)`);
+    // ─── Invite tokens ────────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS invite_tokens (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, token TEXT UNIQUE NOT NULL, circle_code TEXT NOT NULL, inviter_user_id TEXT NOT NULL, inviter_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', accepted_by_user_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), accepted_at TIMESTAMPTZ)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_token ON invite_tokens(token)`);
+    console.log("DB initialized (v2.6 — circles + users + analytics + apns + posts + invites)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -237,7 +176,7 @@ async function loadAllFromDb(): Promise<void> { try { const r = await pool.query
 async function saveCircleToDb(circle: StoredCircle): Promise<void> { const k = circle.code.toUpperCase(); circles.set(k, circle); try { await pool.query(`INSERT INTO circles (code,data,updated_at) VALUES ($1,$2,NOW()) ON CONFLICT (code) DO UPDATE SET data=$2,updated_at=NOW()`, [k, JSON.stringify(circle)]); } catch (err) { console.error("Save circle:", err); } }
 async function deleteCircleFromDb(code: string): Promise<boolean> { const k = code.toUpperCase(); const e = circles.delete(k); try { await pool.query("DELETE FROM circles WHERE code=$1", [k]); } catch {} return e; }
 function getCircle(code: string): StoredCircle | undefined { return circles.get(code.toUpperCase()); }
-function generateCode(): string { const ch = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let c = ""; for (let i = 0; i < 6; i++) c += ch[Math.floor(Math.random() * ch.length)]; if (circles.has(c)) return generateCode(); return c; }
+function generateCircleCode(): string { const ch = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let c = ""; for (let i = 0; i < 6; i++) c += ch[Math.floor(Math.random() * ch.length)]; if (circles.has(c)) return generateCircleCode(); return c; }
 
 // ─── Auth Helpers ────────────────────────────────────────────────────
 function generateAuthToken(): string { return randomUUID() + "-" + randomUUID(); }
@@ -248,6 +187,7 @@ async function getUserByEmail(email: string) { try { const r = await pool.query(
 async function getUserData(userId: string) { try { const r = await pool.query("SELECT * FROM user_data WHERE user_id=$1", [userId]); if (r.rows[0]) { const d = r.rows[0]; return { streakCount: d.streak_count, highestStreak: d.highest_streak, totalPrayers: d.total_prayers, totalMinutes: d.total_minutes, lastPrayedDate: d.last_prayed_date, sessions: d.sessions || [], preferences: d.preferences || {}, circleCodes: d.circle_codes || [] }; } return null; } catch { return null; } }
 function getUserCircleCodes(userId: string): string[] { const codes: string[] = []; for (const [code, circle] of circles) { if (circle.members.some(m => m.userId === userId)) codes.push(code); } return codes; }
 async function migrateCircleMembership(oldId: string, newId: string, name: string) { for (const [, c] of circles) { const m = c.members.find(m => m.userId === oldId); if (m) { m.userId = newId; if (name) m.name = name; await saveCircleToDb(c); } if (c.creatorUserId === oldId) { c.creatorUserId = newId; await saveCircleToDb(c); } } }
+async function requireAuth(c: any): Promise<any | null> { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return null; return getUserByToken(ah.replace("Bearer ", "")); }
 
 // ─── Plausible Pull ──────────────────────────────────────────────────
 async function pullPlausibleMetrics(): Promise<void> {
@@ -263,7 +203,6 @@ async function pullPlausibleMetrics(): Promise<void> {
   } catch (err: any) { console.error("[Plausible]", err.message); }
 }
 
-// Backfill last 30 days from Plausible timeseries API
 async function backfillPlausible(): Promise<void> {
   if (!PLAUSIBLE_API_KEY) return;
   try {
@@ -272,52 +211,28 @@ async function backfillPlausible(): Promise<void> {
     if (parseInt(existing.rows[0]?.c || "0") > 3) { console.log("[Plausible] Historical data exists, skipping backfill"); return; }
     const tsRes = await fetch(`${base}/timeseries?site_id=${PLAUSIBLE_SITE_ID}&period=30d&metrics=visitors,pageviews,bounce_rate,visit_duration`, { headers: h });
     if (!tsRes.ok) { console.error("[Plausible] Timeseries failed:", tsRes.status); return; }
-    const tsData = (await tsRes.json()) as any;
-    const days = tsData?.results || [];
+    const tsData = (await tsRes.json()) as any; const days = tsData?.results || [];
     let clicksByDay: Record<string, number> = {};
-    try {
-      const clRes = await fetch(`${base}/timeseries?site_id=${PLAUSIBLE_SITE_ID}&period=30d&metrics=events&filters=event:name==App%20Store%20Click`, { headers: h });
-      if (clRes.ok) { const clData = (await clRes.json()) as any; for (const d of (clData?.results || [])) clicksByDay[d.date] = d.events || 0; }
-    } catch {}
+    try { const clRes = await fetch(`${base}/timeseries?site_id=${PLAUSIBLE_SITE_ID}&period=30d&metrics=events&filters=event:name==App%20Store%20Click`, { headers: h }); if (clRes.ok) { const clData = (await clRes.json()) as any; for (const d of (clData?.results || [])) clicksByDay[d.date] = d.events || 0; } } catch {}
     let inserted = 0;
-    for (const day of days) {
-      if (!day.date || day.visitors === 0) continue;
-      await pool.query(`INSERT INTO daily_web_metrics (date,visitors,pageviews,bounce_rate,visit_duration_avg,app_store_clicks,updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date) DO UPDATE SET visitors=$2,pageviews=$3,bounce_rate=$4,visit_duration_avg=$5,app_store_clicks=$6,updated_at=NOW()`,
-        [day.date, day.visitors||0, day.pageviews||0, day.bounce_rate||0, day.visit_duration||0, clicksByDay[day.date]||0]);
-      inserted++;
-    }
+    for (const day of days) { if (!day.date || day.visitors === 0) continue; await pool.query(`INSERT INTO daily_web_metrics (date,visitors,pageviews,bounce_rate,visit_duration_avg,app_store_clicks,updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date) DO UPDATE SET visitors=$2,pageviews=$3,bounce_rate=$4,visit_duration_avg=$5,app_store_clicks=$6,updated_at=NOW()`, [day.date, day.visitors||0, day.pageviews||0, day.bounce_rate||0, day.visit_duration||0, clicksByDay[day.date]||0]); inserted++; }
     console.log(`[Plausible] Backfilled ${inserted} days of historical data`);
   } catch (err: any) { console.error("[Plausible] Backfill error:", err.message); }
 }
 
-// Pull Apple Sales Reports (downloads, proceeds)
 async function pullAppleSalesReport(): Promise<void> {
-  const token = generateASCToken();
-  if (!token) return;
+  const token = generateASCToken(); if (!token) return;
   try {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0].replace(/-/g, "");
-    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday, {
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/a]gzip, application/json" }
-    });
+    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday, { headers: { Authorization: `Bearer ${token}`, Accept: "application/a]gzip, application/json" } });
     if (vendorRes.ok) {
-      const text = await vendorRes.text();
-      console.log("[Apple Sales] Got report, length:", text.length);
+      const text = await vendorRes.text(); console.log("[Apple Sales] Got report, length:", text.length);
       const lines = text.split("\n").filter(l => l.trim());
-      if (lines.length > 1) {
-        let totalUnits = 0; let totalProceeds = 0;
-        for (let i = 1; i < lines.length; i++) {
-          const cols = lines[i].split("\t");
-          totalUnits += parseInt(cols[7] || "0") || 0;
-          totalProceeds += parseFloat(cols[8] || "0") || 0;
-        }
+      if (lines.length > 1) { let totalUnits = 0; let totalProceeds = 0; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); totalUnits += parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; }
         const dateStr = yesterday.substring(0,4) + "-" + yesterday.substring(4,6) + "-" + yesterday.substring(6,8);
         await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=$2,proceeds=$3,updated_at=NOW()`, [dateStr, totalUnits, totalProceeds]);
-        console.log(`[Apple Sales] ${dateStr}: ${totalUnits} units, $${totalProceeds} proceeds`);
-      }
-    } else {
-      const errText = await vendorRes.text().catch(() => "");
-      console.log("[Apple Sales] Report not available:", vendorRes.status, errText.substring(0, 200));
-    }
+        console.log(`[Apple Sales] ${dateStr}: ${totalUnits} units, $${totalProceeds} proceeds`); }
+    } else { const errText = await vendorRes.text().catch(() => ""); console.log("[Apple Sales] Report not available:", vendorRes.status, errText.substring(0, 200)); }
   } catch (err: any) { console.error("[Apple Sales]", err.message); }
 }
 
@@ -326,7 +241,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.4.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.6.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -384,26 +299,12 @@ app.post("/api/auth/logout", async (c) => { const ah = c.req.header("Authorizati
 app.delete("/api/auth/account", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Not found" }, 404); await pool.query("DELETE FROM user_data WHERE user_id=$1", [u.id]); await pool.query("DELETE FROM users WHERE id=$1", [u.id]); trackEvent(u.id, "account_deleted", {}); return c.json({ success: true }); });
 
 // ═══════════════════════════════════════════════════════════════════
-// ─── DATA SYNC ──────────────────────────────────────────────────
+// ─── DATA SYNC + DEVICE TOKEN ───────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 app.get("/api/user/data", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); return c.json({ user: { id: u.id, name: u.name, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.device_user_id || u.id) }); });
 app.put("/api/user/data", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const b = await c.req.json(); try { await pool.query(`INSERT INTO user_data (user_id,streak_count,highest_streak,total_prayers,total_minutes,last_prayed_date,sessions,preferences,circle_codes,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()) ON CONFLICT (user_id) DO UPDATE SET streak_count=GREATEST(user_data.streak_count,$2),highest_streak=GREATEST(user_data.highest_streak,$3),total_prayers=GREATEST(user_data.total_prayers,$4),total_minutes=GREATEST(user_data.total_minutes,$5),last_prayed_date=GREATEST(user_data.last_prayed_date,$6),sessions=CASE WHEN jsonb_array_length($7::jsonb)>jsonb_array_length(user_data.sessions) THEN $7 ELSE user_data.sessions END,preferences=$8,circle_codes=$9,updated_at=NOW()`, [u.id, b.streakCount||0, b.highestStreak||0, b.totalPrayers||0, b.totalMinutes||0, b.lastPrayedDate||null, JSON.stringify(b.sessions||[]), JSON.stringify(b.preferences||{}), b.circleCodes||[]]); if (b.userName && b.userName !== u.name) await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [b.userName, u.id]); return c.json({ status: "ok", synced: true }); } catch (e: any) { return c.json({ error: "Sync failed", detail: e.message }, 500); } });
 app.put("/api/user/name", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { name } = await c.req.json(); if (!name?.trim()) return c.json({ error: "Name required" }, 400); await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [name.trim(), u.id]); for (const [, ci] of circles) { const m = ci.members.find(m => m.userId === u.id || m.userId === u.device_user_id); if (m) { m.name = name.trim(); await saveCircleToDb(ci); } } return c.json({ success: true, name: name.trim() }); });
-
-// ─── Device Token ────────────────────────────────────────────────────
-app.put("/api/user/device-token", async (c) => {
-  const ah = c.req.header("Authorization");
-  if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401);
-  const u = await getUserByToken(ah.replace("Bearer ", ""));
-  if (!u) return c.json({ error: "Unauthorized" }, 401);
-  const { deviceToken } = await c.req.json();
-  if (!deviceToken) return c.json({ error: "deviceToken required" }, 400);
-  await pool.query(
-    "UPDATE users SET device_token=$1, device_token_updated_at=NOW(), updated_at=NOW() WHERE id=$2",
-    [deviceToken, u.id]
-  );
-  return c.json({ success: true });
-});
+app.put("/api/user/device-token", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { deviceToken } = await c.req.json(); if (!deviceToken) return c.json({ error: "deviceToken required" }, 400); await pool.query("UPDATE users SET device_token=$1, device_token_updated_at=NOW(), updated_at=NOW() WHERE id=$2", [deviceToken, u.id]); return c.json({ success: true }); });
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── EVENT CAPTURE ──────────────────────────────────────────────
@@ -426,32 +327,14 @@ app.post("/webhooks/revenuecat", async (c) => {
     const body = await c.req.json(); const ev = body.event; if (!ev?.type) return c.json({ error: "Invalid" }, 400);
     const name = RC_MAP[ev.type]; if (!name) return c.json({ status: "skipped" });
     const rcUid = ev.app_user_id; const pid = ev.product_id || ""; const plan = rcPlan(pid); const status = rcStatus(ev.type);
-
-    let resolvedUid = rcUid;
-    const candidateIds = [rcUid, ev.original_app_user_id, ...(ev.aliases || [])].filter(Boolean);
-    
-    for (const candidateId of candidateIds) {
-      if (!candidateId || candidateId.startsWith("$RCAnonymous")) continue;
-      try {
-        const match = await pool.query("SELECT id FROM users WHERE id=$1 OR device_user_id=$1 LIMIT 1", [candidateId]);
-        if (match.rows.length > 0) { resolvedUid = match.rows[0].id; break; }
-      } catch {}
-    }
-    
-    if (resolvedUid.startsWith("$RCAnonymous")) {
-      try {
-        const match = await pool.query("SELECT id FROM users WHERE device_user_id=$1 LIMIT 1", [rcUid]);
-        if (match.rows.length > 0) resolvedUid = match.rows[0].id;
-      } catch {}
-    }
-
+    let resolvedUid = rcUid; const candidateIds = [rcUid, ev.original_app_user_id, ...(ev.aliases || [])].filter(Boolean);
+    for (const candidateId of candidateIds) { if (!candidateId || candidateId.startsWith("$RCAnonymous")) continue; try { const match = await pool.query("SELECT id FROM users WHERE id=$1 OR device_user_id=$1 LIMIT 1", [candidateId]); if (match.rows.length > 0) { resolvedUid = match.rows[0].id; break; } } catch {} }
+    if (resolvedUid.startsWith("$RCAnonymous")) { try { const match = await pool.query("SELECT id FROM users WHERE device_user_id=$1 LIMIT 1", [rcUid]); if (match.rows.length > 0) resolvedUid = match.rows[0].id; } catch {} }
     await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, resolvedUid]).catch(() => {});
     if (resolvedUid !== rcUid) await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, rcUid]).catch(() => {});
-    
     trackEvent(resolvedUid, name, { plan, product_id: pid, price: ev.price, currency: ev.currency, store: ev.store, environment: ev.environment, rc_original_id: rcUid, $revenue: ev.price || 0, $currency: ev.currency || "USD" });
     identifyUser(resolvedUid, { subscription_status: status, subscription_plan: plan, last_revenue_event: name });
-    try {
-      const price = ev.price || 0; const net = price * (1 - APPLE_CUT); const today = new Date().toISOString().split("T")[0];
+    try { const price = ev.price || 0; const net = price * (1 - APPLE_CUT); const today = new Date().toISOString().split("T")[0];
       await pool.query(`INSERT INTO revenue_events (user_id,event_type,plan,product_id,price,currency,environment) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [resolvedUid, name, plan, pid, price, ev.currency||"USD", ev.environment||"production"]);
       if (name === "subscription_started" || name === "lifetime_purchased") await pool.query(`INSERT INTO daily_revenue (date,new_subscribers,revenue_gross,revenue_net) VALUES ($1,1,$2,$3) ON CONFLICT (date) DO UPDATE SET new_subscribers=daily_revenue.new_subscribers+1,revenue_gross=daily_revenue.revenue_gross+$2,revenue_net=daily_revenue.revenue_net+$3,updated_at=NOW()`, [today, price, net]);
       else if (name === "subscription_renewed") await pool.query(`INSERT INTO daily_revenue (date,renewals,revenue_gross,revenue_net) VALUES ($1,1,$2,$3) ON CONFLICT (date) DO UPDATE SET renewals=daily_revenue.renewals+1,revenue_gross=daily_revenue.revenue_gross+$2,revenue_net=daily_revenue.revenue_net+$3,updated_at=NOW()`, [today, price, net]);
@@ -464,97 +347,94 @@ app.post("/webhooks/revenuecat", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLES ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const code = generateCode(); const ci: StoredCircle = { id: randomUUID(), name: b.name || "Prayer Circle", code, emoji: b.emoji || "🏠", creatorUserId: b.userId, members: [{ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }], prayerRequests: [], encouragements: [], createdAt: new Date().toISOString() }; await saveCircleToDb(ci); trackEvent(b.userId, "circle_created", { circle_id: ci.id, circle_code: code, circle_name: ci.name }); return c.json({ circle: ci }, 201); });
+app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const code = generateCircleCode(); const ci: StoredCircle = { id: randomUUID(), name: b.name || "Prayer Circle", code, emoji: b.emoji || "🏠", creatorUserId: b.userId, members: [{ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }], prayerRequests: [], encouragements: [], createdAt: new Date().toISOString() }; await saveCircleToDb(ci); trackEvent(b.userId, "circle_created", { circle_id: ci.id, circle_code: code, circle_name: ci.name }); return c.json({ circle: ci }, 201); });
 app.get("/api/circles/:code", (c) => { const ci = getCircle(c.req.param("code")); return ci ? c.json({ circle: ci }) : c.json({ error: "Not found" }, 404); });
-
-app.post("/api/circles/:code/join", async (c) => {
-  const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName });
-  // Push notification to circle creator
-  pushToUser(ci.creatorUserId, {
-    title: "👥 " + (b.userName || "Someone") + " joined " + ci.name + "!",
-    body: ci.members.length + " members are now praying together",
-    type: "member_joined",
-    circleCode: code,
-    circleName: ci.name,
-  });
-  return c.json({ circle: ci });
-});
-
+app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); pushToUser(ci.creatorUserId, { title: "👥 " + (b.userName || "Someone") + " joined " + ci.name + "!", body: ci.members.length + " members are now praying together", type: "member_joined", circleCode: code, circleName: ci.name }); return c.json({ circle: ci }); });
 app.put("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (b.name) ci.name = b.name; if (b.emoji) ci.emoji = b.emoji; await saveCircleToDb(ci); return c.json({ circle: ci }); });
-
-app.put("/api/circles/:code/members/:userId/status", async (c) => {
-  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const b = await c.req.json(); const old = m.streakCount; if (b.streakCount !== undefined) m.streakCount = b.streakCount; if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate; if (b.name !== undefined) m.name = b.name; await saveCircleToDb(ci);
-  if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) {
-    trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() });
-    // Push notification to other circle members about milestone
-    pushToCircleMembers(ci, c.req.param("userId"), {
-      title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!",
-      body: "Celebrate their dedication in " + ci.name,
-      type: "streak_milestone",
-      circleCode: c.req.param("code").toUpperCase(),
-      circleName: ci.name,
-    });
-  }
-  return c.json({ circle: ci });
-});
-
-app.delete("/api/circles/:code/members/:userId", async (c) => { const code = c.req.param("code").toUpperCase(); const uid = c.req.param("userId"); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); ci.members = ci.members.filter(m => m.userId !== uid); trackEvent(uid, "circle_left", { circle_code: code }); ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci); return c.json({ success: true }); });
+app.put("/api/circles/:code/members/:userId/status", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const b = await c.req.json(); const old = m.streakCount; if (b.streakCount !== undefined) m.streakCount = b.streakCount; if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate; if (b.name !== undefined) m.name = b.name; await saveCircleToDb(ci); if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) { trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() }); pushToCircleMembers(ci, c.req.param("userId"), { title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!", body: "Celebrate their dedication in " + ci.name, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); } return c.json({ circle: ci }); });
+app.delete("/api/circles/:code/members/:userId", async (c) => { const code = c.req.param("code").toUpperCase(); const uid = c.req.param("userId"); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); const ah = c.req.header("Authorization"); if (ah?.startsWith("Bearer ")) { const u = await getUserByToken(ah.replace("Bearer ", "")); if (u && isAdmin(u.id) && uid !== u.id) { ci.members = ci.members.filter(m => m.userId !== uid); trackEvent(uid, "circle_removed_by_admin", { circle_code: code }); ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci); return c.json({ success: true }); } } ci.members = ci.members.filter(m => m.userId !== uid); trackEvent(uid, "circle_left", { circle_code: code }); ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci); return c.json({ success: true }); });
 app.delete("/api/circles/:code", async (c) => { const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); trackEvent(ci.creatorUserId, "circle_deleted", { circle_code: code }); await deleteCircleFromDb(code); return c.json({ success: true }); });
-
-app.post("/api/circles/:code/prayer-requests", async (c) => {
-  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.prayerRequests.unshift({ id: randomUUID(), requesterUserId: b.userId, requesterName: b.isAnonymous ? "Anonymous" : b.userName || "Someone", text: b.text, timestamp: new Date().toISOString(), isAnonymous: b.isAnonymous || false, prayedByUserIds: [] }); await saveCircleToDb(ci); trackEvent(b.userId, "prayer_request_created", { circle_code: c.req.param("code").toUpperCase(), is_anonymous: b.isAnonymous || false });
-  // Push notification to circle members
-  pushToCircleMembers(ci, b.userId, {
-    title: "📿 New prayer request in " + ci.name,
-    body: b.isAnonymous
-      ? "Someone shared a prayer request"
-      : (b.userName || "Someone") + " shared a prayer request",
-    type: "prayer_request",
-    circleCode: c.req.param("code").toUpperCase(),
-    circleName: ci.name,
-  });
-  return c.json({ circle: ci });
-});
-
-app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => {
-  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const req = ci.prayerRequests.find(r => r.id === c.req.param("rid")); if (!req) return c.json({ error: "Not found" }, 404); const b = await c.req.json();
-  if (!req.prayedByUserIds.includes(b.userId)) {
-    req.prayedByUserIds.push(b.userId);
-    trackEvent(b.userId, "prayer_request_prayed", { circle_code: c.req.param("code").toUpperCase() });
-    // Push notification to the prayer request creator
-    if (req.requesterUserId !== b.userId) {
-      const prayerName = ci.members.find(m => m.userId === b.userId)?.name || "Someone";
-      pushToUser(req.requesterUserId, {
-        title: "🙏 " + prayerName + " is praying for you",
-        body: req.text.length > 60 ? req.text.substring(0, 60) + "..." : req.text,
-        type: "prayer_request_prayed",
-        circleCode: c.req.param("code").toUpperCase(),
-        circleName: ci.name,
-      });
-    }
-  }
-  await saveCircleToDb(ci); return c.json({ circle: ci });
-});
-
+app.post("/api/circles/:code/prayer-requests", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.prayerRequests.unshift({ id: randomUUID(), requesterUserId: b.userId, requesterName: b.isAnonymous ? "Anonymous" : b.userName || "Someone", text: b.text, timestamp: new Date().toISOString(), isAnonymous: b.isAnonymous || false, prayedByUserIds: [] }); await saveCircleToDb(ci); trackEvent(b.userId, "prayer_request_created", { circle_code: c.req.param("code").toUpperCase(), is_anonymous: b.isAnonymous || false }); pushToCircleMembers(ci, b.userId, { title: "📿 New prayer request in " + ci.name, body: b.isAnonymous ? "Someone shared a prayer request" : (b.userName || "Someone") + " shared a prayer request", type: "prayer_request", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); return c.json({ circle: ci }); });
+app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const req = ci.prayerRequests.find(r => r.id === c.req.param("rid")); if (!req) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (!req.prayedByUserIds.includes(b.userId)) { req.prayedByUserIds.push(b.userId); trackEvent(b.userId, "prayer_request_prayed", { circle_code: c.req.param("code").toUpperCase() }); if (req.requesterUserId !== b.userId) { const prayerName = ci.members.find(m => m.userId === b.userId)?.name || "Someone"; pushToUser(req.requesterUserId, { title: "🙏 " + prayerName + " is praying for you", body: req.text.length > 60 ? req.text.substring(0, 60) + "..." : req.text, type: "prayer_request_prayed", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); } } await saveCircleToDb(ci); return c.json({ circle: ci }); });
 app.delete("/api/circles/:code/prayer-requests/:rid", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const before = ci.prayerRequests.length; ci.prayerRequests = ci.prayerRequests.filter(r => r.id !== c.req.param("rid")); if (ci.prayerRequests.length === before) return c.json({ error: "Not found" }, 404); await saveCircleToDb(ci); return c.json({ success: true }); });
-
-app.post("/api/circles/:code/encouragements", async (c) => {
-  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.encouragements.push({ id: randomUUID(), toUserId: b.toUserId, fromUserId: b.fromUserId, fromName: b.fromName || "Someone", message: b.message, timestamp: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.fromUserId, "encouragement_sent", { circle_code: c.req.param("code").toUpperCase(), to_user_id: b.toUserId });
-  // Push notification to recipient
-  pushToUser(b.toUserId, {
-    title: "🙏 " + (b.fromName || "Someone") + " sent you encouragement",
-    body: b.message || "Keep going — you're not alone!",
-    type: "encouragement",
-    circleCode: c.req.param("code").toUpperCase(),
-    circleName: ci.name,
-  });
-  return c.json({ circle: ci });
-});
-
+app.post("/api/circles/:code/encouragements", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.encouragements.push({ id: randomUUID(), toUserId: b.toUserId, fromUserId: b.fromUserId, fromName: b.fromName || "Someone", message: b.message, timestamp: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.fromUserId, "encouragement_sent", { circle_code: c.req.param("code").toUpperCase(), to_user_id: b.toUserId }); pushToUser(b.toUserId, { title: "🙏 " + (b.fromName || "Someone") + " sent you encouragement", body: b.message || "Keep going — you're not alone!", type: "encouragement", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); return c.json({ circle: ci }); });
 app.get("/api/circles/:code/info", (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const cr = ci.members.find(m => m.userId === ci.creatorUserId); return c.json({ name: ci.name, emoji: ci.emoji, memberCount: ci.members.length, creatorName: cr?.name || null }); });
 
+// ─── Admin: posting rights + mute ────────────────────────────────────
+app.put("/api/admin/circles/:code/members/:userId/posting-rights", async (c) => { const sec = c.req.header("X-Admin-Secret"); const ah = c.req.header("Authorization"); let auth = false; if (sec && sec === process.env.ADMIN_SECRET) auth = true; if (ah?.startsWith("Bearer ")) { const u = await getUserByToken(ah.replace("Bearer ", "")); if (u && isAdmin(u.id)) auth = true; } if (!auth) return c.json({ error: "Forbidden" }, 403); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const { canPost } = await c.req.json(); m.canPost = !!canPost; await saveCircleToDb(ci); return c.json({ success: true, userId: m.userId, canPost: m.canPost }); });
+app.put("/api/circles/:code/mute", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find((m: StoredMember) => m.userId === u.id); if (!m) return c.json({ error: "Not a member" }, 403); const { muted } = await c.req.json(); m.notificationsMuted = !!muted; await saveCircleToDb(ci); return c.json({ success: true, muted: m.notificationsMuted }); });
+
 // ═══════════════════════════════════════════════════════════════════
-// ─── POSTHOG EVENTS (uses us.posthog.com NOT us.i.posthog.com) ──
+// ─── CIRCLE INVITES ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+app.post("/api/circles/:code/invite", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "You need to be logged in." }, 401);
+  const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
+  if (!isMemberOfCircle(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403);
+  await pool.query("UPDATE invite_tokens SET status='expired' WHERE circle_code=$1 AND inviter_user_id=$2 AND status='pending'", [code, u.id]);
+  const token = randomUUID().replace(/-/g, "").substring(0, 16);
+  await pool.query("INSERT INTO invite_tokens (token, circle_code, inviter_user_id, inviter_name) VALUES ($1,$2,$3,$4)", [token, code, u.id, u.name || "Someone"]);
+  trackEvent(u.id, "invite_link_generated", { circle_code: code, circle_name: ci.name });
+  return c.json({ inviteUrl: `https://pramen.app/invite/${token}`, token });
+});
+
+app.get("/api/invites/:token", async (c) => {
+  const token = c.req.param("token");
+  const result = await pool.query("SELECT * FROM invite_tokens WHERE token=$1", [token]);
+  if (!result.rows[0]) return c.json({ error: "This invite link is invalid." }, 404);
+  const inv = result.rows[0];
+  if (inv.status !== "pending") return c.json({ error: "This invite link has already been used or is no longer valid." }, 410);
+  const ci = getCircle(inv.circle_code);
+  return c.json({ circleCode: inv.circle_code, circleName: ci?.name || "Prayer Circle", inviterName: inv.inviter_name, status: inv.status });
+});
+
+app.post("/api/invites/:token/accept", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "You need to be logged in to join this circle." }, 401);
+  const token = c.req.param("token");
+  const result = await pool.query("SELECT * FROM invite_tokens WHERE token=$1", [token]);
+  if (!result.rows[0]) return c.json({ error: "This invite link is invalid." }, 404);
+  const inv = result.rows[0];
+  if (inv.status !== "pending") return c.json({ error: "This invite link has already been used or is no longer valid." }, 410);
+  const ci = getCircle(inv.circle_code); if (!ci) return c.json({ error: "This circle no longer exists." }, 404);
+  const alreadyMember = ci.members.some(m => m.userId === u.id);
+  if (!alreadyMember) {
+    ci.members.push({ userId: u.id, name: u.name || "", streakCount: 0, lastPrayedDate: null, joinedAt: new Date().toISOString() });
+    await saveCircleToDb(ci);
+    trackEvent(u.id, "circle_invite_accepted", { circle_code: inv.circle_code, circle_name: ci.name, invite_token: token });
+    pushToUser(ci.creatorUserId, { title: "👥 " + (u.name || "Someone") + " joined " + ci.name + "!", body: ci.members.length + " members praying together", type: "member_joined", circleCode: inv.circle_code, circleName: ci.name });
+  }
+  await pool.query("UPDATE invite_tokens SET status='accepted', accepted_by_user_id=$1, accepted_at=NOW() WHERE token=$2", [u.id, token]);
+  return c.json({ circleCode: inv.circle_code, circleName: ci.name });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── CIRCLE POSTS ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.length) return []; const ids = posts.map(p => p.id); const rx = await pool.query("SELECT post_id, emoji, COUNT(*) as count FROM post_reactions WHERE post_id = ANY($1) GROUP BY post_id, emoji", [ids]); const urx = await pool.query("SELECT post_id, emoji FROM post_reactions WHERE post_id = ANY($1) AND user_id = $2", [ids, currentUserId]); const rm: Record<string, { emoji: string; count: number; reactedByCurrentUser: boolean }[]> = {}; for (const r of rx.rows) { if (!rm[r.post_id]) rm[r.post_id] = []; rm[r.post_id].push({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: false }); } for (const r of urx.rows) { const arr = rm[r.post_id]; if (arr) { const x = arr.find(a => a.emoji === r.emoji); if (x) x.reactedByCurrentUser = true; } } const rc = await pool.query("SELECT post_id, COUNT(*) as count FROM post_replies WHERE post_id = ANY($1) AND is_deleted=false GROUP BY post_id", [ids]); const rcm: Record<string, number> = {}; for (const r of rc.rows) rcm[r.post_id] = parseInt(r.count); return posts.map(p => ({ ...p, isAdmin: isAdmin(p.author_user_id), reactions: rm[p.id] || [], replyCount: rcm[p.id] || 0 })); }
+
+app.get("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); if (!isMemberOfCircle(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403); const cursor = c.req.query("cursor"); const lim = 20; let q = "SELECT * FROM circle_posts WHERE circle_code=$1 AND status='published'"; const p: any[] = [c.req.param("code").toUpperCase()]; if (cursor) { q += " AND published_at < $2"; p.push(cursor); } q += ` ORDER BY published_at DESC LIMIT $${p.length + 1}`; p.push(lim + 1); const r = await pool.query(q, p); const posts = r.rows.slice(0, lim); const nextCursor = r.rows.length > lim ? posts[posts.length - 1].published_at.toISOString() : null; return c.json({ posts: await enrichPosts(posts, u.id), nextCursor, hasPostingRights: canPostInCircle(u.id, ci) }); });
+
+app.post("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (!canPostInCircle(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403); const body = await c.req.parseBody(); const content = (body.content as string) || null; const scheduledAt = (body.scheduledAt as string) || null; const mediaFile = body.mediaFile as File | undefined; let mediaUrl: string | null = null, mediaType: string | null = null, mediaFilename: string | null = null, mediaSizeBytes: number | null = null; if (mediaFile && mediaFile.size > 0) { if (mediaFile.size > MAX_FILE_SIZE) return c.json({ error: "File too large. Maximum size is 50 MB." }, 413); const ft = mediaFile.type; if (ALLOWED_MEDIA.image.includes(ft)) mediaType = "image"; else if (ALLOWED_MEDIA.video.includes(ft)) mediaType = "video"; else if (ALLOWED_MEDIA.audio.includes(ft)) mediaType = "audio"; else return c.json({ error: "Unsupported file format." }, 422); try { mediaUrl = await uploadMedia(await mediaFile.arrayBuffer(), mediaFile.name, ft); mediaFilename = mediaFile.name; mediaSizeBytes = mediaFile.size; } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); } } if (!content && !mediaUrl) return c.json({ error: "Post must have text or media." }, 422); const status = scheduledAt ? "scheduled" : "published"; const publishedAt = scheduledAt ? null : new Date().toISOString(); if (scheduledAt && new Date(scheduledAt).getTime() < Date.now() + 600000) return c.json({ error: "Schedule time must be at least 10 minutes from now." }, 422); const r = await pool.query(`INSERT INTO circle_posts (circle_code,author_user_id,author_name,content,media_type,media_url,media_filename,media_size_bytes,status,scheduled_at,published_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, [code, u.id, u.name||"", content, mediaType, mediaUrl, mediaFilename, mediaSizeBytes, status, scheduledAt, publishedAt]); trackEvent(u.id, "post_created", { circle_code: code, media_type: mediaType, status }); if (status === "published") pushToCircleMembers(ci, u.id, { title: "📝 " + (u.name || "Someone") + " posted in " + ci.name, body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "New " + (mediaType || "text") + " post", type: "new_post", circleCode: code, circleName: ci.name }); return c.json({ post: { ...r.rows[0], isAdmin: isAdmin(u.id), reactions: [], replyCount: 0 } }, 201); });
+
+app.delete("/api/posts/:postId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status != 'deleted'", [c.req.param("postId")]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); if (p.rows[0].author_user_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403); await pool.query("UPDATE circle_posts SET status='deleted',updated_at=NOW() WHERE id=$1", [c.req.param("postId")]); return c.body(null, 204); });
+
+app.post("/api/posts/:postId/reactions", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const { emoji } = await c.req.json(); if (!emoji || !["🙏","❤️","🔥","👏"].includes(emoji)) return c.json({ error: "Invalid emoji" }, 422); const pid = c.req.param("postId"); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status='published'", [pid]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); try { await pool.query("INSERT INTO post_reactions (post_id,user_id,emoji) VALUES ($1,$2,$3)", [pid, u.id, emoji]); if (p.rows[0].author_user_id !== u.id) pushToUser(p.rows[0].author_user_id, { title: (u.name || "Someone") + " reacted " + emoji, body: "on your post", type: "post_reaction", circleCode: p.rows[0].circle_code }); } catch { await pool.query("DELETE FROM post_reactions WHERE post_id=$1 AND user_id=$2 AND emoji=$3", [pid, u.id, emoji]); } const rxr = await pool.query("SELECT emoji, COUNT(*) as count FROM post_reactions WHERE post_id=$1 GROUP BY emoji", [pid]); const urxr = await pool.query("SELECT emoji FROM post_reactions WHERE post_id=$1 AND user_id=$2", [pid, u.id]); const us = new Set(urxr.rows.map((r: any) => r.emoji)); return c.json({ reactions: rxr.rows.map((r: any) => ({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: us.has(r.emoji) })) }); });
+
+app.get("/api/posts/:postId/replies", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const pid = c.req.param("postId"); const cursor = c.req.query("cursor"); const lim = 20; let q = "SELECT * FROM post_replies WHERE post_id=$1 AND is_deleted=false"; const p: any[] = [pid]; if (cursor) { q += " AND created_at > $2"; p.push(cursor); } q += ` ORDER BY created_at ASC LIMIT $${p.length + 1}`; p.push(lim + 1); const r = await pool.query(q, p); const replies = r.rows.slice(0, lim); const nextCursor = r.rows.length > lim ? replies[replies.length - 1].created_at.toISOString() : null; return c.json({ replies, nextCursor }); });
+
+app.post("/api/posts/:postId/replies", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const { content } = await c.req.json(); if (!content?.trim()) return c.json({ error: "Reply cannot be empty." }, 422); if (content.length > 500) return c.json({ error: "Reply is too long. Maximum is 500 characters." }, 422); const pid = c.req.param("postId"); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status='published'", [pid]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); const r = await pool.query("INSERT INTO post_replies (post_id,author_user_id,author_name,content) VALUES ($1,$2,$3,$4) RETURNING *", [pid, u.id, u.name||"", content.trim()]); if (p.rows[0].author_user_id !== u.id) pushToUser(p.rows[0].author_user_id, { title: "💬 " + (u.name || "Someone") + " replied to your post", body: content.length > 60 ? content.substring(0, 60) + "..." : content, type: "post_reply", circleCode: p.rows[0].circle_code }); return c.json({ reply: r.rows[0] }, 201); });
+
+app.delete("/api/replies/:replyId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const r = await pool.query("SELECT r.*, p.author_user_id as post_author_id FROM post_replies r JOIN circle_posts p ON r.post_id=p.id WHERE r.id=$1 AND r.is_deleted=false", [c.req.param("replyId")]); if (!r.rows[0]) return c.json({ error: "Not found" }, 404); if (r.rows[0].author_user_id !== u.id && r.rows[0].post_author_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403); await pool.query("UPDATE post_replies SET is_deleted=true WHERE id=$1", [c.req.param("replyId")]); return c.body(null, 204); });
+
+app.get("/api/circles/:code/posts/scheduled", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const q = isAdmin(u.id) ? "SELECT * FROM circle_posts WHERE circle_code=$1 AND status='scheduled' ORDER BY scheduled_at ASC" : "SELECT * FROM circle_posts WHERE circle_code=$1 AND status='scheduled' AND author_user_id=$2 ORDER BY scheduled_at ASC"; const p = isAdmin(u.id) ? [code] : [code, u.id]; return c.json({ scheduledPosts: (await pool.query(q, p)).rows }); });
+
+app.patch("/api/posts/:postId/schedule", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status='scheduled'", [c.req.param("postId")]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); if (p.rows[0].author_user_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403); const { scheduledAt } = await c.req.json(); if (scheduledAt === null || scheduledAt === undefined) { await pool.query("UPDATE circle_posts SET status='deleted',updated_at=NOW() WHERE id=$1", [c.req.param("postId")]); return c.json({ cancelled: true }); } if (new Date(scheduledAt).getTime() < Date.now() + 600000) return c.json({ error: "Schedule time must be at least 10 minutes from now." }, 422); const r = await pool.query("UPDATE circle_posts SET scheduled_at=$1,updated_at=NOW() WHERE id=$2 RETURNING *", [scheduledAt, c.req.param("postId")]); return c.json({ post: r.rows[0] }); });
+
+// ─── Scheduled Post Publisher ────────────────────────────────────────
+async function publishScheduledPosts(): Promise<void> { try { const r = await pool.query("UPDATE circle_posts SET status='published',published_at=NOW(),updated_at=NOW() WHERE status='scheduled' AND scheduled_at <= NOW() RETURNING *"); for (const post of r.rows) { const ci = getCircle(post.circle_code); if (ci) pushToCircleMembers(ci, post.author_user_id, { title: "📝 " + (post.author_name || "Someone") + " posted in " + ci.name, body: post.content ? (post.content.length > 60 ? post.content.substring(0, 60) + "..." : post.content) : "New post", type: "new_post", circleCode: post.circle_code, circleName: ci.name }); console.log(`[Scheduler] Published ${post.id}`); } } catch (err: any) { console.error("[Scheduler]", err.message); } }
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── POSTHOG EVENTS ─────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 app.get("/api/dashboard/events", async (c) => {
   const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
@@ -563,15 +443,11 @@ app.get("/api/dashboard/events", async (c) => {
   try {
     const limit = Math.min(parseInt(c.req.query("limit") || "1000"), 2000);
     const daysBack = parseInt(c.req.query("days") || "14");
-    const afterDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
     const res = await fetch(`${POSTHOG_READ_HOST}/api/projects/${POSTHOG_PROJECT_ID}/events/?limit=${limit}`, { headers: { Authorization: `Bearer ${POSTHOG_PERSONAL_KEY}` } });
     if (!res.ok) { const txt = await res.text().catch(() => ""); console.error("[PostHog Read]", res.status, txt.substring(0,200)); return c.json({ error: "PostHog " + res.status, detail: txt.substring(0,200) }, 500); }
     const raw = ((await res.json()) as any).results || [];
     const exclude = new Set(["samy_setup", "samy_test"]);
-    const events = raw.filter((e: any) => !exclude.has(e.distinct_id)).map((e: any) => ({
-      event: e.event, timestamp: e.timestamp, user: e.distinct_id?.substring(0, 8) || "?", full_user_id: e.distinct_id,
-      properties: { type: e.properties?.type, plan: e.properties?.plan, price: e.properties?.price, trigger: e.properties?.trigger, duration: e.properties?.duration_seconds, streak: e.properties?.streak_day, is_first_open: e.properties?.is_first_open, circle_code: e.properties?.circle_code, circle_name: e.properties?.circle_name, content_type: e.properties?.content_type, city: e.properties?.$geoip_city_name || e.properties?.$set?.$geoip_city_name, country: e.properties?.$geoip_country_name || e.properties?.$set?.$geoip_country_name }
-    }));
+    const events = raw.filter((e: any) => !exclude.has(e.distinct_id)).map((e: any) => ({ event: e.event, timestamp: e.timestamp, user: e.distinct_id?.substring(0, 8) || "?", full_user_id: e.distinct_id, properties: { type: e.properties?.type, plan: e.properties?.plan, price: e.properties?.price, trigger: e.properties?.trigger, duration: e.properties?.duration_seconds, streak: e.properties?.streak_day, is_first_open: e.properties?.is_first_open, circle_code: e.properties?.circle_code, circle_name: e.properties?.circle_name, content_type: e.properties?.content_type, city: e.properties?.$geoip_city_name || e.properties?.$set?.$geoip_city_name, country: e.properties?.$geoip_country_name || e.properties?.$set?.$geoip_country_name } }));
     const uMap: Record<string, any> = {};
     for (const e of events) { if (!uMap[e.full_user_id]) uMap[e.full_user_id] = { id: e.user, full_id: e.full_user_id, events: [], counts: {} as Record<string,number>, first_seen: e.timestamp, last_seen: e.timestamp, city: "", country: "", max_streak: 0, plan_taps: 0 }; const u = uMap[e.full_user_id]; u.events.push(e); u.counts[e.event] = (u.counts[e.event]||0)+1; if (e.timestamp < u.first_seen) u.first_seen = e.timestamp; if (e.timestamp > u.last_seen) u.last_seen = e.timestamp; if (e.properties.city) u.city = e.properties.city; if (e.properties.country) u.country = e.properties.country; if (e.properties.streak) { const s = parseInt(e.properties.streak); if (s > u.max_streak) u.max_streak = s; } if (e.event === "paywall_plan_selected") u.plan_taps++; }
     const users = Object.values(uMap).sort((a: any, b: any) => b.events.length - a.events.length);
@@ -595,293 +471,22 @@ app.get("/api/dashboard/revenuecat", async (c) => {
   if (!REVENUECAT_SECRET_KEY) return c.json({ error: "REVENUECAT_SECRET_KEY not set" }, 500);
   try {
     const usersResult = await pool.query("SELECT id, device_user_id, subscription_status, name, email FROM users ORDER BY created_at DESC LIMIT 100");
-    const subscribers: any[] = [];
-    let totalRevenue = 0; let activeCount = 0; let trialCount = 0; let mrr = 0;
-
-    for (const user of usersResult.rows) {
-      const ids = [user.id, user.device_user_id].filter(Boolean);
-      for (const uid of ids) {
-        try {
-          const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(uid)}`, {
-            headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }
-          });
-          if (!rcRes.ok) continue;
-          const rcData = (await rcRes.json()) as any;
-          const sub = rcData.subscriber;
-          if (!sub) continue;
-          const entitlements = sub.entitlements || {};
-          const subscriptions = sub.subscriptions || {};
-          const nonSubs = sub.non_subscriptions || {};
-          const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > new Date());
-          const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > new Date());
-          
-          let userRevenue = 0;
-          for (const [pid, s] of Object.entries(subscriptions) as any[]) {
-            if (s.store === "app_store" || s.store === "play_store") {
-              if (pid.includes("yearly")) userRevenue += 29.99;
-              else if (pid.includes("monthly")) userRevenue += 3.99;
-              else if (pid.includes("lifetime")) userRevenue += 149.99;
-            }
-          }
-          
-          if (hasActive) activeCount++;
-          if (hasTrial) trialCount++;
-          totalRevenue += userRevenue;
-          
-          for (const [pid, s] of Object.entries(subscriptions) as any[]) {
-            const expires = new Date(s.expires_date);
-            if (expires > new Date() && s.period_type !== "trial") {
-              if (pid.includes("yearly")) mrr += 29.99 / 12;
-              else if (pid.includes("monthly")) mrr += 3.99;
-            }
-          }
-
-          subscribers.push({
-            user_id: uid,
-            name: user.name || null,
-            email: user.email || null,
-            db_status: user.subscription_status,
-            has_active: hasActive,
-            has_trial: hasTrial,
-            revenue: userRevenue,
-            entitlements: Object.keys(entitlements),
-            subscriptions: Object.entries(subscriptions).map(([pid, s]: [string, any]) => ({
-              product: pid,
-              store: s.store,
-              purchase_date: s.purchase_date,
-              expires_date: s.expires_date,
-              period_type: s.period_type,
-              is_active: new Date(s.expires_date) > new Date(),
-              auto_resume_date: s.auto_resume_date,
-              unsubscribe_detected_at: s.unsubscribe_detected_at,
-            })),
-            first_seen: sub.first_seen,
-          });
-          break;
-        } catch { continue; }
-      }
-    }
-
-    return c.json({
-      generated_at: new Date().toISOString(),
-      summary: {
-        active_subscriptions: activeCount,
-        active_trials: trialCount,
-        total_revenue_estimated: totalRevenue,
-        mrr_estimated: Math.round(mrr * 100) / 100,
-        net_mrr: Math.round(mrr * (1 - APPLE_CUT) * 100) / 100,
-        total_users_checked: usersResult.rows.length,
-        subscribers_found: subscribers.filter(s => s.has_active || s.has_trial).length,
-      },
-      subscribers: subscribers.filter(s => s.subscriptions.length > 0 || s.has_active || s.has_trial),
-      all_users: subscribers,
-    });
+    const subscribers: any[] = []; let totalRevenue = 0; let activeCount = 0; let trialCount = 0; let mrr = 0;
+    for (const user of usersResult.rows) { const ids = [user.id, user.device_user_id].filter(Boolean); for (const uid of ids) { try { const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(uid)}`, { headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } }); if (!rcRes.ok) continue; const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue; const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {}; const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > new Date()); const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > new Date()); let userRevenue = 0; for (const [pid, s2] of Object.entries(subscriptions) as any[]) { if (s2.store === "app_store" || s2.store === "play_store") { if (pid.includes("yearly")) userRevenue += 29.99; else if (pid.includes("monthly")) userRevenue += 3.99; else if (pid.includes("lifetime")) userRevenue += 149.99; } } if (hasActive) activeCount++; if (hasTrial) trialCount++; totalRevenue += userRevenue; for (const [pid, s2] of Object.entries(subscriptions) as any[]) { const expires = new Date(s2.expires_date); if (expires > new Date() && s2.period_type !== "trial") { if (pid.includes("yearly")) mrr += 29.99 / 12; else if (pid.includes("monthly")) mrr += 3.99; } } subscribers.push({ user_id: uid, name: user.name || null, email: user.email || null, db_status: user.subscription_status, has_active: hasActive, has_trial: hasTrial, revenue: userRevenue, entitlements: Object.keys(entitlements), subscriptions: Object.entries(subscriptions).map(([pid2, s3]: [string, any]) => ({ product: pid2, store: s3.store, purchase_date: s3.purchase_date, expires_date: s3.expires_date, period_type: s3.period_type, is_active: new Date(s3.expires_date) > new Date(), auto_resume_date: s3.auto_resume_date, unsubscribe_detected_at: s3.unsubscribe_detected_at })), first_seen: sub.first_seen }); break; } catch { continue; } } }
+    return c.json({ generated_at: new Date().toISOString(), summary: { active_subscriptions: activeCount, active_trials: trialCount, total_revenue_estimated: totalRevenue, mrr_estimated: Math.round(mrr * 100) / 100, net_mrr: Math.round(mrr * (1 - APPLE_CUT) * 100) / 100, total_users_checked: usersResult.rows.length, subscribers_found: subscribers.filter(s => s.has_active || s.has_trial).length }, subscribers: subscribers.filter(s => s.subscriptions.length > 0 || s.has_active || s.has_trial), all_users: subscribers });
   } catch (err: any) { return c.json({ error: "RevenueCat query failed", detail: err.message }, 500); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── APPLE APP STORE ────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
+async function initAppleAnalytics(): Promise<string | null> { const token = generateASCToken(); if (!token) return null; try { const existingRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}/analyticsReportRequests?filter[accessType]=ONGOING`, { headers: { Authorization: `Bearer ${token}` } }); if (existingRes.ok) { const existing = (await existingRes.json()) as any; if (existing.data?.length > 0) { console.log("[Apple] Existing report request found:", existing.data[0].id); return existing.data[0].id; } } const createRes = await fetch("https://api.appstoreconnect.apple.com/v1/analyticsReportRequests", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ data: { type: "analyticsReportRequests", attributes: { accessType: "ONGOING" }, relationships: { app: { data: { type: "apps", id: PRAMEN_APP_ID } } } } }) }); if (createRes.ok) { const created = (await createRes.json()) as any; console.log("[Apple] Created report request:", created.data?.id); return created.data?.id || null; } else { const err = await createRes.text().catch(() => ""); console.log("[Apple] Create request failed:", createRes.status, err.substring(0,200)); return null; } } catch (err: any) { console.error("[Apple] Init error:", err.message); return null; } }
 
-async function initAppleAnalytics(): Promise<string | null> {
-  const token = generateASCToken();
-  if (!token) return null;
-  try {
-    const existingRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}/analyticsReportRequests?filter[accessType]=ONGOING`, { headers: { Authorization: `Bearer ${token}` } });
-    if (existingRes.ok) {
-      const existing = (await existingRes.json()) as any;
-      if (existing.data?.length > 0) { console.log("[Apple] Existing report request found:", existing.data[0].id); return existing.data[0].id; }
-    }
-    const createRes = await fetch("https://api.appstoreconnect.apple.com/v1/analyticsReportRequests", {
-      method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { type: "analyticsReportRequests", attributes: { accessType: "ONGOING" }, relationships: { app: { data: { type: "apps", id: PRAMEN_APP_ID } } } } })
-    });
-    if (createRes.ok) { const created = (await createRes.json()) as any; console.log("[Apple] Created report request:", created.data?.id); return created.data?.id || null; }
-    else { const err = await createRes.text().catch(() => ""); console.log("[Apple] Create request failed:", createRes.status, err.substring(0,200)); return null; }
-  } catch (err: any) { console.error("[Apple] Init error:", err.message); return null; }
-}
+async function pullAppleAnalytics(): Promise<any> { const token = generateASCToken(); if (!token) return null; try { const requestId = await initAppleAnalytics(); if (!requestId) return null; const reportsRes = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/${requestId}/reports`, { headers: { Authorization: `Bearer ${token}` } }); if (!reportsRes.ok) return { connected: true, status: "api_error", code: reportsRes.status }; const reportsData = (await reportsRes.json()) as any; const reports = reportsData.data || []; if (reports.length === 0) return { connected: true, status: "generating" }; const targetKeywords = ["discovery","engagement","download","impression","standard"]; const sortedReports = [...reports].sort((a: any, b: any) => { const aName = (a.attributes?.name||"").toLowerCase(); const bName = (b.attributes?.name||"").toLowerCase(); const aScore = targetKeywords.reduce((s: number, kw: string) => s+(aName.includes(kw)?1:0),0)+(aName.includes("standard")?2:0); const bScore = targetKeywords.reduce((s: number, kw: string) => s+(bName.includes(kw)?1:0),0)+(bName.includes("standard")?2:0); return bScore-aScore; }); let lastResult: any = null; for (const report of sortedReports) { const instancesRes = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReports/${report.id}/instances?limit=7`, { headers: { Authorization: `Bearer ${token}` } }); if (!instancesRes.ok) continue; const instancesData = (await instancesRes.json()) as any; const instances = instancesData.data || []; if (instances.length === 0) { lastResult = { connected: true, status: "pending", reports_available: reports.map((r: any) => r.attributes?.name) }; continue; } for (const instance of instances.slice(0,3)) { const segmentsRes = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReportInstances/${instance.id}/segments?fields[analyticsReportSegments]=url,checksum,sizeInBytes`, { headers: { Authorization: `Bearer ${token}` } }); if (!segmentsRes.ok) continue; const segmentsData = (await segmentsRes.json()) as any; const segments = segmentsData.data || []; if (segments.length === 0) continue; const segUrl = segments[0].attributes?.url; if (!segUrl) continue; const dataRes = await fetch(segUrl); if (!dataRes.ok) continue; const rawText = await dataRes.text(); const lines = rawText.trim().split("\n"); if (lines.length < 2) continue; const headers = lines[0].split("\t").map((h: string) => h.trim().toLowerCase().replace(/\s+/g, "_")); const rows: any[] = []; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); const row: any = {}; headers.forEach((h: string, j: number) => { row[h] = cols[j]?.trim() || ""; }); rows.push(row); } let stored = 0; for (const row of rows) { const date = row.date || row.report_date || row.day || row.calendar_date; if (!date) continue; const impressions = parseInt(row.impressions||row.total_impressions||row.store_impressions||"0")||0; const pageViews = parseInt(row.product_page_views||row.page_views||row.product_page_view_count||"0")||0; const downloads = parseInt(row.total_downloads||row.first_time_downloads||row.app_units||row.redownloads_and_first_time_downloads||"0")||0; const proceeds = parseFloat(row.proceeds||row.developer_proceeds||"0")||0; const convRate = pageViews>0?downloads/pageViews:(impressions>0?downloads/impressions:0); if (impressions||downloads||pageViews) { await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,proceeds,updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=GREATEST(daily_app_store_metrics.impressions,$2),product_page_views=GREATEST(daily_app_store_metrics.product_page_views,$3),app_units=GREATEST(daily_app_store_metrics.app_units,$4),conversion_rate=$5,proceeds=GREATEST(daily_app_store_metrics.proceeds,$6),updated_at=NOW()`, [date, impressions, pageViews, downloads, convRate, proceeds]); stored++; } } if (stored > 0) return { connected: true, status: "ok", report: report.attributes?.name, reports_available: reports.map((r: any) => r.attributes?.name), rows_parsed: rows.length, days_stored: stored, headers, sample: rows.slice(0,2) }; } } return lastResult || { connected: true, status: "no_data", reports_available: reports.map((r: any) => r.attributes?.name) }; } catch (err: any) { console.error("[Apple] Analytics error:", err.message); return { connected: false, error: err.message }; } }
 
-async function pullAppleAnalytics(): Promise<any> {
-  const token = generateASCToken();
-  if (!token) return null;
-  try {
-    const requestId = await initAppleAnalytics();
-    if (!requestId) return null;
+app.post("/api/dashboard/appstore/seed", async (c) => { const secret = c.req.query("key") || c.req.header("X-Dashboard-Key"); if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401); try { const body = await c.req.json(); const { metrics } = body; if (!Array.isArray(metrics)) return c.json({ error: "metrics array required" }, 400); let stored = 0; for (const m of metrics) { if (!m.date) continue; await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,proceeds,updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=$2,product_page_views=$3,app_units=$4,conversion_rate=$5,proceeds=$6,updated_at=NOW()`, [m.date, m.impressions||0, m.product_page_views||0, m.app_units||0, m.conversion_rate||0, m.proceeds||0]); stored++; } return c.json({ status: "ok", stored }); } catch (e: any) { return c.json({ error: e.message }, 500); } });
 
-    const reportsRes = await fetch(
-      `https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/${requestId}/reports`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!reportsRes.ok) {
-      console.log("[Apple] Reports fetch failed:", reportsRes.status);
-      return { connected: true, status: "api_error", code: reportsRes.status };
-    }
-    const reportsData = (await reportsRes.json()) as any;
-    const reports = reportsData.data || [];
-
-    if (reports.length === 0) {
-      console.log("[Apple] No reports available yet");
-      return { connected: true, status: "generating", message: "Reports are being generated. Check back in 24 hours." };
-    }
-
-    console.log("[Apple] Available reports:", reports.map((r: any) => `${r.attributes?.name} (${r.attributes?.category})`).join(", "));
-
-    const targetKeywords = ["discovery", "engagement", "download", "impression", "standard"];
-    const sortedReports = [...reports].sort((a: any, b: any) => {
-      const aName = (a.attributes?.name || "").toLowerCase();
-      const bName = (b.attributes?.name || "").toLowerCase();
-      const aScore = targetKeywords.reduce((s: number, kw: string) => s + (aName.includes(kw) ? 1 : 0), 0) + (aName.includes("standard") ? 2 : 0);
-      const bScore = targetKeywords.reduce((s: number, kw: string) => s + (bName.includes(kw) ? 1 : 0), 0) + (bName.includes("standard") ? 2 : 0);
-      return bScore - aScore;
-    });
-
-    let lastResult: any = null;
-
-    for (const report of sortedReports) {
-      console.log("[Apple] Trying report:", report.attributes?.name, "id:", report.id);
-
-      const instancesRes = await fetch(
-        `https://api.appstoreconnect.apple.com/v1/analyticsReports/${report.id}/instances?limit=7`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (!instancesRes.ok) { console.log("[Apple] Instances failed for", report.attributes?.name); continue; }
-
-      const instancesData = (await instancesRes.json()) as any;
-      const instances = instancesData.data || [];
-
-      if (instances.length === 0) {
-        console.log("[Apple] No instances for", report.attributes?.name);
-        lastResult = { connected: true, status: "pending", reports_available: reports.map((r: any) => r.attributes?.name) };
-        continue;
-      }
-
-      for (const instance of instances.slice(0, 3)) {
-        console.log("[Apple] Instance:", instance.id, "granularity:", instance.attributes?.granularity);
-
-        const segmentsRes = await fetch(
-          `https://api.appstoreconnect.apple.com/v1/analyticsReportInstances/${instance.id}/segments?fields[analyticsReportSegments]=url,checksum,sizeInBytes`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!segmentsRes.ok) continue;
-
-        const segmentsData = (await segmentsRes.json()) as any;
-        const segments = segmentsData.data || [];
-        if (segments.length === 0) continue;
-
-        const segUrl = segments[0].attributes?.url;
-        if (!segUrl) continue;
-
-        const dataRes = await fetch(segUrl);
-        if (!dataRes.ok) continue;
-
-        const rawText = await dataRes.text();
-        const lines = rawText.trim().split("\n");
-        if (lines.length < 2) continue;
-
-        const headers = lines[0].split("\t").map((h: string) => h.trim().toLowerCase().replace(/\s+/g, "_"));
-        console.log("[Apple] Headers:", headers.join(", "));
-
-        const rows: any[] = [];
-        for (let i = 1; i < lines.length; i++) {
-          const cols = lines[i].split("\t");
-          const row: any = {};
-          headers.forEach((h: string, j: number) => { row[h] = cols[j]?.trim() || ""; });
-          rows.push(row);
-        }
-
-        let stored = 0;
-        for (const row of rows) {
-          const date = row.date || row.report_date || row.day || row.calendar_date;
-          if (!date) continue;
-
-          const impressions = parseInt(row.impressions || row.total_impressions || row.store_impressions || "0") || 0;
-          const pageViews = parseInt(row.product_page_views || row.page_views || row.product_page_view_count || "0") || 0;
-          const downloads = parseInt(row.total_downloads || row.first_time_downloads || row.app_units || row.redownloads_and_first_time_downloads || "0") || 0;
-          const proceeds = parseFloat(row.proceeds || row.developer_proceeds || "0") || 0;
-          const convRate = pageViews > 0 ? downloads / pageViews : (impressions > 0 ? downloads / impressions : 0);
-
-          if (impressions || downloads || pageViews) {
-            await pool.query(
-              `INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,proceeds,updated_at) 
-               VALUES ($1,$2,$3,$4,$5,$6,NOW()) 
-               ON CONFLICT (date) DO UPDATE SET 
-                 impressions=GREATEST(daily_app_store_metrics.impressions,$2),
-                 product_page_views=GREATEST(daily_app_store_metrics.product_page_views,$3),
-                 app_units=GREATEST(daily_app_store_metrics.app_units,$4),
-                 conversion_rate=$5,
-                 proceeds=GREATEST(daily_app_store_metrics.proceeds,$6),
-                 updated_at=NOW()`,
-              [date, impressions, pageViews, downloads, convRate, proceeds]
-            );
-            stored++;
-          }
-        }
-
-        if (stored > 0) {
-          console.log(`[Apple] SUCCESS: Parsed ${rows.length} rows from "${report.attributes?.name}", stored ${stored} days`);
-          return {
-            connected: true,
-            status: "ok",
-            report: report.attributes?.name,
-            reports_available: reports.map((r: any) => r.attributes?.name),
-            rows_parsed: rows.length,
-            days_stored: stored,
-            headers,
-            sample: rows.slice(0, 2)
-          };
-        }
-      }
-    }
-
-    return lastResult || { connected: true, status: "no_data", reports_available: reports.map((r: any) => r.attributes?.name) };
-  } catch (err: any) {
-    console.error("[Apple] Analytics error:", err.message);
-    return { connected: false, error: err.message };
-  }
-}
-
-app.post("/api/dashboard/appstore/seed", async (c) => {
-  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
-  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    const body = await c.req.json();
-    const { metrics } = body;
-    if (!Array.isArray(metrics)) return c.json({ error: "metrics array required" }, 400);
-    let stored = 0;
-    for (const m of metrics) {
-      if (!m.date) continue;
-      await pool.query(
-        `INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,proceeds,updated_at) 
-         VALUES ($1,$2,$3,$4,$5,$6,NOW()) 
-         ON CONFLICT (date) DO UPDATE SET impressions=$2,product_page_views=$3,app_units=$4,conversion_rate=$5,proceeds=$6,updated_at=NOW()`,
-        [m.date, m.impressions || 0, m.product_page_views || 0, m.app_units || 0, m.conversion_rate || 0, m.proceeds || 0]
-      );
-      stored++;
-    }
-    return c.json({ status: "ok", stored });
-  } catch (e: any) { return c.json({ error: e.message }, 500); }
-});
-
-app.get("/api/dashboard/appstore", async (c) => {
-  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
-  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
-  const token = generateASCToken();
-  if (!token) return c.json({ connected: false, error: "Apple API not configured" });
-  try {
-    const appRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!appRes.ok) return c.json({ connected: false, error: "Apple API " + appRes.status });
-    const appData = (await appRes.json()) as any;
-    const analytics = await pullAppleAnalytics();
-    const stored = await pool.query(`SELECT * FROM daily_app_store_metrics ORDER BY date DESC LIMIT 30`).catch(() => ({ rows: [] }));
-    return c.json({
-      connected: true,
-      app: { name: appData.data?.attributes?.name, bundleId: appData.data?.attributes?.bundleId },
-      analytics: analytics,
-      daily_metrics: stored.rows,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (e: any) { return c.json({ connected: false, error: e.message }); }
-});
+app.get("/api/dashboard/appstore", async (c) => { const secret = c.req.query("key") || c.req.header("X-Dashboard-Key"); if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401); const token = generateASCToken(); if (!token) return c.json({ connected: false, error: "Apple API not configured" }); try { const appRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}`, { headers: { Authorization: `Bearer ${token}` } }); if (!appRes.ok) return c.json({ connected: false, error: "Apple API " + appRes.status }); const appData = (await appRes.json()) as any; const analytics = await pullAppleAnalytics(); const stored = await pool.query(`SELECT * FROM daily_app_store_metrics ORDER BY date DESC LIMIT 30`).catch(() => ({ rows: [] })); return c.json({ connected: true, app: { name: appData.data?.attributes?.name, bundleId: appData.data?.attributes?.bundleId }, analytics: analytics, daily_metrics: stored.rows, timestamp: new Date().toISOString() }); } catch (e: any) { return c.json({ connected: false, error: e.message }); } });
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── DASHBOARD ──────────────────────────────────────────────────
@@ -900,7 +505,8 @@ app.get("/api/dashboard", async (c) => {
     const sb: Record<string,number> = {}; for (const r of ss.rows) sb[r.subscription_status || "none"] = parseInt(r.count);
     const tg = rv.rows.reduce((s: number, r: any) => s + (r.revenue_gross||0), 0); const tn = rv.rows.reduce((s: number, r: any) => s + (r.revenue_net||0), 0);
     const tv = wd.rows.reduce((s: number, r: any) => s + (r.visitors||0), 0); const tc = wd.rows.reduce((s: number, r: any) => s + (r.app_store_clicks||0), 0);
-    return c.json({ generated_at: new Date().toISOString(), kpis: { total_users: parseInt(uc.rows[0]?.count||"0"), active_subscribers: (sb["active"]||0)+(sb["lifetime"]||0), mrr_net: tn, revenue_gross_30d: tg, revenue_net_30d: tn, active_circles: circles.size, total_circle_members: tm, landing_visitors_7d: tv, landing_app_store_clicks_7d: tc, landing_conversion: tv > 0 ? ((tc/tv)*100).toFixed(1)+"%" : "0%" }, subscription_breakdown: sb, revenue: { daily: rv.rows, recent_events: re.rows, total_subscribers_30d: rv.rows.reduce((s: number, r: any) => s+(r.new_subscribers||0), 0), total_cancellations_30d: rv.rows.reduce((s: number, r: any) => s+(r.cancellations||0), 0) }, web: { daily: wd.rows }, app_store: { daily: ad.rows }, circles: { total: circles.size, total_members: tm, total_encouragements: te, total_prayer_requests: tp, circles: Array.from(circles.values()).map(ci => ({ name: ci.name, code: ci.code, members: ci.members.length, prayerRequests: ci.prayerRequests.length, encouragements: ci.encouragements.length, createdAt: ci.createdAt })) } });
+    const pc = await pool.query("SELECT COUNT(*) as count FROM circle_posts WHERE status='published'").catch(() => ({ rows: [{ count: 0 }] }));
+    return c.json({ generated_at: new Date().toISOString(), kpis: { total_users: parseInt(uc.rows[0]?.count||"0"), active_subscribers: (sb["active"]||0)+(sb["lifetime"]||0), mrr_net: tn, revenue_gross_30d: tg, revenue_net_30d: tn, active_circles: circles.size, total_circle_members: tm, total_posts: parseInt(pc.rows[0]?.count||"0"), landing_visitors_7d: tv, landing_app_store_clicks_7d: tc, landing_conversion: tv > 0 ? ((tc/tv)*100).toFixed(1)+"%" : "0%" }, subscription_breakdown: sb, revenue: { daily: rv.rows, recent_events: re.rows, total_subscribers_30d: rv.rows.reduce((s: number, r: any) => s+(r.new_subscribers||0), 0), total_cancellations_30d: rv.rows.reduce((s: number, r: any) => s+(r.cancellations||0), 0) }, web: { daily: wd.rows }, app_store: { daily: ad.rows }, circles: { total: circles.size, total_members: tm, total_encouragements: te, total_prayer_requests: tp, circles: Array.from(circles.values()).map(ci => ({ name: ci.name, code: ci.code, members: ci.members.length, prayerRequests: ci.prayerRequests.length, encouragements: ci.encouragements.length, createdAt: ci.createdAt })) } });
   } catch (e: any) { return c.json({ error: "Dashboard failed", detail: e.message }, 500); }
 });
 
@@ -920,13 +526,13 @@ async function start() {
   setInterval(() => { pullPlausibleMetrics().catch(() => {}); }, 60 * 60 * 1000);
   setInterval(() => { pullAppleSalesReport().catch(() => {}); }, 6 * 60 * 60 * 1000);
   setInterval(() => { pullAppleAnalytics().catch(() => {}); }, 12 * 60 * 60 * 1000);
+  setInterval(() => { publishScheduledPosts().catch(() => {}); }, 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v2.4 on port ${info.port}`);
-    console.log(`   PostHog write: ${POSTHOG_API_KEY ? "✓" : "✗"} | PostHog read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"}`);
-    console.log(`   Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"} | Apple: ${ASC_KEY_ID ? "✓" : "✗"} (pk ${ASC_PRIVATE_KEY.length} chars)`);
-    console.log(`   RevenueCat API: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
-    console.log(`   Dashboard: /dashboard?key=...`);
-    console.log(`   Circles: ${circles.size}\n`);
+    console.log(`\n🙏 prAmen API v2.6 on port ${info.port}`);
+    console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
+    console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
+    console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
+    console.log(`   Dashboard: /dashboard?key=... | Circles: ${circles.size} | Scheduler: active (60s)\n`);
   });
 }
 start();
