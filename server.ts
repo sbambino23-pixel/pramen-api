@@ -224,7 +224,10 @@ async function initDb(): Promise<void> {
     // ─── Prayer shares ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_shares (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', recipient_user_id TEXT NOT NULL, prayer_id TEXT, prayer_title TEXT, prayer_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_shares_recipient ON prayer_shares(recipient_user_id, created_at DESC)`);
-    console.log("DB initialized (v2.9 — all features + notifications + encouragements + sharing)");
+    // ─── Shared prayers (favorites sharing) ───────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS shared_prayers (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', recipient_user_id TEXT NOT NULL, favorite_id TEXT, note TEXT, prayer_text TEXT, prayer_title TEXT, source TEXT, media_url TEXT, media_type TEXT, transcript TEXT, is_saved BOOLEAN DEFAULT false, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_shared_prayers_recipient ON shared_prayers(recipient_user_id, is_deleted, created_at DESC)`);
+    console.log("DB initialized (v3.0 — full feature set)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -299,7 +302,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.9.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.0.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -830,6 +833,70 @@ app.post("/api/prayers/share", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// ─── SHARED PRAYERS (Favorites Sharing) ─────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+app.post("/api/shared-prayers", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const { favoriteId, recipientIds, circleId, note } = await c.req.json();
+  if (!favoriteId) return c.json({ error: "favoriteId required" }, 400);
+  if (note && note.length > 140) return c.json({ error: "Note too long. Maximum 140 characters." }, 422);
+
+  // Get the favorite prayer
+  const fav = await pool.query("SELECT * FROM favorites WHERE id=$1 AND user_id=$2 AND is_deleted=false", [favoriteId, u.id]);
+  if (!fav.rows[0]) return c.json({ error: "Favorite not found" }, 404);
+  const f = fav.rows[0];
+
+  // Resolve recipients
+  let resolvedIds: string[] = [];
+  if (circleId) {
+    const ci = getCircle(circleId);
+    if (!ci) return c.json({ error: "Circle not found" }, 404);
+    if (!isMemberOfCircle(u.id, ci)) return c.json({ error: "You can only share prayers with people in your circles." }, 403);
+    resolvedIds = ci.members.map(m => m.userId).filter(id => id !== u.id);
+  } else if (Array.isArray(recipientIds) && recipientIds.length > 0) {
+    if (recipientIds.length > 20) return c.json({ error: "You can share with a maximum of 20 people at once." }, 422);
+    resolvedIds = recipientIds.filter((id: string) => id !== u.id);
+  } else {
+    return c.json({ error: "Please select at least one recipient." }, 400);
+  }
+
+  if (resolvedIds.length === 0) return c.json({ error: "Please select at least one recipient." }, 400);
+
+  let sharedCount = 0;
+  for (const rid of resolvedIds) {
+    await pool.query(
+      `INSERT INTO shared_prayers (sender_user_id, sender_name, recipient_user_id, favorite_id, note, prayer_text, prayer_title, source, media_url, media_type, transcript) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [u.id, u.name || "Someone", rid, favoriteId, note || null, f.prayer_text, f.title, f.source, f.media_url, f.media_type, f.transcript]
+    );
+    pushToUser(rid, {
+      title: circleId ? `${u.name || "Someone"} shared a prayer with your circle 🙏` : "A prayer was shared with you 🕯️",
+      body: note ? `${u.name || "Someone"}: ${note}` : `${u.name || "Someone"} shared a prayer with you${f.title ? ": " + f.title : ""}`,
+      type: "prayer_shared",
+    });
+    sharedCount++;
+  }
+
+  trackEvent(u.id, "prayer_favorite_shared", { recipient_count: sharedCount, source: f.source });
+  return c.json({ sharedCount, sharedAt: new Date().toISOString() });
+});
+
+app.get("/api/shared-prayers/received", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const r = await pool.query("SELECT * FROM shared_prayers WHERE recipient_user_id=$1 AND is_deleted=false ORDER BY created_at DESC", [u.id]);
+  return c.json({ sharedPrayers: r.rows });
+});
+
+app.delete("/api/shared-prayers/:sharedPrayerId", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  await pool.query("UPDATE shared_prayers SET is_deleted=true WHERE id=$1 AND recipient_user_id=$2", [c.req.param("sharedPrayerId"), u.id]);
+  return c.body(null, 204);
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE POSTS ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.length) return []; const ids = posts.map(p => p.id); const rx = await pool.query("SELECT post_id, emoji, COUNT(*) as count FROM post_reactions WHERE post_id = ANY($1) GROUP BY post_id, emoji", [ids]); const urx = await pool.query("SELECT post_id, emoji FROM post_reactions WHERE post_id = ANY($1) AND user_id = $2", [ids, currentUserId]); const rm: Record<string, { emoji: string; count: number; reactedByCurrentUser: boolean }[]> = {}; for (const r of rx.rows) { if (!rm[r.post_id]) rm[r.post_id] = []; rm[r.post_id].push({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: false }); } for (const r of urx.rows) { const arr = rm[r.post_id]; if (arr) { const x = arr.find(a => a.emoji === r.emoji); if (x) x.reactedByCurrentUser = true; } } const rc = await pool.query("SELECT post_id, COUNT(*) as count FROM post_replies WHERE post_id = ANY($1) AND is_deleted=false GROUP BY post_id", [ids]); const rcm: Record<string, number> = {}; for (const r of rc.rows) rcm[r.post_id] = parseInt(r.count); return posts.map(p => ({ ...p, isAdmin: isAdmin(p.author_user_id), reactions: rm[p.id] || [], replyCount: rcm[p.id] || 0 })); }
@@ -952,7 +1019,7 @@ async function start() {
   generateDailyReflection().catch(() => {});
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v2.9 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
