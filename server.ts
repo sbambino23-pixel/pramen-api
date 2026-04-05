@@ -227,7 +227,13 @@ async function initDb(): Promise<void> {
     // ─── Shared prayers (favorites sharing) ───────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS shared_prayers (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', recipient_user_id TEXT NOT NULL, favorite_id TEXT, note TEXT, prayer_text TEXT, prayer_title TEXT, source TEXT, media_url TEXT, media_type TEXT, transcript TEXT, is_saved BOOLEAN DEFAULT false, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_shared_prayers_recipient ON shared_prayers(recipient_user_id, is_deleted, created_at DESC)`);
-    console.log("DB initialized (v3.0 — full feature set)");
+    // ─── Referrals ────────────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS referral_codes (user_id TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_referral_code ON referral_codes(code)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS referrals (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, referred_user_id TEXT, referred_email TEXT, status TEXT NOT NULL DEFAULT 'pending', confirmed_at TIMESTAMPTZ, reversed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_user_id, status)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS referral_rewards (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, tier INT NOT NULL, reward_type TEXT NOT NULL, granted_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(user_id, tier))`);
+    console.log("DB initialized (v3.2 — full feature set + referrals)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -302,7 +308,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.1.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.2.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -401,6 +407,13 @@ app.post("/webhooks/revenuecat", async (c) => {
       else if (name === "subscription_renewed") await pool.query(`INSERT INTO daily_revenue (date,renewals,revenue_gross,revenue_net) VALUES ($1,1,$2,$3) ON CONFLICT (date) DO UPDATE SET renewals=daily_revenue.renewals+1,revenue_gross=daily_revenue.revenue_gross+$2,revenue_net=daily_revenue.revenue_net+$3,updated_at=NOW()`, [today, price, net]);
       else if (name === "subscription_cancelled" || name === "subscription_expired") await pool.query(`INSERT INTO daily_revenue (date,cancellations) VALUES ($1,1) ON CONFLICT (date) DO UPDATE SET cancellations=daily_revenue.cancellations+1,updated_at=NOW()`, [today]);
     } catch (e: any) { console.error("[Revenue]", e.message); }
+    // Confirm referral if this is a first subscription
+    if (name === "subscription_started" || name === "lifetime_purchased") {
+      try {
+        const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [resolvedUid]);
+        if (ref.rows[0]) { evaluateTierRewards(ref.rows[0].referrer_user_id).catch(() => {}); pushToUser(ref.rows[0].referrer_user_id, { title: "🎉 Referral confirmed!", body: "Someone you invited just subscribed. Check your rewards!", type: "referral_confirmed" }); }
+      } catch {}
+    }
     console.log(`[RC] ${ev.type} → ${name} | rc:${rcUid.substring(0,12)} → resolved:${resolvedUid.substring(0,12)} ${plan}`); return c.json({ status: "ok" });
   } catch (e) { console.error("[RC]", e); return c.json({ error: "Error" }, 500); }
 });
@@ -980,6 +993,182 @@ app.delete("/api/shared-prayers/:sharedPrayerId", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// ─── REFERRALS & REWARDS ────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+function generateReferralCode(name: string): string {
+  const prefix = (name || "PRAY").replace(/[^A-Z]/gi, "").substring(0, 5).toUpperCase() || "PRAY";
+  const digits = Math.floor(1000 + Math.random() * 9000);
+  return `${prefix}${digits}`;
+}
+
+async function evaluateTierRewards(userId: string): Promise<void> {
+  const confirmed = await pool.query("SELECT COUNT(*) as count FROM referrals WHERE referrer_user_id=$1 AND status='confirmed'", [userId]);
+  const count = parseInt(confirmed.rows[0]?.count || "0");
+  const tiers = [
+    { tier: 1, threshold: 1, type: "7_days_free", days: 7 },
+    { tier: 2, threshold: 5, type: "1_month_free", days: 30 },
+    { tier: 3, threshold: 10, type: "50_off_lifetime", days: 0 },
+    { tier: 4, threshold: 20, type: "free_lifetime", days: 0 },
+  ];
+
+  for (const t of tiers) {
+    if (count >= t.threshold) {
+      // Check if already granted
+      const existing = await pool.query("SELECT id FROM referral_rewards WHERE user_id=$1 AND tier=$2", [userId, t.tier]);
+      if (existing.rows.length > 0) continue;
+
+      // Grant reward
+      await pool.query("INSERT INTO referral_rewards (user_id, tier, reward_type) VALUES ($1,$2,$3)", [userId, t.tier, t.type]);
+
+      // Grant via RevenueCat API (tiers 1, 2, 4)
+      if (REVENUECAT_SECRET_KEY && (t.tier === 1 || t.tier === 2 || t.tier === 4)) {
+        try {
+          const duration = t.tier === 4 ? "lifetime" : t.tier === 2 ? "monthly" : "weekly";
+          await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}/entitlements/premium/promotional`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ duration }),
+          });
+          console.log(`[Referral] Granted tier ${t.tier} (${t.type}) to ${userId.substring(0, 8)}`);
+        } catch (err: any) { console.error(`[Referral] RC grant error tier ${t.tier}:`, err.message); }
+      }
+
+      trackEvent(userId, "referral_reward_earned", { tier: t.tier, reward: t.type, referral_count: count });
+    }
+  }
+}
+
+app.get("/api/referrals/me", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+
+  const codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]);
+  const code = codeResult.rows[0]?.code || null;
+
+  const referrals = await pool.query("SELECT id, referred_user_id, status, created_at, confirmed_at FROM referrals WHERE referrer_user_id=$1 ORDER BY created_at DESC", [u.id]);
+
+  // Enrich with names
+  const enriched = [];
+  for (const ref of referrals.rows) {
+    let name = null;
+    if (ref.referred_user_id) {
+      const usr = await pool.query("SELECT name FROM users WHERE id=$1", [ref.referred_user_id]);
+      name = usr.rows[0]?.name || null;
+    }
+    enriched.push({ ...ref, referred_name: name });
+  }
+
+  const confirmedCount = referrals.rows.filter((r: any) => r.status === "confirmed").length;
+  const rewards = await pool.query("SELECT tier, reward_type, granted_at FROM referral_rewards WHERE user_id=$1 ORDER BY tier", [u.id]);
+
+  let currentTier = 0;
+  if (confirmedCount >= 20) currentTier = 4;
+  else if (confirmedCount >= 10) currentTier = 3;
+  else if (confirmedCount >= 5) currentTier = 2;
+  else if (confirmedCount >= 1) currentTier = 1;
+
+  const nextTierThresholds = [1, 5, 10, 20];
+  const nextTierAt = nextTierThresholds.find(t => t > confirmedCount) || null;
+
+  return c.json({
+    code,
+    link: code ? `https://pramen.app/join/${code}` : null,
+    referrals: enriched,
+    confirmedCount,
+    currentTier,
+    nextTierAt,
+    rewards: rewards.rows,
+  });
+});
+
+app.post("/api/referrals/generate", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+
+  // Return existing code if already generated
+  const existing = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]);
+  if (existing.rows[0]) return c.json({ code: existing.rows[0].code, link: `https://pramen.app/join/${existing.rows[0].code}` });
+
+  // Generate unique code with retry
+  let code = "";
+  for (let attempt = 0; attempt < 10; attempt++) {
+    code = generateReferralCode(u.name || "PRAY");
+    const collision = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [code]);
+    if (collision.rows.length === 0) break;
+  }
+
+  await pool.query("INSERT INTO referral_codes (user_id, code) VALUES ($1, $2)", [u.id, code]);
+  trackEvent(u.id, "referral_code_generated", { code });
+  return c.json({ code, link: `https://pramen.app/join/${code}` });
+});
+
+app.post("/api/referrals/track", async (c) => {
+  // No auth required — called during onboarding
+  const { referralCode, newUserId, newUserEmail } = await c.req.json();
+  if (!referralCode) return c.json({ error: "referralCode required" }, 400);
+
+  // Find referrer
+  const referrer = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [referralCode.toUpperCase()]);
+  if (!referrer.rows[0]) return c.json({ error: "Invalid referral code" }, 404);
+  const referrerId = referrer.rows[0].user_id;
+
+  // Self-referral check
+  if (newUserId && newUserId === referrerId) return c.json({ error: "You cannot refer yourself." }, 422);
+
+  // Check if already tracked
+  if (newUserId) {
+    const dup = await pool.query("SELECT id FROM referrals WHERE referrer_user_id=$1 AND referred_user_id=$2", [referrerId, newUserId]);
+    if (dup.rows.length > 0) return c.json({ error: "This referral has already been tracked." }, 409);
+  }
+
+  const r = await pool.query("INSERT INTO referrals (referrer_user_id, referred_user_id, referred_email) VALUES ($1,$2,$3) RETURNING id", [referrerId, newUserId || null, newUserEmail || null]);
+  trackEvent(referrerId, "referral_tracked", { referred_user_id: newUserId, code: referralCode });
+
+  return c.json({ referralId: r.rows[0].id, discountApplied: true });
+});
+
+app.post("/api/referrals/confirm", async (c) => {
+  // Internal — called from webhook logic
+  const sec = c.req.header("X-Admin-Secret");
+  if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const { referredUserId } = await c.req.json();
+  if (!referredUserId) return c.json({ error: "referredUserId required" }, 400);
+
+  const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [referredUserId]);
+  if (ref.rows[0]) {
+    await evaluateTierRewards(ref.rows[0].referrer_user_id);
+    pushToUser(ref.rows[0].referrer_user_id, {
+      title: "🎉 Referral confirmed!",
+      body: "Someone you invited just subscribed. Check your rewards!",
+      type: "referral_confirmed",
+    });
+  }
+  return c.json({ confirmed: ref.rows.length });
+});
+
+app.post("/api/referrals/reverse", async (c) => {
+  const sec = c.req.header("X-Admin-Secret");
+  if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const { referredUserId } = await c.req.json();
+  if (!referredUserId) return c.json({ error: "referredUserId required" }, 400);
+
+  await pool.query("UPDATE referrals SET status='reversed', reversed_at=NOW() WHERE referred_user_id=$1 AND status='confirmed'", [referredUserId]);
+  return c.json({ reversed: true });
+});
+
+app.get("/api/referrals/circle/:code", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const code = c.req.param("code").toUpperCase();
+  const ci = getCircle(code);
+  if (!ci) return c.json({ count: 0 });
+  const memberIds = ci.members.map(m => m.userId);
+  const result = await pool.query("SELECT COUNT(*) as count FROM referrals WHERE referrer_user_id=$1 AND referred_user_id = ANY($2) AND status='confirmed'", [u.id, memberIds]);
+  return c.json({ count: parseInt(result.rows[0]?.count || "0") });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE POSTS ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.length) return []; const ids = posts.map(p => p.id); const rx = await pool.query("SELECT post_id, emoji, COUNT(*) as count FROM post_reactions WHERE post_id = ANY($1) GROUP BY post_id, emoji", [ids]); const urx = await pool.query("SELECT post_id, emoji FROM post_reactions WHERE post_id = ANY($1) AND user_id = $2", [ids, currentUserId]); const rm: Record<string, { emoji: string; count: number; reactedByCurrentUser: boolean }[]> = {}; for (const r of rx.rows) { if (!rm[r.post_id]) rm[r.post_id] = []; rm[r.post_id].push({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: false }); } for (const r of urx.rows) { const arr = rm[r.post_id]; if (arr) { const x = arr.find(a => a.emoji === r.emoji); if (x) x.reactedByCurrentUser = true; } } const rc = await pool.query("SELECT post_id, COUNT(*) as count FROM post_replies WHERE post_id = ANY($1) AND is_deleted=false GROUP BY post_id", [ids]); const rcm: Record<string, number> = {}; for (const r of rc.rows) rcm[r.post_id] = parseInt(r.count); return posts.map(p => ({ ...p, isAdmin: isAdmin(p.author_user_id), reactions: rm[p.id] || [], replyCount: rcm[p.id] || 0 })); }
@@ -1102,7 +1291,7 @@ async function start() {
   generateDailyReflection().catch(() => {});
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.1 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.2 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
