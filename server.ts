@@ -192,7 +192,10 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_token ON invite_tokens(token)`);
     // ─── Lumi reflections ─────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS daily_reflections (date DATE PRIMARY KEY, verse TEXT NOT NULL, reference TEXT NOT NULL, reflection TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
-    console.log("DB initialized (v2.7 — circles + users + analytics + apns + posts + invites + lumi)");
+    // ─── Favorites ────────────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS favorites (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, title TEXT, source TEXT NOT NULL DEFAULT 'app', prayer_text TEXT, prayer_id TEXT, media_url TEXT, media_type TEXT, media_filename TEXT, transcript TEXT, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, is_deleted, created_at DESC)`);
+    console.log("DB initialized (v2.8 — circles + users + analytics + apns + posts + invites + lumi + favorites)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -267,7 +270,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.7.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "2.8.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -528,6 +531,150 @@ async function generateDailyReflection(): Promise<{ verse: string; reference: st
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// ─── FAVORITES ──────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+const FAV_ALLOWED_MEDIA: Record<string, string[]> = {
+  image: ["image/jpeg","image/png","image/heic","image/heif"],
+  audio: ["audio/mpeg","audio/mp4","audio/x-m4a","audio/aac","audio/wav","audio/x-wav"],
+  video: ["video/mp4","video/quicktime"],
+  pdf: ["application/pdf"],
+};
+const FAV_MAX_IMAGE_PDF = 20 * 1024 * 1024;
+const FAV_MAX_AUDIO_VIDEO = 50 * 1024 * 1024;
+
+app.get("/api/favorites", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const r = await pool.query("SELECT * FROM favorites WHERE user_id=$1 AND is_deleted=false ORDER BY created_at DESC", [u.id]);
+  return c.json({ favorites: r.rows });
+});
+
+app.post("/api/favorites", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const body = await c.req.parseBody();
+  const title = (body.title as string) || null;
+  const source = (body.source as string) || "app";
+  const prayerText = (body.prayerText as string) || null;
+  const prayerId = (body.prayerId as string) || null;
+  const transcript = (body.transcript as string) || null;
+  const mediaFile = body.mediaFile as File | undefined;
+
+  // Validate source
+  const validSources = ["app", "text", "image", "ocr", "pdf", "audio", "video"];
+  if (!validSources.includes(source)) return c.json({ error: "Invalid source type." }, 422);
+
+  // For app saves, check duplicate
+  if (source === "app" && prayerId) {
+    const existing = await pool.query("SELECT id FROM favorites WHERE user_id=$1 AND prayer_id=$2 AND is_deleted=false", [u.id, prayerId]);
+    if (existing.rows.length > 0) return c.json({ error: "Already saved." }, 409);
+  }
+
+  // For text imports, require minimum content
+  if (source === "text" && (!prayerText || prayerText.trim().length < 10)) return c.json({ error: "Prayer text must be at least 10 characters." }, 422);
+
+  let mediaUrl: string | null = null;
+  let mediaType: string | null = null;
+  let mediaFilename: string | null = null;
+
+  if (mediaFile && mediaFile.size > 0) {
+    const ft = mediaFile.type;
+    const isImageOrPdf = FAV_ALLOWED_MEDIA.image.includes(ft) || FAV_ALLOWED_MEDIA.pdf.includes(ft);
+    const isAudioVideo = FAV_ALLOWED_MEDIA.audio.includes(ft) || FAV_ALLOWED_MEDIA.video.includes(ft);
+    if (!isImageOrPdf && !isAudioVideo) return c.json({ error: "Unsupported file format." }, 422);
+    const maxSize = isAudioVideo ? FAV_MAX_AUDIO_VIDEO : FAV_MAX_IMAGE_PDF;
+    if (mediaFile.size > maxSize) return c.json({ error: `File too large. Maximum size is ${isAudioVideo ? "50" : "20"} MB.` }, 413);
+
+    if (FAV_ALLOWED_MEDIA.image.includes(ft)) mediaType = "image";
+    else if (FAV_ALLOWED_MEDIA.audio.includes(ft)) mediaType = "audio";
+    else if (FAV_ALLOWED_MEDIA.video.includes(ft)) mediaType = "video";
+    else if (FAV_ALLOWED_MEDIA.pdf.includes(ft)) mediaType = "pdf";
+
+    try {
+      const ext = mediaFile.name.split(".").pop() || "bin";
+      const key = `favorites/${Date.now()}-${randomUUID().substring(0, 8)}.${ext}`;
+      if (s3) {
+        await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await mediaFile.arrayBuffer()), ContentType: ft }));
+        mediaUrl = `${R2_PUBLIC_URL}/${key}`;
+      } else { return c.json({ error: "Storage not configured." }, 500); }
+      mediaFilename = mediaFile.name;
+    } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); }
+  }
+
+  const r = await pool.query(
+    `INSERT INTO favorites (user_id,title,source,prayer_text,prayer_id,media_url,media_type,media_filename,transcript) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+    [u.id, title, source, prayerText, prayerId, mediaUrl, mediaType, mediaFilename, transcript]
+  );
+  trackEvent(u.id, "favorite_saved", { source });
+  return c.json({ favorite: r.rows[0] }, 201);
+});
+
+app.delete("/api/favorites/:favoriteId", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const r = await pool.query("UPDATE favorites SET is_deleted=true, updated_at=NOW() WHERE id=$1 AND user_id=$2 AND is_deleted=false RETURNING id", [c.req.param("favoriteId"), u.id]);
+  if (!r.rows.length) return c.json({ error: "Not found" }, 404);
+  return c.body(null, 204);
+});
+
+app.post("/api/favorites/transcribe", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  if (!GEMINI_API_KEY) return c.json({ error: "Something went wrong. Please try again." }, 500);
+
+  const body = await c.req.parseBody();
+  const mediaFile = body.mediaFile as File | undefined;
+  if (!mediaFile || mediaFile.size === 0) return c.json({ error: "No file provided." }, 422);
+  if (mediaFile.size > FAV_MAX_AUDIO_VIDEO) return c.json({ error: "File too large. Maximum size is 50 MB." }, 413);
+
+  const ft = mediaFile.type;
+  const isAudio = FAV_ALLOWED_MEDIA.audio.includes(ft);
+  const isVideo = FAV_ALLOWED_MEDIA.video.includes(ft);
+  if (!isAudio && !isVideo) return c.json({ error: "Unsupported file format." }, 422);
+
+  // Gemini has a ~20MB inline limit; reject larger files for transcription
+  if (mediaFile.size > 20 * 1024 * 1024) return c.json({ error: "File too large for transcription. Maximum is 20 MB." }, 413);
+
+  try {
+    const fileBuffer = Buffer.from(await mediaFile.arrayBuffer());
+    const base64Data = fileBuffer.toString("base64");
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inline_data: { mime_type: ft, data: base64Data } },
+              { text: "Please transcribe this audio/video recording word for word. Return only the transcription text, nothing else. If the recording is a prayer, preserve the prayerful tone." }
+            ]
+          }]
+        }),
+      }
+    );
+
+    if (res.status === 429) return c.json({ error: "Transcription is busy. Please try again in a moment." }, 429);
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      console.error("[Transcribe] Gemini error:", res.status, errText.substring(0, 200));
+      return c.json({ error: "Something went wrong. Please try again." }, 500);
+    }
+
+    const data = (await res.json()) as any;
+    const transcript = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    if (!transcript.trim()) return c.json({ error: "No speech could be detected in this file." }, 422);
+
+    trackEvent(u.id, "prayer_transcribed", { file_type: ft });
+    return c.json({ transcript: transcript.trim() });
+  } catch (err: any) {
+    console.error("[Transcribe] Error:", err.message);
+    return c.json({ error: "Something went wrong. Please try again." }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE POSTS ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.length) return []; const ids = posts.map(p => p.id); const rx = await pool.query("SELECT post_id, emoji, COUNT(*) as count FROM post_reactions WHERE post_id = ANY($1) GROUP BY post_id, emoji", [ids]); const urx = await pool.query("SELECT post_id, emoji FROM post_reactions WHERE post_id = ANY($1) AND user_id = $2", [ids, currentUserId]); const rm: Record<string, { emoji: string; count: number; reactedByCurrentUser: boolean }[]> = {}; for (const r of rx.rows) { if (!rm[r.post_id]) rm[r.post_id] = []; rm[r.post_id].push({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: false }); } for (const r of urx.rows) { const arr = rm[r.post_id]; if (arr) { const x = arr.find(a => a.emoji === r.emoji); if (x) x.reactedByCurrentUser = true; } } const rc = await pool.query("SELECT post_id, COUNT(*) as count FROM post_replies WHERE post_id = ANY($1) AND is_deleted=false GROUP BY post_id", [ids]); const rcm: Record<string, number> = {}; for (const r of rc.rows) rcm[r.post_id] = parseInt(r.count); return posts.map(p => ({ ...p, isAdmin: isAdmin(p.author_user_id), reactions: rm[p.id] || [], replyCount: rcm[p.id] || 0 })); }
@@ -650,7 +797,7 @@ async function start() {
   generateDailyReflection().catch(() => {});
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v2.7 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v2.8 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
