@@ -10,7 +10,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 const { Pool } = pg;
 
 // ─── Types ───────────────────────────────────────────────────────────
-interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; joinedAt: string; canPost?: boolean; notificationsMuted?: boolean; }
+interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; joinedAt: string; canPost?: boolean; notificationsMuted?: boolean; role?: string; }
 interface StoredPrayerRequest { id: string; requesterUserId: string; requesterName: string; text: string; timestamp: string; isAnonymous: boolean; prayedByUserIds: string[]; }
 interface StoredEncouragement { id: string; toUserId: string; fromUserId: string; fromName: string; message: string; timestamp: string; }
 interface StoredCircle { id: string; name: string; code: string; emoji: string; creatorUserId: string; members: StoredMember[]; prayerRequests: StoredPrayerRequest[]; encouragements: StoredEncouragement[]; createdAt: string; }
@@ -38,6 +38,8 @@ const APNS_HOST = process.env.APNS_SANDBOX === "true" ? "api.sandbox.push.apple.
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID || "";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || "";
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || "prAmen <hello@pramen.app>";
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID || "";
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "";
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || "";
@@ -174,7 +176,9 @@ async function pushToCircleMembers(circle: StoredCircle, excludeUserId: string, 
 
 // ─── Admin Helpers ───────────────────────────────────────────────────
 function isAdmin(userId: string): boolean { return ADMIN_USER_ID !== "" && userId === ADMIN_USER_ID; }
-function canPostInCircle(userId: string, circle: StoredCircle): boolean { if (isAdmin(userId)) return true; const m = circle.members.find(m => m.userId === userId); return m?.canPost === true; }
+function isCircleAdmin(userId: string, circle: StoredCircle): boolean { if (isAdmin(userId)) return true; const m = circle.members.find(m => m.userId === userId); return m?.role === "creator" || m?.role === "admin"; }
+function isCircleCreator(userId: string, circle: StoredCircle): boolean { return circle.creatorUserId === userId || (circle.members.find(m => m.userId === userId)?.role === "creator"); }
+function canPostInCircle(userId: string, circle: StoredCircle): boolean { if (isAdmin(userId)) return true; if (isCircleAdmin(userId, circle)) return true; const m = circle.members.find(m => m.userId === userId); return m?.canPost === true; }
 function isMemberOfCircle(userId: string, circle: StoredCircle): boolean { return circle.members.some(m => m.userId === userId) || isAdmin(userId); }
 
 // ─── Postgres ────────────────────────────────────────────────────────
@@ -239,7 +243,10 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS saved_churches (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, place_id TEXT NOT NULL, church_name TEXT, address TEXT, lat REAL, lng REAL, tags TEXT[] DEFAULT '{}', review TEXT, notes TEXT, rating INT, photos JSONB DEFAULT '[]', is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_saved_churches_user ON saved_churches(user_id, is_deleted)`);
     await client.query(`CREATE TABLE IF NOT EXISTS church_shares (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', saved_church_id TEXT NOT NULL, circle_code TEXT NOT NULL, note TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
-    console.log("DB initialized (v3.3 — full feature set + churches)");
+    // ─── Invite emails ────────────────────────────────────────────
+    await client.query(`CREATE TABLE IF NOT EXISTS invite_emails (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, friend_name TEXT NOT NULL, friend_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', referral_code TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_emails_referrer ON invite_emails(referrer_user_id, created_at DESC)`);
+    console.log("DB initialized (v3.4 — full feature set + circle admin roles)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -314,7 +321,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.3.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.4.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -427,12 +434,37 @@ app.post("/webhooks/revenuecat", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLES ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const code = generateCircleCode(); const ci: StoredCircle = { id: randomUUID(), name: b.name || "Prayer Circle", code, emoji: b.emoji || "🏠", creatorUserId: b.userId, members: [{ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }], prayerRequests: [], encouragements: [], createdAt: new Date().toISOString() }; await saveCircleToDb(ci); trackEvent(b.userId, "circle_created", { circle_id: ci.id, circle_code: code, circle_name: ci.name }); return c.json({ circle: ci }, 201); });
+app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const code = generateCircleCode(); const ci: StoredCircle = { id: randomUUID(), name: b.name || "Prayer Circle", code, emoji: b.emoji || "🏠", creatorUserId: b.userId, members: [{ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString(), role: "creator" }], prayerRequests: [], encouragements: [], createdAt: new Date().toISOString() }; await saveCircleToDb(ci); trackEvent(b.userId, "circle_created", { circle_id: ci.id, circle_code: code, circle_name: ci.name }); return c.json({ circle: ci }, 201); });
 app.get("/api/circles/:code", (c) => { const ci = getCircle(c.req.param("code")); return ci ? c.json({ circle: ci }) : c.json({ error: "Not found" }, 404); });
 app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); pushToUser(ci.creatorUserId, { title: "👥 " + (b.userName || "Someone") + " joined " + ci.name + "!", body: ci.members.length + " members are now praying together", type: "member_joined", circleCode: code, circleName: ci.name }); return c.json({ circle: ci }); });
 app.put("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (b.name) ci.name = b.name; if (b.emoji) ci.emoji = b.emoji; await saveCircleToDb(ci); return c.json({ circle: ci }); });
 app.put("/api/circles/:code/members/:userId/status", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const b = await c.req.json(); const old = m.streakCount; if (b.streakCount !== undefined) m.streakCount = b.streakCount; if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate; if (b.name !== undefined) m.name = b.name; await saveCircleToDb(ci); if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) { trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() }); pushToCircleMembers(ci, c.req.param("userId"), { title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!", body: "Celebrate their dedication in " + ci.name, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); } return c.json({ circle: ci }); });
-app.delete("/api/circles/:code/members/:userId", async (c) => { const code = c.req.param("code").toUpperCase(); const uid = c.req.param("userId"); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); const ah = c.req.header("Authorization"); if (ah?.startsWith("Bearer ")) { const u = await getUserByToken(ah.replace("Bearer ", "")); if (u && isAdmin(u.id) && uid !== u.id) { ci.members = ci.members.filter(m => m.userId !== uid); trackEvent(uid, "circle_removed_by_admin", { circle_code: code }); ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci); return c.json({ success: true }); } } ci.members = ci.members.filter(m => m.userId !== uid); trackEvent(uid, "circle_left", { circle_code: code }); ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci); return c.json({ success: true }); });
+app.delete("/api/circles/:code/members/:userId", async (c) => {
+  const code = c.req.param("code").toUpperCase(); const uid = c.req.param("userId");
+  const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
+  const ah = c.req.header("Authorization");
+  if (ah?.startsWith("Bearer ")) {
+    const u = await getUserByToken(ah.replace("Bearer ", ""));
+    if (u && uid !== u.id) {
+      // Admin/creator removing another member
+      if (isCircleAdmin(u.id, ci)) {
+        const target = ci.members.find(m => m.userId === uid);
+        if (!target) return c.json({ error: "This member wasn't found in the circle." }, 404);
+        if (target.role === "creator") return c.json({ error: "This action isn't allowed." }, 422);
+        ci.members = ci.members.filter(m => m.userId !== uid);
+        trackEvent(uid, "circle_removed_by_admin", { circle_code: code, removed_by: u.id });
+        ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci);
+        pushToUser(uid, { title: "You've been removed from a circle", body: `You've been removed from ${ci.name}.`, type: "removed_from_circle", circleCode: code, circleName: ci.name });
+        return c.json({ success: true });
+      }
+    }
+  }
+  // Self-leave
+  ci.members = ci.members.filter(m => m.userId !== uid);
+  trackEvent(uid, "circle_left", { circle_code: code });
+  ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci);
+  return c.json({ success: true });
+});
 app.delete("/api/circles/:code", async (c) => { const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); trackEvent(ci.creatorUserId, "circle_deleted", { circle_code: code }); await deleteCircleFromDb(code); return c.json({ success: true }); });
 app.post("/api/circles/:code/prayer-requests", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.prayerRequests.unshift({ id: randomUUID(), requesterUserId: b.userId, requesterName: b.isAnonymous ? "Anonymous" : b.userName || "Someone", text: b.text, timestamp: new Date().toISOString(), isAnonymous: b.isAnonymous || false, prayedByUserIds: [] }); await saveCircleToDb(ci); trackEvent(b.userId, "prayer_request_created", { circle_code: c.req.param("code").toUpperCase(), is_anonymous: b.isAnonymous || false }); pushToCircleMembers(ci, b.userId, { title: "📿 New prayer request in " + ci.name, body: b.isAnonymous ? "Someone shared a prayer request" : (b.userName || "Someone") + " shared a prayer request", type: "prayer_request", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); return c.json({ circle: ci }); });
 app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const req = ci.prayerRequests.find(r => r.id === c.req.param("rid")); if (!req) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (!req.prayedByUserIds.includes(b.userId)) { req.prayedByUserIds.push(b.userId); trackEvent(b.userId, "prayer_request_prayed", { circle_code: c.req.param("code").toUpperCase() }); if (req.requesterUserId !== b.userId) { const prayerName = ci.members.find(m => m.userId === b.userId)?.name || "Someone"; pushToUser(req.requesterUserId, { title: "🙏 " + prayerName + " is praying for you", body: req.text.length > 60 ? req.text.substring(0, 60) + "..." : req.text, type: "prayer_request_prayed", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); } } await saveCircleToDb(ci); return c.json({ circle: ci }); });
@@ -440,9 +472,43 @@ app.delete("/api/circles/:code/prayer-requests/:rid", async (c) => { const ci = 
 app.post("/api/circles/:code/encouragements", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.encouragements.push({ id: randomUUID(), toUserId: b.toUserId, fromUserId: b.fromUserId, fromName: b.fromName || "Someone", message: b.message, timestamp: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.fromUserId, "encouragement_sent", { circle_code: c.req.param("code").toUpperCase(), to_user_id: b.toUserId }); pushToUser(b.toUserId, { title: "🙏 " + (b.fromName || "Someone") + " sent you encouragement", body: b.message || "Keep going — you're not alone!", type: "encouragement", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); return c.json({ circle: ci }); });
 app.get("/api/circles/:code/info", (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const cr = ci.members.find(m => m.userId === ci.creatorUserId); return c.json({ name: ci.name, emoji: ci.emoji, memberCount: ci.members.length, creatorName: cr?.name || null }); });
 
-// ─── Admin: posting rights + mute ────────────────────────────────────
-app.put("/api/admin/circles/:code/members/:userId/posting-rights", async (c) => { const sec = c.req.header("X-Admin-Secret"); const ah = c.req.header("Authorization"); let auth = false; if (sec && sec === process.env.ADMIN_SECRET) auth = true; if (ah?.startsWith("Bearer ")) { const u = await getUserByToken(ah.replace("Bearer ", "")); if (u && isAdmin(u.id)) auth = true; } if (!auth) return c.json({ error: "Forbidden" }, 403); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const { canPost } = await c.req.json(); m.canPost = !!canPost; await saveCircleToDb(ci); return c.json({ success: true, userId: m.userId, canPost: m.canPost }); });
+// ─── Admin: posting rights + mute + role management ──────────────────
+app.put("/api/admin/circles/:code/members/:userId/posting-rights", async (c) => { const sec = c.req.header("X-Admin-Secret"); const ah = c.req.header("Authorization"); let auth = false; if (sec && sec === process.env.ADMIN_SECRET) auth = true; if (ah?.startsWith("Bearer ")) { const u = await getUserByToken(ah.replace("Bearer ", "")); if (u && (isAdmin(u.id) || isCircleAdmin(u.id, getCircle(c.req.param("code"))!))) auth = true; } if (!auth) return c.json({ error: "Forbidden" }, 403); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const { canPost } = await c.req.json(); m.canPost = !!canPost; await saveCircleToDb(ci); return c.json({ success: true, userId: m.userId, canPost: m.canPost }); });
 app.put("/api/circles/:code/mute", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find((m: StoredMember) => m.userId === u.id); if (!m) return c.json({ error: "Not a member" }, 403); const { muted } = await c.req.json(); m.notificationsMuted = !!muted; await saveCircleToDb(ci); return c.json({ success: true, muted: m.notificationsMuted }); });
+
+app.post("/api/circles/:code/members/:userId/promote", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const code = c.req.param("code").toUpperCase(); const ci = getCircle(code);
+  if (!ci) return c.json({ error: "Not found" }, 404);
+  if (!isCircleAdmin(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403);
+  const targetId = c.req.param("userId");
+  const m = ci.members.find(m => m.userId === targetId);
+  if (!m) return c.json({ error: "This member wasn't found in the circle." }, 404);
+  if (m.role === "creator") return c.json({ error: "This action isn't allowed." }, 422);
+  if (m.role === "admin") return c.json({ error: "This member is already an admin." }, 422);
+  m.role = "admin"; m.canPost = true;
+  await saveCircleToDb(ci);
+  trackEvent(u.id, "circle_member_promoted", { circle_code: code, target_user_id: targetId });
+  pushToUser(targetId, { title: "You're now an admin 🙏", body: `${u.name || "Someone"} made you an admin of ${ci.name}.`, type: "promoted_to_admin", circleCode: code, circleName: ci.name });
+  return c.json({ userId: targetId, role: "admin" });
+});
+
+app.post("/api/circles/:code/members/:userId/demote", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const code = c.req.param("code").toUpperCase(); const ci = getCircle(code);
+  if (!ci) return c.json({ error: "Not found" }, 404);
+  if (!isCircleAdmin(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403);
+  const targetId = c.req.param("userId");
+  if (targetId === u.id) return c.json({ error: "This action isn't allowed." }, 422);
+  const m = ci.members.find(m => m.userId === targetId);
+  if (!m) return c.json({ error: "This member wasn't found in the circle." }, 404);
+  if (m.role === "creator") return c.json({ error: "This action isn't allowed." }, 422);
+  if (m.role !== "admin") return c.json({ error: "This member is not an admin." }, 422);
+  m.role = "member";
+  await saveCircleToDb(ci);
+  trackEvent(u.id, "circle_member_demoted", { circle_code: code, target_user_id: targetId });
+  return c.json({ userId: targetId, role: "member" });
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE INVITES ─────────────────────────────────────────────
@@ -1174,6 +1240,99 @@ app.get("/api/referrals/circle/:code", async (c) => {
   return c.json({ count: parseInt(result.rows[0]?.count || "0") });
 });
 
+app.post("/api/referrals/invite-batch", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const { invites } = await c.req.json();
+  if (!Array.isArray(invites) || invites.length === 0) return c.json({ error: "Please add at least one valid email address." }, 400);
+  if (invites.length > 5) return c.json({ error: "Maximum 5 invites at a time." }, 422);
+
+  // Rate limit: 5 per user per 24h
+  const recent = await pool.query("SELECT COUNT(*) as count FROM invite_emails WHERE referrer_user_id=$1 AND created_at > NOW() - INTERVAL '24 hours'", [u.id]);
+  if (parseInt(recent.rows[0]?.count || "0") >= 5) return c.json({ error: "You've reached the invite limit for today. Try again tomorrow." }, 429);
+
+  // Get or generate referral code
+  let codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]);
+  if (!codeResult.rows[0]) {
+    const code = generateReferralCode(u.name || "PRAY");
+    await pool.query("INSERT INTO referral_codes (user_id, code) VALUES ($1, $2) ON CONFLICT DO NOTHING", [u.id, code]);
+    codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]);
+  }
+  const referralCode = codeResult.rows[0]?.code || "";
+  const referralLink = `https://pramen.app/join/${referralCode}`;
+  const referrerName = u.name || "A friend";
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  let sent = 0;
+  const failed: { email: string; reason: string }[] = [];
+  const alreadyMembers: { email: string }[] = [];
+
+  for (const inv of invites) {
+    const name = (inv.name || "").trim();
+    const email = (inv.email || "").trim().toLowerCase();
+    if (!name || name.length < 2 || !emailRegex.test(email)) { failed.push({ email: email || "invalid", reason: "Invalid name or email" }); continue; }
+
+    // Check if already a member
+    const existing = await pool.query("SELECT id FROM users WHERE email=$1", [email]);
+    if (existing.rows.length > 0) { alreadyMembers.push({ email }); continue; }
+
+    // Send email via Resend
+    if (RESEND_API_KEY) {
+      try {
+        const htmlBody = `<div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 16px; color: #2C1810;">
+  <p style="font-size: 18px; font-weight: 600; color: #C0735A;">prAmen</p>
+  <p>Hi ${name},</p>
+  <p>${referrerName} wants to pray alongside you.</p>
+  <p>They invited you to join <strong>prAmen</strong> — a daily prayer app that helps Christians build a simple, meaningful prayer habit.</p>
+  <p>As their guest, you get <strong>50% off your first month</strong>.</p>
+  <p style="text-align: center; margin: 28px 0;">
+    <a href="${referralLink}" style="display: inline-block; background: #C0735A; color: #fff; text-decoration: none; padding: 14px 32px; border-radius: 24px; font-weight: 600; font-size: 16px;">Join prAmen</a>
+  </p>
+  <p style="color: #9E7E6E; font-size: 14px;">The offer is waiting for you. No pressure.</p>
+  <p style="color: #9E7E6E; font-size: 14px;">— The prAmen team</p>
+  <hr style="border: none; border-top: 1px solid #E0D4C4; margin: 24px 0;">
+  <p style="color: #9E7E6E; font-size: 11px;">You received this because ${referrerName} invited you. <a href="https://pramen.app" style="color: #9E7E6E;">Unsubscribe</a></p>
+</div>`;
+
+        const res = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            from: RESEND_FROM_EMAIL,
+            to: email,
+            subject: `${referrerName} is praying for you 🙏 — Join them on prAmen`,
+            html: htmlBody,
+            text: `Hi ${name},\n\n${referrerName} wants to pray alongside you. They invited you to join prAmen — a daily prayer app that helps Christians build a simple, meaningful prayer habit.\n\nAs their guest, you get 50% off your first month.\n\nJoin here: ${referralLink}\n\nThe offer is waiting for you. No pressure.\n\n— The prAmen team`,
+          }),
+        });
+
+        if (res.ok) {
+          await pool.query("INSERT INTO invite_emails (referrer_user_id, friend_name, friend_email, status, referral_code) VALUES ($1,$2,$3,'sent',$4)", [u.id, name, email, referralCode]);
+          // Create pending referral
+          await pool.query("INSERT INTO referrals (referrer_user_id, referred_email, status) VALUES ($1,$2,'pending') ON CONFLICT DO NOTHING", [u.id, email]);
+          sent++;
+        } else {
+          const errText = await res.text().catch(() => "");
+          console.error("[Invite] Resend error:", res.status, errText.substring(0, 200));
+          failed.push({ email, reason: "Delivery failed" });
+          await pool.query("INSERT INTO invite_emails (referrer_user_id, friend_name, friend_email, status, referral_code) VALUES ($1,$2,$3,'failed',$4)", [u.id, name, email, referralCode]);
+        }
+      } catch (err: any) {
+        console.error("[Invite] Send error:", err.message);
+        failed.push({ email, reason: "Delivery failed" });
+      }
+    } else {
+      // No email provider — store invite but don't send
+      await pool.query("INSERT INTO invite_emails (referrer_user_id, friend_name, friend_email, status, referral_code) VALUES ($1,$2,$3,'stored',$4)", [u.id, name, email, referralCode]);
+      await pool.query("INSERT INTO referrals (referrer_user_id, referred_email, status) VALUES ($1,$2,'pending') ON CONFLICT DO NOTHING", [u.id, email]);
+      sent++;
+    }
+  }
+
+  trackEvent(u.id, "onboarding_invites_sent", { sent, failed: failed.length, already_members: alreadyMembers.length });
+  return c.json({ sent, failed, alreadyMembers });
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // ─── FIND MY CHURCH ─────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
@@ -1490,7 +1649,7 @@ async function start() {
   generateDailyReflection().catch(() => {});
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.3 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.4 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
