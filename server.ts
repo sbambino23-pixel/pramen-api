@@ -455,11 +455,30 @@ app.post("/webhooks/revenuecat", async (c) => {
       else if (name === "subscription_renewed") await pool.query(`INSERT INTO daily_revenue (date,renewals,revenue_gross,revenue_net) VALUES ($1,1,$2,$3) ON CONFLICT (date) DO UPDATE SET renewals=daily_revenue.renewals+1,revenue_gross=daily_revenue.revenue_gross+$2,revenue_net=daily_revenue.revenue_net+$3,updated_at=NOW()`, [today, price, net]);
       else if (name === "subscription_cancelled" || name === "subscription_expired") await pool.query(`INSERT INTO daily_revenue (date,cancellations) VALUES ($1,1) ON CONFLICT (date) DO UPDATE SET cancellations=daily_revenue.cancellations+1,updated_at=NOW()`, [today]);
     } catch (e: any) { console.error("[Revenue]", e.message); }
-    // Confirm referral if this is a first subscription
+    // Confirm referral — grant 30 days free to BOTH referrer and referred user
     if (name === "subscription_started" || name === "lifetime_purchased") {
       try {
         const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [resolvedUid]);
-        if (ref.rows[0]) { evaluateTierRewards(ref.rows[0].referrer_user_id).catch(() => {}); pushToUser(ref.rows[0].referrer_user_id, { title: "🎉 Referral confirmed!", body: "Someone you invited just subscribed. Check your rewards!", type: "referral_confirmed" }); }
+        if (ref.rows[0]) {
+          const referrerId = ref.rows[0].referrer_user_id;
+          // Grant 30 days promotional to referrer
+          if (REVENUECAT_SECRET_KEY) {
+            try {
+              await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(referrerId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
+              console.log(`[Referral] Granted 30d to referrer ${referrerId.substring(0, 8)}`);
+            } catch (err: any) { console.error("[Referral] Grant referrer error:", err.message); }
+            // Grant 30 days promotional to referred user
+            try {
+              await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(resolvedUid)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
+              console.log(`[Referral] Granted 30d to referred ${resolvedUid.substring(0, 8)}`);
+            } catch (err: any) { console.error("[Referral] Grant referred error:", err.message); }
+          }
+          evaluateTierRewards(referrerId).catch(() => {});
+          pushToUser(referrerId, { title: "🎉 You both got 30 days free!", body: "Your friend just subscribed. You've both been upgraded to 30 days of premium.", type: "referral_confirmed" });
+          pushToUser(resolvedUid, { title: "🎉 Welcome! 30 days free unlocked", body: "Thanks to your friend's invite, you both get 30 days of premium free.", type: "referral_reward" });
+          trackEvent(referrerId, "referral_30d_granted", { referred_user_id: resolvedUid });
+          trackEvent(resolvedUid, "referral_30d_granted_referred", { referrer_user_id: referrerId });
+        }
       } catch {}
     }
     console.log(`[RC] ${ev.type} → ${name} | rc:${rcUid.substring(0,12)} → resolved:${resolvedUid.substring(0,12)} ${plan}`); return c.json({ status: "ok" });
