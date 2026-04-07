@@ -326,7 +326,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.6.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.6.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ═══════════════════════════════════════════════════════════════════
@@ -596,7 +596,6 @@ app.post("/api/lumi/chat", async (c) => {
   const u = await requireAuth(c);
   if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   if (!GEMINI_API_KEY) return c.json({ error: "Something went wrong. Please try again." }, 500);
-  if (!isGeminiAvailable()) return c.json({ error: "Lumi is resting. Please try again in a few minutes." }, 429);
   const { messages } = await c.req.json();
   if (!Array.isArray(messages) || messages.length === 0) return c.json({ error: "Messages required" }, 400);
   const sanitized = messages
@@ -609,7 +608,7 @@ app.post("/api/lumi/chat", async (c) => {
   }));
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -619,7 +618,7 @@ app.post("/api/lumi/chat", async (c) => {
         }),
       }
     );
-    if (res.status === 429) { markGeminiRateLimited(); return c.json({ error: "Lumi is a little overwhelmed right now. Try again in a moment." }, 429); }
+    if (res.status === 429) { return c.json({ error: "Lumi is a little overwhelmed right now. Try again in a moment." }, 429); }
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       console.error("[Lumi] Gemini API error:", res.status, errText.substring(0, 200));
@@ -660,7 +659,7 @@ async function generateDailyReflection(): Promise<{ verse: string; reference: st
   try {
     const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -747,7 +746,7 @@ app.get("/api/seasonal/verse-of-the-day", async (c) => {
     const seasonNames: Record<string, string> = { advent: "Advent", christmas: "Christmas", lent: "Lent", holyWeek: "Holy Week", easter: "Easter", ordinaryTime: "Ordinary Time" };
     try {
       const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`, {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           system_instruction: { parts: [{ text: "You are a Bible verse curator. Respond ONLY with valid JSON, no markdown, no backticks." }] },
@@ -877,7 +876,7 @@ app.post("/api/favorites/transcribe", async (c) => {
     const base64Data = fileBuffer.toString("base64");
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1394,7 +1393,7 @@ async function enrichChurch(placeId: string, name: string, address: string): Pro
       ? `Given this Wikipedia text about "${name}" at "${address}": "${wikiText.substring(0, 1500)}"\n\nExtract JSON: {"year_founded":"year or century or null","architectural_style":"style or null","patron_saint":"name or null","diocese":"name or null","description":"2-3 sentence historical description","notable_features":["feature1","feature2"]}`
       : `For the church "${name}" at "${address}", provide what you know. Return JSON: {"year_founded":"year or century or null","architectural_style":"style or null","patron_saint":"name or null","diocese":"name or null","description":"2-3 sentence description or null","notable_features":[]}. If you don't know, use null for that field.`;
 
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent?key=${GEMINI_API_KEY}`, {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ system_instruction: { parts: [{ text: "You enrich church profiles. Respond ONLY with valid JSON, no markdown, no backticks." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }] }),
     });
@@ -1683,7 +1682,7 @@ async function start() {
   setInterval(() => { pullAppleSalesReport().catch(() => {}); }, 6 * 60 * 60 * 1000);
   setInterval(() => { pullAppleAnalytics().catch(() => {}); }, 12 * 60 * 60 * 1000);
   setInterval(() => { publishScheduledPosts().catch(() => {}); }, 60 * 1000);
-  generateDailyReflection().catch(() => {});
+  setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000); // delay 5min after startup
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API v3.6 on port ${info.port}`);
