@@ -188,10 +188,10 @@ async function pushToCircleMembers(circle: StoredCircle, excludeUserId: string, 
 
 // ─── Admin Helpers ───────────────────────────────────────────────────
 function isAdmin(userId: string): boolean { return ADMIN_USER_ID !== "" && userId === ADMIN_USER_ID; }
-function isCircleAdmin(userId: string, circle: StoredCircle): boolean { if (isAdmin(userId)) return true; const m = circle.members.find(m => m.userId === userId); return m?.role === "creator" || m?.role === "admin"; }
+function isCircleAdmin(userId: string, circle: StoredCircle, deviceUserId?: string): boolean { if (isAdmin(userId)) return true; const m = circle.members.find(m => m.userId === userId || (deviceUserId && m.userId === deviceUserId)); return m?.role === "creator" || m?.role === "admin"; }
 function isCircleCreator(userId: string, circle: StoredCircle): boolean { return circle.creatorUserId === userId || (circle.members.find(m => m.userId === userId)?.role === "creator"); }
-function canPostInCircle(userId: string, circle: StoredCircle): boolean { if (isAdmin(userId)) return true; if (isCircleAdmin(userId, circle)) return true; const m = circle.members.find(m => m.userId === userId); return m?.canPost !== false; }
-function isMemberOfCircle(userId: string, circle: StoredCircle): boolean { return circle.members.some(m => m.userId === userId) || isAdmin(userId); }
+function canPostInCircle(userId: string, circle: StoredCircle, deviceUserId?: string): boolean { if (isAdmin(userId)) return true; if (isCircleAdmin(userId, circle, deviceUserId)) return true; const m = circle.members.find(m => m.userId === userId || (deviceUserId && m.userId === deviceUserId)); return m?.canPost !== false; }
+function isMemberOfCircle(userId: string, circle: StoredCircle, deviceUserId?: string): boolean { return circle.members.some(m => m.userId === userId || (deviceUserId && m.userId === deviceUserId)) || isAdmin(userId); }
 
 // ─── Postgres ────────────────────────────────────────────────────────
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_URL?.includes("localhost") ? false : { rejectUnauthorized: false } });
@@ -259,7 +259,7 @@ async function initDb(): Promise<void> {
     // ─── Invite emails ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS invite_emails (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, friend_name TEXT NOT NULL, friend_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', referral_code TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_emails_referrer ON invite_emails(referrer_user_id, created_at DESC)`);
-    console.log("DB initialized (v3.7.3 — push diagnostics)");
+    console.log("DB initialized (v3.8.0 — push diagnostics)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -334,7 +334,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.7.3", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.8.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Push Diagnostics ────────────────────────────────────────────────
@@ -532,7 +532,7 @@ app.delete("/api/circles/:code/members/:userId", async (c) => {
     const u = await getUserByToken(ah.replace("Bearer ", ""));
     if (u && uid !== u.id) {
       // Admin/creator removing another member
-      if (isCircleAdmin(u.id, ci)) {
+      if (isCircleAdmin(u.id, ci, u.device_user_id)) {
         const target = ci.members.find(m => m.userId === uid);
         if (!target) return c.json({ error: "This member wasn't found in the circle." }, 404);
         if (target.role === "creator") return c.json({ error: "This action isn't allowed." }, 422);
@@ -558,14 +558,14 @@ app.post("/api/circles/:code/encouragements", async (c) => { const ci = getCircl
 app.get("/api/circles/:code/info", (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const cr = ci.members.find(m => m.userId === ci.creatorUserId); return c.json({ name: ci.name, emoji: ci.emoji, memberCount: ci.members.length, creatorName: cr?.name || null }); });
 
 // ─── Admin: posting rights + mute + role management ──────────────────
-app.put("/api/admin/circles/:code/members/:userId/posting-rights", async (c) => { const sec = c.req.header("X-Admin-Secret"); const ah = c.req.header("Authorization"); let auth = false; if (sec && sec === process.env.ADMIN_SECRET) auth = true; if (ah?.startsWith("Bearer ")) { const u = await getUserByToken(ah.replace("Bearer ", "")); if (u && (isAdmin(u.id) || isCircleAdmin(u.id, getCircle(c.req.param("code"))!))) auth = true; } if (!auth) return c.json({ error: "Forbidden" }, 403); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const { canPost } = await c.req.json(); m.canPost = !!canPost; await saveCircleToDb(ci); return c.json({ success: true, userId: m.userId, canPost: m.canPost }); });
+app.put("/api/admin/circles/:code/members/:userId/posting-rights", async (c) => { const sec = c.req.header("X-Admin-Secret"); const ah = c.req.header("Authorization"); let auth = false; if (sec && sec === process.env.ADMIN_SECRET) auth = true; if (ah?.startsWith("Bearer ")) { const u = await getUserByToken(ah.replace("Bearer ", "")); if (u && (isAdmin(u.id) || isCircleAdmin(u.id, getCircle(c.req.param("code"))!, u.device_user_id))) auth = true; } if (!auth) return c.json({ error: "Forbidden" }, 403); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const { canPost } = await c.req.json(); m.canPost = !!canPost; await saveCircleToDb(ci); return c.json({ success: true, userId: m.userId, canPost: m.canPost }); });
 app.put("/api/circles/:code/mute", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find((m: StoredMember) => m.userId === u.id); if (!m) return c.json({ error: "Not a member" }, 403); const { muted } = await c.req.json(); m.notificationsMuted = !!muted; await saveCircleToDb(ci); return c.json({ success: true, muted: m.notificationsMuted }); });
 
 app.post("/api/circles/:code/members/:userId/promote", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   const code = c.req.param("code").toUpperCase(); const ci = getCircle(code);
   if (!ci) return c.json({ error: "Not found" }, 404);
-  if (!isCircleAdmin(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403);
+  if (!isCircleAdmin(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403);
   const targetId = c.req.param("userId");
   const m = ci.members.find(m => m.userId === targetId);
   if (!m) return c.json({ error: "This member wasn't found in the circle." }, 404);
@@ -582,7 +582,7 @@ app.post("/api/circles/:code/members/:userId/demote", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   const code = c.req.param("code").toUpperCase(); const ci = getCircle(code);
   if (!ci) return c.json({ error: "Not found" }, 404);
-  if (!isCircleAdmin(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403);
+  if (!isCircleAdmin(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403);
   const targetId = c.req.param("userId");
   if (targetId === u.id) return c.json({ error: "This action isn't allowed." }, 422);
   const m = ci.members.find(m => m.userId === targetId);
@@ -601,7 +601,7 @@ app.post("/api/circles/:code/members/:userId/demote", async (c) => {
 app.post("/api/circles/:code/invite", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "You need to be logged in." }, 401);
   const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
-  if (!isMemberOfCircle(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403);
+  if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403);
   await pool.query("UPDATE invite_tokens SET status='expired' WHERE circle_code=$1 AND inviter_user_id=$2 AND status='pending'", [code, u.id]);
   const token = randomUUID().replace(/-/g, "").substring(0, 16);
   await pool.query("INSERT INTO invite_tokens (token, circle_code, inviter_user_id, inviter_name) VALUES ($1,$2,$3,$4)", [token, code, u.id, u.name || "Someone"]);
@@ -1107,7 +1107,7 @@ app.post("/api/shared-prayers", async (c) => {
   if (circleId) {
     const ci = getCircle(circleId);
     if (!ci) return c.json({ error: "Circle not found" }, 404);
-    if (!isMemberOfCircle(u.id, ci)) return c.json({ error: "You can only share prayers with people in your circles." }, 403);
+    if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You can only share prayers with people in your circles." }, 403);
     resolvedIds = ci.members.map(m => m.userId).filter(id => id !== u.id);
   } else if (Array.isArray(recipientIds) && recipientIds.length > 0) {
     if (recipientIds.length > 20) return c.json({ error: "You can share with a maximum of 20 people at once." }, 422);
@@ -1597,7 +1597,7 @@ app.post("/api/churches/share", async (c) => {
   const saved = await pool.query("SELECT * FROM saved_churches WHERE id=$1 AND user_id=$2 AND is_deleted=false", [savedChurchId, u.id]);
   if (!saved.rows[0]) return c.json({ error: "Saved church not found" }, 404);
   const ci = getCircle(circleCode); if (!ci) return c.json({ error: "Circle not found" }, 404);
-  if (!isMemberOfCircle(u.id, ci)) return c.json({ error: "You can only share churches with your circles." }, 403);
+  if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You can only share churches with your circles." }, 403);
 
   const r = await pool.query("INSERT INTO church_shares (sender_user_id, sender_name, saved_church_id, circle_code, note) VALUES ($1,$2,$3,$4,$5) RETURNING *",
     [u.id, u.name || "Someone", savedChurchId, circleCode, note || null]);
@@ -1617,9 +1617,9 @@ app.post("/api/churches/share", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.length) return []; const ids = posts.map(p => p.id); const rx = await pool.query("SELECT post_id, emoji, COUNT(*) as count FROM post_reactions WHERE post_id = ANY($1) GROUP BY post_id, emoji", [ids]); const urx = await pool.query("SELECT post_id, emoji FROM post_reactions WHERE post_id = ANY($1) AND user_id = $2", [ids, currentUserId]); const rm: Record<string, { emoji: string; count: number; reactedByCurrentUser: boolean }[]> = {}; for (const r of rx.rows) { if (!rm[r.post_id]) rm[r.post_id] = []; rm[r.post_id].push({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: false }); } for (const r of urx.rows) { const arr = rm[r.post_id]; if (arr) { const x = arr.find(a => a.emoji === r.emoji); if (x) x.reactedByCurrentUser = true; } } const rc = await pool.query("SELECT post_id, COUNT(*) as count FROM post_replies WHERE post_id = ANY($1) AND is_deleted=false GROUP BY post_id", [ids]); const rcm: Record<string, number> = {}; for (const r of rc.rows) rcm[r.post_id] = parseInt(r.count); return posts.map(p => ({ ...p, isAdmin: isAdmin(p.author_user_id), reactions: rm[p.id] || [], replyCount: rcm[p.id] || 0 })); }
 
-app.get("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); if (!isMemberOfCircle(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403); const cursor = c.req.query("cursor"); const lim = 20; let q = "SELECT * FROM circle_posts WHERE circle_code=$1 AND status='published'"; const p: any[] = [c.req.param("code").toUpperCase()]; if (cursor) { q += " AND published_at < $2"; p.push(cursor); } q += ` ORDER BY published_at DESC LIMIT $${p.length + 1}`; p.push(lim + 1); const r = await pool.query(q, p); const posts = r.rows.slice(0, lim); const nextCursor = r.rows.length > lim ? posts[posts.length - 1].published_at.toISOString() : null; return c.json({ posts: await enrichPosts(posts, u.id), nextCursor, hasPostingRights: canPostInCircle(u.id, ci) }); });
+app.get("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403); const cursor = c.req.query("cursor"); const lim = 20; let q = "SELECT * FROM circle_posts WHERE circle_code=$1 AND status='published'"; const p: any[] = [c.req.param("code").toUpperCase()]; if (cursor) { q += " AND published_at < $2"; p.push(cursor); } q += ` ORDER BY published_at DESC LIMIT $${p.length + 1}`; p.push(lim + 1); const r = await pool.query(q, p); const posts = r.rows.slice(0, lim); const nextCursor = r.rows.length > lim ? posts[posts.length - 1].published_at.toISOString() : null; return c.json({ posts: await enrichPosts(posts, u.id), nextCursor, hasPostingRights: canPostInCircle(u.id, ci, u.device_user_id) }); });
 
-app.post("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (!canPostInCircle(u.id, ci)) return c.json({ error: "You don't have permission to do this." }, 403); const body = await c.req.parseBody(); const content = (body.content as string) || null; const scheduledAt = (body.scheduledAt as string) || null; const mediaFile = body.mediaFile as File | undefined; let mediaUrl: string | null = null, mediaType: string | null = null, mediaFilename: string | null = null, mediaSizeBytes: number | null = null; if (mediaFile && mediaFile.size > 0) { if (mediaFile.size > MAX_FILE_SIZE) return c.json({ error: "File too large. Maximum size is 50 MB." }, 413); const ft = mediaFile.type; if (ALLOWED_MEDIA.image.includes(ft)) mediaType = "image"; else if (ALLOWED_MEDIA.video.includes(ft)) mediaType = "video"; else if (ALLOWED_MEDIA.audio.includes(ft)) mediaType = "audio"; else return c.json({ error: "Unsupported file format." }, 422); try { mediaUrl = await uploadMedia(await mediaFile.arrayBuffer(), mediaFile.name, ft); mediaFilename = mediaFile.name; mediaSizeBytes = mediaFile.size; } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); } } if (!content && !mediaUrl) return c.json({ error: "Post must have text or media." }, 422); const status = scheduledAt ? "scheduled" : "published"; const publishedAt = scheduledAt ? null : new Date().toISOString(); if (scheduledAt && new Date(scheduledAt).getTime() < Date.now() + 600000) return c.json({ error: "Schedule time must be at least 10 minutes from now." }, 422); const r = await pool.query(`INSERT INTO circle_posts (circle_code,author_user_id,author_name,content,media_type,media_url,media_filename,media_size_bytes,status,scheduled_at,published_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, [code, u.id, u.name||"", content, mediaType, mediaUrl, mediaFilename, mediaSizeBytes, status, scheduledAt, publishedAt]); trackEvent(u.id, "post_created", { circle_code: code, media_type: mediaType, status }); if (status === "published") pushToCircleMembers(ci, u.id, { title: "📝 " + (u.name || "Someone") + " posted in " + ci.name, body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "New " + (mediaType || "text") + " post", type: "new_post", circleCode: code, circleName: ci.name }); return c.json({ post: { ...r.rows[0], isAdmin: isAdmin(u.id), reactions: [], replyCount: 0 } }, 201); });
+app.post("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (!canPostInCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403); const body = await c.req.parseBody(); const content = (body.content as string) || null; const scheduledAt = (body.scheduledAt as string) || null; const mediaFile = body.mediaFile as File | undefined; let mediaUrl: string | null = null, mediaType: string | null = null, mediaFilename: string | null = null, mediaSizeBytes: number | null = null; if (mediaFile && mediaFile.size > 0) { if (mediaFile.size > MAX_FILE_SIZE) return c.json({ error: "File too large. Maximum size is 50 MB." }, 413); const ft = mediaFile.type; if (ALLOWED_MEDIA.image.includes(ft)) mediaType = "image"; else if (ALLOWED_MEDIA.video.includes(ft)) mediaType = "video"; else if (ALLOWED_MEDIA.audio.includes(ft)) mediaType = "audio"; else return c.json({ error: "Unsupported file format." }, 422); try { mediaUrl = await uploadMedia(await mediaFile.arrayBuffer(), mediaFile.name, ft); mediaFilename = mediaFile.name; mediaSizeBytes = mediaFile.size; } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); } } if (!content && !mediaUrl) return c.json({ error: "Post must have text or media." }, 422); const status = scheduledAt ? "scheduled" : "published"; const publishedAt = scheduledAt ? null : new Date().toISOString(); if (scheduledAt && new Date(scheduledAt).getTime() < Date.now() + 600000) return c.json({ error: "Schedule time must be at least 10 minutes from now." }, 422); const r = await pool.query(`INSERT INTO circle_posts (circle_code,author_user_id,author_name,content,media_type,media_url,media_filename,media_size_bytes,status,scheduled_at,published_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, [code, u.id, u.name||"", content, mediaType, mediaUrl, mediaFilename, mediaSizeBytes, status, scheduledAt, publishedAt]); trackEvent(u.id, "post_created", { circle_code: code, media_type: mediaType, status }); if (status === "published") pushToCircleMembers(ci, u.id, { title: "📝 " + (u.name || "Someone") + " posted in " + ci.name, body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "New " + (mediaType || "text") + " post", type: "new_post", circleCode: code, circleName: ci.name }); return c.json({ post: { ...r.rows[0], isAdmin: isAdmin(u.id), reactions: [], replyCount: 0 } }, 201); });
 
 app.delete("/api/posts/:postId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status != 'deleted'", [c.req.param("postId")]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); if (p.rows[0].author_user_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403); await pool.query("UPDATE circle_posts SET status='deleted',updated_at=NOW() WHERE id=$1", [c.req.param("postId")]); return c.body(null, 204); });
 
@@ -1735,7 +1735,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000); // delay 5min after startup
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.7.3 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.8.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
