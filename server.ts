@@ -259,7 +259,7 @@ async function initDb(): Promise<void> {
     // ─── Invite emails ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS invite_emails (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, friend_name TEXT NOT NULL, friend_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', referral_code TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_emails_referrer ON invite_emails(referrer_user_id, created_at DESC)`);
-    console.log("DB initialized (v3.8.0 — push diagnostics)");
+    console.log("DB initialized (v3.9.0 — push diagnostics)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -334,7 +334,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.8.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.9.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Push Diagnostics ────────────────────────────────────────────────
@@ -558,6 +558,23 @@ app.post("/api/circles/:code/encouragements", async (c) => { const ci = getCircl
 app.get("/api/circles/:code/info", (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const cr = ci.members.find(m => m.userId === ci.creatorUserId); return c.json({ name: ci.name, emoji: ci.emoji, memberCount: ci.members.length, creatorName: cr?.name || null }); });
 
 // ─── Admin: posting rights + mute + role management ──────────────────
+// ─── Circle Members List (for @mention dropdown) ──────────────────
+app.get("/api/circles/:code/members-list", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const ci = getCircle(c.req.param("code"));
+  if (!ci) return c.json({ error: "Not found" }, 404);
+  if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "Not a member" }, 403);
+  return c.json({
+    members: ci.members.map(m => ({
+      userId: m.userId,
+      name: m.name,
+      avatarUrl: m.avatarUrl || null,
+      role: m.role || "member"
+    }))
+  });
+});
+
 app.put("/api/admin/circles/:code/members/:userId/posting-rights", async (c) => { const sec = c.req.header("X-Admin-Secret"); const ah = c.req.header("Authorization"); let auth = false; if (sec && sec === process.env.ADMIN_SECRET) auth = true; if (ah?.startsWith("Bearer ")) { const u = await getUserByToken(ah.replace("Bearer ", "")); if (u && (isAdmin(u.id) || isCircleAdmin(u.id, getCircle(c.req.param("code"))!, u.device_user_id))) auth = true; } if (!auth) return c.json({ error: "Forbidden" }, 403); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const { canPost } = await c.req.json(); m.canPost = !!canPost; await saveCircleToDb(ci); return c.json({ success: true, userId: m.userId, canPost: m.canPost }); });
 app.put("/api/circles/:code/mute", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find((m: StoredMember) => m.userId === u.id); if (!m) return c.json({ error: "Not a member" }, 403); const { muted } = await c.req.json(); m.notificationsMuted = !!muted; await saveCircleToDb(ci); return c.json({ success: true, muted: m.notificationsMuted }); });
 
@@ -1139,7 +1156,18 @@ app.post("/api/shared-prayers", async (c) => {
 app.get("/api/shared-prayers/received", async (c) => {
   const u = await requireAuth(c);
   if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const r = await pool.query("SELECT * FROM shared_prayers WHERE recipient_user_id=$1 AND is_deleted=false ORDER BY created_at DESC", [u.id]);
+  const r = await pool.query(`
+    SELECT id, sender_user_id, sender_name, recipient_user_id, favorite_id, note,
+           prayer_text, prayer_title, source, media_url, media_type, transcript,
+           is_saved, is_deleted, created_at
+    FROM shared_prayers WHERE recipient_user_id=$1 AND is_deleted=false
+    UNION ALL
+    SELECT id, sender_user_id, sender_name, recipient_user_id, NULL as favorite_id, NULL as note,
+           prayer_text, prayer_title, NULL as source, NULL as media_url, NULL as media_type, NULL as transcript,
+           false as is_saved, false as is_deleted, created_at
+    FROM prayer_shares WHERE recipient_user_id=$1
+    ORDER BY created_at DESC
+  `, [u.id]);
   return c.json({ sharedPrayers: r.rows });
 });
 
@@ -1619,7 +1647,7 @@ async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.len
 
 app.get("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403); const cursor = c.req.query("cursor"); const lim = 20; let q = "SELECT * FROM circle_posts WHERE circle_code=$1 AND status='published'"; const p: any[] = [c.req.param("code").toUpperCase()]; if (cursor) { q += " AND published_at < $2"; p.push(cursor); } q += ` ORDER BY published_at DESC LIMIT $${p.length + 1}`; p.push(lim + 1); const r = await pool.query(q, p); const posts = r.rows.slice(0, lim); const nextCursor = r.rows.length > lim ? posts[posts.length - 1].published_at.toISOString() : null; return c.json({ posts: await enrichPosts(posts, u.id), nextCursor, hasPostingRights: canPostInCircle(u.id, ci, u.device_user_id) }); });
 
-app.post("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (!canPostInCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403); const body = await c.req.parseBody(); const content = (body.content as string) || null; const scheduledAt = (body.scheduledAt as string) || null; const mediaFile = body.mediaFile as File | undefined; let mediaUrl: string | null = null, mediaType: string | null = null, mediaFilename: string | null = null, mediaSizeBytes: number | null = null; if (mediaFile && mediaFile.size > 0) { if (mediaFile.size > MAX_FILE_SIZE) return c.json({ error: "File too large. Maximum size is 50 MB." }, 413); const ft = mediaFile.type; if (ALLOWED_MEDIA.image.includes(ft)) mediaType = "image"; else if (ALLOWED_MEDIA.video.includes(ft)) mediaType = "video"; else if (ALLOWED_MEDIA.audio.includes(ft)) mediaType = "audio"; else return c.json({ error: "Unsupported file format." }, 422); try { mediaUrl = await uploadMedia(await mediaFile.arrayBuffer(), mediaFile.name, ft); mediaFilename = mediaFile.name; mediaSizeBytes = mediaFile.size; } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); } } if (!content && !mediaUrl) return c.json({ error: "Post must have text or media." }, 422); const status = scheduledAt ? "scheduled" : "published"; const publishedAt = scheduledAt ? null : new Date().toISOString(); if (scheduledAt && new Date(scheduledAt).getTime() < Date.now() + 600000) return c.json({ error: "Schedule time must be at least 10 minutes from now." }, 422); const r = await pool.query(`INSERT INTO circle_posts (circle_code,author_user_id,author_name,content,media_type,media_url,media_filename,media_size_bytes,status,scheduled_at,published_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, [code, u.id, u.name||"", content, mediaType, mediaUrl, mediaFilename, mediaSizeBytes, status, scheduledAt, publishedAt]); trackEvent(u.id, "post_created", { circle_code: code, media_type: mediaType, status }); if (status === "published") pushToCircleMembers(ci, u.id, { title: "📝 " + (u.name || "Someone") + " posted in " + ci.name, body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "New " + (mediaType || "text") + " post", type: "new_post", circleCode: code, circleName: ci.name }); return c.json({ post: { ...r.rows[0], isAdmin: isAdmin(u.id), reactions: [], replyCount: 0 } }, 201); });
+app.post("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (!canPostInCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403); const body = await c.req.parseBody(); const content = (body.content as string) || null; const scheduledAt = (body.scheduledAt as string) || null; const mediaFile = body.mediaFile as File | undefined; let mediaUrl: string | null = null, mediaType: string | null = null, mediaFilename: string | null = null, mediaSizeBytes: number | null = null; if (mediaFile && mediaFile.size > 0) { if (mediaFile.size > MAX_FILE_SIZE) return c.json({ error: "File too large. Maximum size is 50 MB." }, 413); const ft = mediaFile.type; if (ALLOWED_MEDIA.image.includes(ft)) mediaType = "image"; else if (ALLOWED_MEDIA.video.includes(ft)) mediaType = "video"; else if (ALLOWED_MEDIA.audio.includes(ft)) mediaType = "audio"; else return c.json({ error: "Unsupported file format." }, 422); try { mediaUrl = await uploadMedia(await mediaFile.arrayBuffer(), mediaFile.name, ft); mediaFilename = mediaFile.name; mediaSizeBytes = mediaFile.size; } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); } } if (!content && !mediaUrl) return c.json({ error: "Post must have text or media." }, 422); const taggedRaw = (body.taggedUserIds as string) || "[]"; let taggedUserIds: string[] = []; try { taggedUserIds = JSON.parse(taggedRaw); } catch {} const status = scheduledAt ? "scheduled" : "published"; const publishedAt = scheduledAt ? null : new Date().toISOString(); if (scheduledAt && new Date(scheduledAt).getTime() < Date.now() + 600000) return c.json({ error: "Schedule time must be at least 10 minutes from now." }, 422); const r = await pool.query(`INSERT INTO circle_posts (circle_code,author_user_id,author_name,content,media_type,media_url,media_filename,media_size_bytes,status,scheduled_at,published_at,tagged_user_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`, [code, u.id, u.name||"", content, mediaType, mediaUrl, mediaFilename, mediaSizeBytes, status, scheduledAt, publishedAt, taggedUserIds]); trackEvent(u.id, "post_created", { circle_code: code, media_type: mediaType, status, tagged_count: taggedUserIds.length }); if (status === "published") { pushToCircleMembers(ci, u.id, { title: "📝 " + (u.name || "Someone") + " posted in " + ci.name, body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "New " + (mediaType || "text") + " post", type: "new_post", circleCode: code, circleName: ci.name }); for (const taggedId of taggedUserIds) { if (taggedId !== u.id) pushToUser(taggedId, { title: "📌 " + (u.name || "Someone") + " mentioned you", body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "You were mentioned in a post", type: "post_mention", circleCode: code, circleName: ci.name }); } } return c.json({ post: { ...r.rows[0], isAdmin: isAdmin(u.id), reactions: [], replyCount: 0 } }, 201); });
 
 app.delete("/api/posts/:postId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status != 'deleted'", [c.req.param("postId")]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); if (p.rows[0].author_user_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403); await pool.query("UPDATE circle_posts SET status='deleted',updated_at=NOW() WHERE id=$1", [c.req.param("postId")]); return c.body(null, 204); });
 
@@ -1735,7 +1763,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000); // delay 5min after startup
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.8.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.9.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
