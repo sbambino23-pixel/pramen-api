@@ -220,6 +220,7 @@ async function initDb(): Promise<void> {
     // ─── Posts tables ──────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS circle_posts (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, author_user_id TEXT NOT NULL, author_name TEXT NOT NULL DEFAULT '', content TEXT, media_type TEXT, media_url TEXT, media_filename TEXT, media_size_bytes INTEGER, status TEXT NOT NULL DEFAULT 'published', scheduled_at TIMESTAMPTZ, published_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_posts_circle_feed ON circle_posts(circle_code, status, published_at DESC)`);
+    await client.query(`ALTER TABLE circle_posts ADD COLUMN IF NOT EXISTS tagged_user_ids TEXT[] DEFAULT '{}'`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS post_reactions (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, post_id TEXT NOT NULL, user_id TEXT NOT NULL, emoji TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(post_id, user_id, emoji))`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_reactions_post ON post_reactions(post_id)`);
     await client.query(`CREATE TABLE IF NOT EXISTS post_replies (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, post_id TEXT NOT NULL, author_user_id TEXT NOT NULL, author_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
