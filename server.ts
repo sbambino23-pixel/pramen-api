@@ -260,7 +260,7 @@ async function initDb(): Promise<void> {
     // ─── Invite emails ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS invite_emails (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, friend_name TEXT NOT NULL, friend_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', referral_code TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_emails_referrer ON invite_emails(referrer_user_id, created_at DESC)`);
-    console.log("DB initialized (v3.9.2 — push diagnostics)");
+    console.log("DB initialized (v3.9.3 — push diagnostics)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -335,7 +335,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.9.2", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.9.3", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Push Diagnostics ────────────────────────────────────────────────
@@ -1312,7 +1312,15 @@ app.post("/api/referrals/track", async (c) => {
   const r = await pool.query("INSERT INTO referrals (referrer_user_id, referred_user_id, referred_email) VALUES ($1,$2,$3) RETURNING id", [referrerId, newUserId || null, newUserEmail || null]);
   trackEvent(referrerId, "referral_tracked", { referred_user_id: newUserId, code: referralCode });
 
-  return c.json({ referralId: r.rows[0].id, discountApplied: true });
+  // Extend new user's trial from 7 days to 30 days
+  if (newUserId) {
+    const now = new Date();
+    const te30 = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    await pool.query("UPDATE users SET trial_end_date=$1, updated_at=NOW() WHERE id=$2 AND subscription_status='trial'", [te30, newUserId]);
+    console.log(`[Referral] Extended trial to 30d for ${newUserId.substring(0, 8)}… (code: ${referralCode})`);
+  }
+
+  return c.json({ referralId: r.rows[0].id, trialDays: 30 });
 });
 
 app.post("/api/referrals/confirm", async (c) => {
@@ -1776,7 +1784,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000); // delay 5min after startup
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.9.2 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.9.3 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
