@@ -1517,7 +1517,7 @@ app.get("/api/churches/search", async (c) => {
       lat: p.geometry?.location?.lat, lng: p.geometry?.location?.lng,
       rating: p.rating || null, ratingCount: p.user_ratings_total || 0,
       openNow: p.opening_hours?.open_now ?? null,
-      photoRef: p.photos?.[0]?.photo_reference || null,
+      photoRef: p.photos?.[0]?.photo_reference ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=${p.photos[0].photo_reference}&key=${GOOGLE_PLACES_API_KEY}` : null,
     }));
 
     // Apply filters
