@@ -260,7 +260,7 @@ async function initDb(): Promise<void> {
     // ─── Invite emails ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS invite_emails (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, friend_name TEXT NOT NULL, friend_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', referral_code TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_emails_referrer ON invite_emails(referrer_user_id, created_at DESC)`);
-    console.log("DB initialized (v3.9.6 — push diagnostics)");
+    console.log("DB initialized (v3.9.7 — push diagnostics)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -335,7 +335,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.9.6", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.9.7", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Push Diagnostics ────────────────────────────────────────────────
@@ -1509,24 +1509,43 @@ app.get("/api/churches/search", async (c) => {
   const lat = c.req.query("lat"); const lng = c.req.query("lng");
   if (!lat || !lng) return c.json({ error: "lat and lng required" }, 400);
   const radius = c.req.query("radius") || "5000";
-  const keyword = c.req.query("keyword") || "church";
   const denomination = c.req.query("denomination") || "";
-  const searchKeyword = denomination ? `${denomination} church` : keyword;
+
+  // Only add keyword when filtering by denomination — bare keyword+type=church suppresses results
+  const baseUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=church&key=${GOOGLE_PLACES_API_KEY}`;
+  const urlWithKeyword = denomination
+    ? `${baseUrl}&keyword=${encodeURIComponent(denomination + " church")}`
+    : baseUrl;
 
   try {
-    const url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=church&keyword=${encodeURIComponent(searchKeyword)}&key=${GOOGLE_PLACES_API_KEY}`;
-    const res = await fetch(url);
-    if (!res.ok) return c.json({ error: "Search failed" }, 500);
-    const data = (await res.json()) as any;
-    const results = (data.results || []).map((p: any) => ({
-      placeId: p.place_id, name: p.name, address: p.vicinity || p.formatted_address || "",
+    // Fetch up to 3 pages (60 results max) using next_page_token
+    let allResults: any[] = [];
+    let nextUrl: string | null = urlWithKeyword;
+    let page = 0;
+
+    while (nextUrl && page < 3) {
+      if (page > 0) await new Promise(r => setTimeout(r, 2000));
+      const res = await fetch(nextUrl);
+      if (!res.ok) break;
+      const data = (await res.json()) as any;
+      allResults = allResults.concat(data.results || []);
+      nextUrl = data.next_page_token
+        ? `https://maps.googleapis.com/maps/api/place/nearbysearch/json?pagetoken=${data.next_page_token}&key=${GOOGLE_PLACES_API_KEY}`
+        : null;
+      page++;
+    }
+
+    const results = allResults.map((p: any) => ({
+      placeId: p.place_id, name: p.name,
+      address: p.vicinity || p.formatted_address || "",
       lat: p.geometry?.location?.lat, lng: p.geometry?.location?.lng,
       rating: p.rating || null, ratingCount: p.user_ratings_total || 0,
       openNow: p.opening_hours?.open_now ?? null,
-      photoRef: p.photos?.[0]?.photo_reference ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=${p.photos[0].photo_reference}&key=${GOOGLE_PLACES_API_KEY}` : null,
+      photoRef: p.photos?.[0]?.photo_reference
+        ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=${p.photos[0].photo_reference}&key=${GOOGLE_PLACES_API_KEY}`
+        : null,
     }));
 
-    // Apply filters
     let filtered = results;
     const minRating = c.req.query("minRating"); if (minRating) filtered = filtered.filter((r: any) => r.rating >= parseFloat(minRating));
     const openNow = c.req.query("openNow"); if (openNow === "true") filtered = filtered.filter((r: any) => r.openNow === true);
@@ -1810,7 +1829,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000); // delay 5min after startup
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.9.6 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.9.7 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
