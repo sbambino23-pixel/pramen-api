@@ -13,7 +13,7 @@ const { Pool } = pg;
 interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; joinedAt: string; canPost?: boolean; notificationsMuted?: boolean; role?: string; avatarUrl?: string; }
 interface StoredPrayerRequest { id: string; requesterUserId: string; requesterName: string; text: string; timestamp: string; isAnonymous: boolean; prayedByUserIds: string[]; generatedPrayer?: string; }
 interface StoredEncouragement { id: string; toUserId: string; fromUserId: string; fromName: string; message: string; timestamp: string; }
-interface StoredCircle { id: string; name: string; code: string; emoji: string; creatorUserId: string; members: StoredMember[]; prayerRequests: StoredPrayerRequest[]; encouragements: StoredEncouragement[]; createdAt: string; }
+interface StoredCircle { id: string; name: string; code: string; emoji: string; avatarUrl?: string; creatorUserId: string; members: StoredMember[]; prayerRequests: StoredPrayerRequest[]; encouragements: StoredEncouragement[]; createdAt: string; }
 
 // ─── Config ──────────────────────────────────────────────────────────
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
@@ -253,7 +253,7 @@ async function initDb(): Promise<void> {
     // Enforce one reaction per user per post (drop old unique constraint, add new one)
     await client.query(`ALTER TABLE post_reactions DROP CONSTRAINT IF EXISTS post_reactions_post_id_user_id_emoji_key`).catch(() => {});
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_one_per_user ON post_reactions(post_id, user_id)`).catch(() => {});
-    console.log("DB initialized (v4.0.1 — client-authoritative sync)");
+    console.log("DB initialized (v4.0.2 — circle avatar, edit posts, encouragement tracking)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -328,7 +328,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "4.0.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "4.0.2", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Push Diagnostics ────────────────────────────────────────────────
@@ -513,6 +513,31 @@ app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.use
 app.get("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); try { const memberIds = ci.members.map(m => m.userId).filter(Boolean); if (memberIds.length > 0) { const avatars = await pool.query("SELECT id, avatar_url, name FROM users WHERE id = ANY($1)", [memberIds]); const avatarMap: Record<string, { avatar_url: string | null; name: string }> = {}; for (const row of avatars.rows) avatarMap[row.id] = { avatar_url: row.avatar_url, name: row.name }; const enriched = { ...ci, members: ci.members.map(m => ({ ...m, avatarUrl: avatarMap[m.userId]?.avatar_url || m.avatarUrl || null, name: avatarMap[m.userId]?.name || m.name })) }; return c.json({ circle: enriched }); } } catch (err: any) { console.error("[Circle] Avatar enrich error:", err.message); } return c.json({ circle: ci }); });
 app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); pushToUser(ci.creatorUserId, { title: "👥 " + (b.userName || "Someone") + " joined " + ci.name + "!", body: ci.members.length + " members are now praying together", type: "member_joined", circleCode: code, circleName: ci.name }); return c.json({ circle: ci }); });
 app.put("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (b.name) ci.name = b.name; if (b.emoji) ci.emoji = b.emoji; await saveCircleToDb(ci); return c.json({ circle: ci }); });
+
+// C4: Circle avatar upload
+app.put("/api/circles/:code/avatar", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const code = c.req.param("code").toUpperCase(); const ci = getCircle(code);
+  if (!ci) return c.json({ error: "Not found" }, 404);
+  if (!isCircleAdmin(u.id, ci, u.device_user_id)) return c.json({ error: "Only admins can change the circle picture." }, 403);
+  if (!s3) return c.json({ error: "Storage not configured" }, 500);
+  const body = await c.req.parseBody();
+  const file = body.avatar as File | undefined;
+  if (!file || file.size === 0) return c.json({ error: "No image provided" }, 400);
+  if (file.size > 5 * 1024 * 1024) return c.json({ error: "Image too large. Maximum 5 MB." }, 413);
+  const allowed = ["image/jpeg", "image/png", "image/heic", "image/heif"];
+  if (!allowed.includes(file.type)) return c.json({ error: "Unsupported format. Use JPEG or PNG." }, 422);
+  try {
+    const ext = file.name.split(".").pop() || "jpg";
+    const key = `circles/${code}.${ext}`;
+    await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await file.arrayBuffer()), ContentType: file.type }));
+    const avatarUrl = `${R2_PUBLIC_URL}/${key}`;
+    ci.avatarUrl = avatarUrl;
+    await saveCircleToDb(ci);
+    trackEvent(u.id, "circle_avatar_updated", { circle_code: code });
+    return c.json({ avatarUrl });
+  } catch (err: any) { return c.json({ error: "Upload failed. Try again." }, 500); }
+});
 app.put("/api/circles/:code/members/:userId/status", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const b = await c.req.json(); const old = m.streakCount; if (b.streakCount !== undefined) m.streakCount = b.streakCount; if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate; if (b.name !== undefined) m.name = b.name; await saveCircleToDb(ci); if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) { trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() }); pushToCircleMembers(ci, c.req.param("userId"), { title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!", body: "Celebrate their dedication in " + ci.name, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); } return c.json({ circle: ci }); });
 app.delete("/api/circles/:code/members/:userId", async (c) => {
   const code = c.req.param("code").toUpperCase(); const uid = c.req.param("userId");
@@ -581,7 +606,12 @@ app.post("/api/circles/:code/prayer-requests", async (c) => {
 
 app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const req = ci.prayerRequests.find(r => r.id === c.req.param("rid")); if (!req) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (!req.prayedByUserIds.includes(b.userId)) { req.prayedByUserIds.push(b.userId); trackEvent(b.userId, "prayer_request_prayed", { circle_code: c.req.param("code").toUpperCase() }); if (req.requesterUserId !== b.userId) { const prayerName = ci.members.find(m => m.userId === b.userId)?.name || "Someone"; pushToUser(req.requesterUserId, { title: "🙏 " + prayerName + " is praying for you", body: req.text.length > 60 ? req.text.substring(0, 60) + "..." : req.text, type: "prayer_request_prayed", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); } } await saveCircleToDb(ci); return c.json({ circle: ci }); });
 app.delete("/api/circles/:code/prayer-requests/:rid", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const before = ci.prayerRequests.length; ci.prayerRequests = ci.prayerRequests.filter(r => r.id !== c.req.param("rid")); if (ci.prayerRequests.length === before) return c.json({ error: "Not found" }, 404); await saveCircleToDb(ci); return c.json({ success: true }); });
-app.post("/api/circles/:code/encouragements", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); console.log(`[Encourage] ${b.fromName} → ${b.toUserId?.substring(0,8)}… in circle ${c.req.param("code")}`); ci.encouragements.push({ id: randomUUID(), toUserId: b.toUserId, fromUserId: b.fromUserId, fromName: b.fromName || "Someone", message: b.message, timestamp: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.fromUserId, "encouragement_sent", { circle_code: c.req.param("code").toUpperCase(), to_user_id: b.toUserId }); pushToUser(b.toUserId, { title: "🙏 " + (b.fromName || "Someone") + " sent you encouragement", body: b.message || "Keep going — you're not alone!", type: "encouragement", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); return c.json({ circle: ci }); });
+app.post("/api/circles/:code/encouragements", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); console.log(`[Encourage] ${b.fromName} → ${b.toUserId?.substring(0,8)}… in circle ${c.req.param("code")}`); ci.encouragements.push({ id: randomUUID(), toUserId: b.toUserId, fromUserId: b.fromUserId, fromName: b.fromName || "Someone", message: b.message, timestamp: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.fromUserId, "encouragement_sent", { circle_code: c.req.param("code").toUpperCase(), to_user_id: b.toUserId }); pushToUser(b.toUserId, { title: "🙏 " + (b.fromName || "Someone") + " sent you encouragement", body: b.message || "Keep going — you're not alone!", type: "encouragement", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name });
+  // C14: Sender confirmation notification
+  const recipientMember = ci.members.find(m => m.userId === b.toUserId);
+  const recipientName = recipientMember?.name || "someone";
+  try { await pool.query("INSERT INTO notifications (user_id, type, title, body, data) VALUES ($1,$2,$3,$4,$5)", [b.fromUserId, "encouragement_sent", "You encouraged " + recipientName + " 🙏", b.message || "Keep going — you're not alone!", JSON.stringify({ recipientUserId: b.toUserId, recipientName, circleCode: c.req.param("code").toUpperCase(), circleName: ci.name })]); } catch {}
+  return c.json({ circle: ci }); });
 app.get("/api/circles/:code/info", (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const cr = ci.members.find(m => m.userId === ci.creatorUserId); return c.json({ name: ci.name, emoji: ci.emoji, memberCount: ci.members.length, creatorName: cr?.name || null }); });
 
 // ─── Admin: posting rights + mute + role management ──────────────────
@@ -950,6 +980,10 @@ app.post("/api/encouragements", async (c) => {
   const r = await pool.query("INSERT INTO encouragements (sender_user_id, sender_name, recipient_user_id, message) VALUES ($1,$2,$3,$4) RETURNING *", [u.id, u.name || "Someone", recipientId, message]);
   trackEvent(u.id, "encouragement_sent_direct", { recipient_id: recipientId });
   pushToUser(recipientId, { title: "Someone is praying for you 🙏", body: `${u.name || "Someone"} sent you an encouragement`, type: "encouragement" });
+  // C14: Sender confirmation notification
+  const recipientRow = await pool.query("SELECT name FROM users WHERE id=$1", [recipientId]);
+  const recipientName2 = recipientRow.rows[0]?.name || "someone";
+  try { await pool.query("INSERT INTO notifications (user_id, type, title, body, data) VALUES ($1,$2,$3,$4,$5)", [u.id, "encouragement_sent", "You encouraged " + recipientName2 + " 🙏", message, JSON.stringify({ recipientUserId: recipientId, recipientName: recipientName2 })]); } catch {}
   return c.json({ encouragementId: r.rows[0].id, sentAt: r.rows[0].created_at });
 });
 
@@ -1124,6 +1158,19 @@ app.post("/api/circles/:code/posts", async (c) => {
 
 app.delete("/api/posts/:postId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status != 'deleted'", [c.req.param("postId")]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); if (p.rows[0].author_user_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403); await pool.query("UPDATE circle_posts SET status='deleted',updated_at=NOW() WHERE id=$1", [c.req.param("postId")]); return c.body(null, 204); });
 
+// C10: Edit post content
+app.patch("/api/posts/:postId", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const pid = c.req.param("postId");
+  const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status='published'", [pid]);
+  if (!p.rows[0]) return c.json({ error: "Not found" }, 404);
+  if (p.rows[0].author_user_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403);
+  const { content } = await c.req.json();
+  if (!content?.trim()) return c.json({ error: "Post content cannot be empty." }, 422);
+  const r = await pool.query("UPDATE circle_posts SET content=$1, updated_at=NOW() WHERE id=$2 RETURNING *", [content.trim(), pid]);
+  return c.json({ post: r.rows[0] });
+});
+
 // FIX #12: Spiritual emojis. FIX #16: One reaction per user per post (toggle).
 app.post("/api/posts/:postId/reactions", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
@@ -1255,7 +1302,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v4.0.1 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v4.0.2 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
