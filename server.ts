@@ -162,7 +162,7 @@ async function pushToUser(userId: string, payload: PushPayload): Promise<void> {
     const prefs = await pool.query("SELECT * FROM notification_preferences WHERE user_id=$1", [userId]);
     if (prefs.rows[0]) {
       const p = prefs.rows[0];
-      const prefMap: Record<string, string> = { encouragement: "encouragements", prayer_shared: "prayers_shared", prayer_request: "prayer_requests", new_post: "circle_posts", post_reply: "post_replies", post_reaction: "post_reactions", member_joined: "circle_members", streak_milestone: "streak_milestones", streak_freeze: "streak_freeze", prayer_request_prayed: "prayer_requests" };
+      const prefMap: Record<string, string> = { encouragement: "encouragements", prayer_shared: "prayers_shared", prayer_request: "prayer_requests", new_post: "circle_posts", post_reply: "post_replies", post_reaction: "post_reactions", member_joined: "circle_members", streak_milestone: "streak_milestones", streak_freeze: "streak_freeze", prayer_request_prayed: "prayer_requests", church_shared: "circle_posts" };
       const col = prefMap[payload.type];
       if (col && p[col] === false) shouldPush = false;
     }
@@ -260,7 +260,7 @@ async function initDb(): Promise<void> {
     // ─── Invite emails ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS invite_emails (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, friend_name TEXT NOT NULL, friend_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', referral_code TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_emails_referrer ON invite_emails(referrer_user_id, created_at DESC)`);
-    console.log("DB initialized (v3.9.5 — push diagnostics)");
+    console.log("DB initialized (v3.9.6 — push diagnostics)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -335,7 +335,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.9.5", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.9.6", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Push Diagnostics ────────────────────────────────────────────────
@@ -1649,21 +1649,41 @@ app.post("/api/churches/share", async (c) => {
   if (!savedChurchId || !circleCode) return c.json({ error: "savedChurchId and circleCode required" }, 400);
   if (note && note.length > 140) return c.json({ error: "Note too long. Maximum 140 characters." }, 422);
 
-  const saved = await pool.query("SELECT * FROM saved_churches WHERE id=$1 AND user_id=$2 AND is_deleted=false", [savedChurchId, u.id]);
+  const saved = await pool.query("SELECT sc.*, cp.place_id as cp_place_id, cp.lat as cp_lat, cp.lng as cp_lng FROM saved_churches sc LEFT JOIN church_profiles cp ON sc.place_id = cp.place_id WHERE sc.id=$1 AND sc.user_id=$2 AND sc.is_deleted=false", [savedChurchId, u.id]);
   if (!saved.rows[0]) return c.json({ error: "Saved church not found" }, 404);
   const ci = getCircle(circleCode); if (!ci) return c.json({ error: "Circle not found" }, 404);
   if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You can only share churches with your circles." }, 403);
 
-  const r = await pool.query("INSERT INTO church_shares (sender_user_id, sender_name, saved_church_id, circle_code, note) VALUES ($1,$2,$3,$4,$5) RETURNING *",
-    [u.id, u.name || "Someone", savedChurchId, circleCode, note || null]);
+  const church = saved.rows[0];
 
+  // 1. Record the share
+  const r = await pool.query(
+    "INSERT INTO church_shares (sender_user_id, sender_name, saved_church_id, circle_code, note) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+    [u.id, u.name || "Someone", savedChurchId, circleCode, note || null]
+  );
+
+  // 2. Create a circle_posts entry so it appears in the feed
+  const churchMeta = JSON.stringify({
+    place_id: church.place_id,
+    church_name: church.church_name,
+    address: church.address,
+    lat: church.cp_lat || church.lat,
+    lng: church.cp_lng || church.lng,
+    note: note || null,
+  });
+  await pool.query(
+    `INSERT INTO circle_posts (circle_code, author_user_id, author_name, content, media_type, media_url, status, published_at) VALUES ($1,$2,$3,$4,'church',$5,'published',NOW())`,
+    [circleCode.toUpperCase(), u.id, u.name || "Someone", note || null, churchMeta]
+  );
+
+  // 3. Push notification to all circle members
   pushToCircleMembers(ci, u.id, {
-    title: `${u.name || "Someone"} shared a church with ${ci.name} ⛪`,
-    body: saved.rows[0].church_name + (note ? ` — "${note}"` : ""),
+    title: `⛪ ${u.name || "Someone"} shared a church`,
+    body: `${church.church_name}${note ? ` — "${note}"` : ""} in ${ci.name}`,
     type: "church_shared", circleCode, circleName: ci.name,
   });
 
-  trackEvent(u.id, "church_shared", { place_id: saved.rows[0].place_id, circle_code: circleCode });
+  trackEvent(u.id, "church_shared", { place_id: church.place_id, circle_code: circleCode });
   return c.json({ shareId: r.rows[0].id, sharedAt: r.rows[0].created_at });
 });
 
@@ -1790,7 +1810,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000); // delay 5min after startup
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.9.5 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v3.9.6 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
