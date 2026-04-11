@@ -11,7 +11,7 @@ const { Pool } = pg;
 
 // ─── Types ───────────────────────────────────────────────────────────
 interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; joinedAt: string; canPost?: boolean; notificationsMuted?: boolean; role?: string; avatarUrl?: string; }
-interface StoredPrayerRequest { id: string; requesterUserId: string; requesterName: string; text: string; timestamp: string; isAnonymous: boolean; prayedByUserIds: string[]; }
+interface StoredPrayerRequest { id: string; requesterUserId: string; requesterName: string; text: string; timestamp: string; isAnonymous: boolean; prayedByUserIds: string[]; generatedPrayer?: string; }
 interface StoredEncouragement { id: string; toUserId: string; fromUserId: string; fromName: string; message: string; timestamp: string; }
 interface StoredCircle { id: string; name: string; code: string; emoji: string; creatorUserId: string; members: StoredMember[]; prayerRequests: StoredPrayerRequest[]; encouragements: StoredEncouragement[]; createdAt: string; }
 
@@ -37,8 +37,8 @@ const APNS_PRIVATE_KEY = (process.env.APNS_PRIVATE_KEY || "").replace(/\\n/g, "\
 const APNS_HOST = process.env.APNS_SANDBOX === "true" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
 const ADMIN_USER_ID = process.env.ADMIN_USER_ID || "";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
-let geminiBackoffUntil = 0; // timestamp — skip Gemini calls until this time after 429
-const GEMINI_BACKOFF_MS = 6 * 60 * 60 * 1000; // 6 hours
+let geminiBackoffUntil = 0;
+const GEMINI_BACKOFF_MS = 6 * 60 * 60 * 1000;
 function isGeminiAvailable(): boolean { return Date.now() >= geminiBackoffUntil; }
 function markGeminiRateLimited(): void { geminiBackoffUntil = Date.now() + GEMINI_BACKOFF_MS; console.log(`[Gemini] Rate limited — backing off until ${new Date(geminiBackoffUntil).toISOString()}`); }
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || "";
@@ -80,10 +80,11 @@ Your scope:
 - If asked something out of scope, respond warmly: "That's a little outside what I'm here for — but if you have a question about Scripture or faith, I'm all yours."
 
 Your format:
-- Keep responses concise but rich — 3 to 6 sentences for most answers
+- Keep responses concise but rich, 3 to 6 sentences for most answers
 - For complex theological questions, you may go longer but always stay clear
 - End longer responses with an open question or gentle invitation to go deeper
-- When suggesting a prayer, keep it under 80 words, personal, and rooted in Scripture`;
+- When suggesting a prayer, keep it under 80 words, personal, and rooted in Scripture
+- NEVER use dashes or hyphens as punctuation anywhere in your responses. Use commas, periods, semicolons, or the word "and" instead. Do not use dashes for lists either. This applies to em dashes, en dashes, and regular hyphens used as punctuation.`;
 
 // ─── PostHog Helpers ─────────────────────────────────────────────────
 function trackEvent(distinctId: string, event: string, properties?: Record<string, any>) {
@@ -217,7 +218,6 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS daily_product_metrics (date DATE PRIMARY KEY, dau INT DEFAULT 0, new_users INT DEFAULT 0, prayers_logged INT DEFAULT 0, circles_created INT DEFAULT 0, invites_accepted INT DEFAULT 0, encouragements_sent INT DEFAULT 0, paywall_views INT DEFAULT 0, plan_taps INT DEFAULT 0, scripture_views INT DEFAULT 0, signups INT DEFAULT 0, account_deletions INT DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_app_store_metrics (date DATE PRIMARY KEY, impressions INT DEFAULT 0, product_page_views INT DEFAULT 0, app_units INT DEFAULT 0, conversion_rate REAL DEFAULT 0, proceeds REAL DEFAULT 0, active_devices INT DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS revenue_events (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT, event_type TEXT NOT NULL, plan TEXT, product_id TEXT, price REAL DEFAULT 0, currency TEXT DEFAULT 'USD', environment TEXT DEFAULT 'production', created_at TIMESTAMPTZ DEFAULT NOW())`);
-    // ─── Posts tables ──────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS circle_posts (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, author_user_id TEXT NOT NULL, author_name TEXT NOT NULL DEFAULT '', content TEXT, media_type TEXT, media_url TEXT, media_filename TEXT, media_size_bytes INTEGER, status TEXT NOT NULL DEFAULT 'published', scheduled_at TIMESTAMPTZ, published_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_posts_circle_feed ON circle_posts(circle_code, status, published_at DESC)`);
     await client.query(`ALTER TABLE circle_posts ADD COLUMN IF NOT EXISTS tagged_user_ids TEXT[] DEFAULT '{}'`).catch(() => {});
@@ -225,42 +225,35 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_reactions_post ON post_reactions(post_id)`);
     await client.query(`CREATE TABLE IF NOT EXISTS post_replies (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, post_id TEXT NOT NULL, author_user_id TEXT NOT NULL, author_name TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_replies_post ON post_replies(post_id, created_at)`);
-    // ─── Invite tokens ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS invite_tokens (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, token TEXT UNIQUE NOT NULL, circle_code TEXT NOT NULL, inviter_user_id TEXT NOT NULL, inviter_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', accepted_by_user_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), accepted_at TIMESTAMPTZ)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_token ON invite_tokens(token)`);
-    // ─── Lumi reflections ─────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS daily_reflections (date DATE PRIMARY KEY, verse TEXT NOT NULL, reference TEXT NOT NULL, reflection TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
-    // ─── Favorites ────────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS favorites (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, title TEXT, source TEXT NOT NULL DEFAULT 'app', prayer_text TEXT, prayer_id TEXT, media_url TEXT, media_type TEXT, media_filename TEXT, transcript TEXT, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, is_deleted, created_at DESC)`);
-    // ─── Notifications ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, data JSONB DEFAULT '{}', is_read BOOLEAN DEFAULT false, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_deleted, created_at DESC)`);
     await client.query(`CREATE TABLE IF NOT EXISTS notification_preferences (user_id TEXT PRIMARY KEY, encouragements BOOLEAN DEFAULT true, prayers_shared BOOLEAN DEFAULT true, prayer_requests BOOLEAN DEFAULT true, circle_posts BOOLEAN DEFAULT true, post_replies BOOLEAN DEFAULT true, post_reactions BOOLEAN DEFAULT true, circle_members BOOLEAN DEFAULT true, streak_milestones BOOLEAN DEFAULT true, streak_freeze BOOLEAN DEFAULT true, updated_at TIMESTAMPTZ DEFAULT NOW())`);
-    // ─── Encouragements ───────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS encouragements (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', recipient_user_id TEXT NOT NULL, message TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_encouragements_recipient ON encouragements(recipient_user_id, created_at DESC)`);
-    // ─── Prayer shares ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_shares (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', recipient_user_id TEXT NOT NULL, prayer_id TEXT, prayer_title TEXT, prayer_text TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_shares_recipient ON prayer_shares(recipient_user_id, created_at DESC)`);
-    // ─── Shared prayers (favorites sharing) ───────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS shared_prayers (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', recipient_user_id TEXT NOT NULL, favorite_id TEXT, note TEXT, prayer_text TEXT, prayer_title TEXT, source TEXT, media_url TEXT, media_type TEXT, transcript TEXT, is_saved BOOLEAN DEFAULT false, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_shared_prayers_recipient ON shared_prayers(recipient_user_id, is_deleted, created_at DESC)`);
-    // ─── Referrals ────────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS referral_codes (user_id TEXT PRIMARY KEY, code TEXT UNIQUE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_referral_code ON referral_codes(code)`);
     await client.query(`CREATE TABLE IF NOT EXISTS referrals (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, referred_user_id TEXT, referred_email TEXT, status TEXT NOT NULL DEFAULT 'pending', confirmed_at TIMESTAMPTZ, reversed_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_user_id, status)`);
     await client.query(`CREATE TABLE IF NOT EXISTS referral_rewards (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, tier INT NOT NULL, reward_type TEXT NOT NULL, granted_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(user_id, tier))`);
-    // ─── Churches ─────────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS church_profiles (place_id TEXT PRIMARY KEY, name TEXT, address TEXT, lat REAL, lng REAL, phone TEXT, website TEXT, rating REAL, rating_count INT, denomination TEXT, opening_hours JSONB, photos JSONB DEFAULT '[]', enrichment_status TEXT DEFAULT 'pending', year_founded TEXT, architectural_style TEXT, patron_saint TEXT, diocese TEXT, description TEXT, notable_features JSONB DEFAULT '[]', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS saved_churches (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, place_id TEXT NOT NULL, church_name TEXT, address TEXT, lat REAL, lng REAL, tags TEXT[] DEFAULT '{}', review TEXT, notes TEXT, rating INT, photos JSONB DEFAULT '[]', is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_saved_churches_user ON saved_churches(user_id, is_deleted)`);
     await client.query(`CREATE TABLE IF NOT EXISTS church_shares (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, sender_user_id TEXT NOT NULL, sender_name TEXT NOT NULL DEFAULT '', saved_church_id TEXT NOT NULL, circle_code TEXT NOT NULL, note TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
-    // ─── Invite emails ────────────────────────────────────────────
     await client.query(`CREATE TABLE IF NOT EXISTS invite_emails (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, referrer_user_id TEXT NOT NULL, friend_name TEXT NOT NULL, friend_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'sent', referral_code TEXT, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_emails_referrer ON invite_emails(referrer_user_id, created_at DESC)`);
-    console.log("DB initialized (v3.9.7 — push diagnostics)");
+    // Enforce one reaction per user per post (drop old unique constraint, add new one)
+    await client.query(`ALTER TABLE post_reactions DROP CONSTRAINT IF EXISTS post_reactions_post_id_user_id_emoji_key`).catch(() => {});
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_one_per_user ON post_reactions(post_id, user_id)`).catch(() => {});
+    console.log("DB initialized (v4.0.0 — circle fixes batch)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -301,7 +294,7 @@ async function backfillPlausible(): Promise<void> {
   if (!PLAUSIBLE_API_KEY) return;
   try {
     const h = { Authorization: `Bearer ${PLAUSIBLE_API_KEY}` }; const base = "https://plausible.io/api/v1/stats";
-    const existing = await pool.query("SELECT COUNT(*) as c FROM daily_web_metrics"); 
+    const existing = await pool.query("SELECT COUNT(*) as c FROM daily_web_metrics");
     if (parseInt(existing.rows[0]?.c || "0") > 3) { console.log("[Plausible] Historical data exists, skipping backfill"); return; }
     const tsRes = await fetch(`${base}/timeseries?site_id=${PLAUSIBLE_SITE_ID}&period=30d&metrics=visitors,pageviews,bounce_rate,visit_duration`, { headers: h });
     if (!tsRes.ok) { console.error("[Plausible] Timeseries failed:", tsRes.status); return; }
@@ -335,7 +328,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "3.9.7", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "4.0.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Push Diagnostics ────────────────────────────────────────────────
@@ -438,7 +431,6 @@ app.put("/api/user/avatar", async (c) => {
     await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await file.arrayBuffer()), ContentType: file.type }));
     const avatarUrl = `${R2_PUBLIC_URL}/${key}`;
     await pool.query("UPDATE users SET avatar_url=$1, updated_at=NOW() WHERE id=$2", [avatarUrl, u.id]);
-    // Update avatar in all circles
     for (const [, ci] of circles) {
       const m = ci.members.find(m => m.userId === u.id);
       if (m) { m.avatarUrl = avatarUrl; await saveCircleToDb(ci); }
@@ -487,19 +479,16 @@ app.post("/webhooks/revenuecat", async (c) => {
       else if (name === "subscription_renewed") await pool.query(`INSERT INTO daily_revenue (date,renewals,revenue_gross,revenue_net) VALUES ($1,1,$2,$3) ON CONFLICT (date) DO UPDATE SET renewals=daily_revenue.renewals+1,revenue_gross=daily_revenue.revenue_gross+$2,revenue_net=daily_revenue.revenue_net+$3,updated_at=NOW()`, [today, price, net]);
       else if (name === "subscription_cancelled" || name === "subscription_expired") await pool.query(`INSERT INTO daily_revenue (date,cancellations) VALUES ($1,1) ON CONFLICT (date) DO UPDATE SET cancellations=daily_revenue.cancellations+1,updated_at=NOW()`, [today]);
     } catch (e: any) { console.error("[Revenue]", e.message); }
-    // Confirm referral — grant 30 days free to BOTH referrer and referred user
     if (name === "subscription_started" || name === "lifetime_purchased") {
       try {
         const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [resolvedUid]);
         if (ref.rows[0]) {
           const referrerId = ref.rows[0].referrer_user_id;
-          // Grant 30 days promotional to referrer
           if (REVENUECAT_SECRET_KEY) {
             try {
               await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(referrerId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
               console.log(`[Referral] Granted 30d to referrer ${referrerId.substring(0, 8)}`);
             } catch (err: any) { console.error("[Referral] Grant referrer error:", err.message); }
-            // Grant 30 days promotional to referred user
             try {
               await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(resolvedUid)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
               console.log(`[Referral] Granted 30d to referred ${resolvedUid.substring(0, 8)}`);
@@ -532,7 +521,6 @@ app.delete("/api/circles/:code/members/:userId", async (c) => {
   if (ah?.startsWith("Bearer ")) {
     const u = await getUserByToken(ah.replace("Bearer ", ""));
     if (u && uid !== u.id) {
-      // Admin/creator removing another member
       if (isCircleAdmin(u.id, ci, u.device_user_id)) {
         const target = ci.members.find(m => m.userId === uid);
         if (!target) return c.json({ error: "This member wasn't found in the circle." }, 404);
@@ -545,21 +533,58 @@ app.delete("/api/circles/:code/members/:userId", async (c) => {
       }
     }
   }
-  // Self-leave
   ci.members = ci.members.filter(m => m.userId !== uid);
   trackEvent(uid, "circle_left", { circle_code: code });
   ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci);
   return c.json({ success: true });
 });
 app.delete("/api/circles/:code", async (c) => { const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); trackEvent(ci.creatorUserId, "circle_deleted", { circle_code: code }); await deleteCircleFromDb(code); return c.json({ success: true }); });
-app.post("/api/circles/:code/prayer-requests", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); ci.prayerRequests.unshift({ id: randomUUID(), requesterUserId: b.userId, requesterName: b.isAnonymous ? "Anonymous" : b.userName || "Someone", text: b.text, timestamp: new Date().toISOString(), isAnonymous: b.isAnonymous || false, prayedByUserIds: [] }); await saveCircleToDb(ci); trackEvent(b.userId, "prayer_request_created", { circle_code: c.req.param("code").toUpperCase(), is_anonymous: b.isAnonymous || false }); pushToCircleMembers(ci, b.userId, { title: "📿 New prayer request in " + ci.name, body: b.isAnonymous ? "Someone shared a prayer request" : (b.userName || "Someone") + " shared a prayer request", type: "prayer_request", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); return c.json({ circle: ci }); });
+
+// ─── Prayer Requests (FIX #11: Lumi-generated prayer) ────────────────
+app.post("/api/circles/:code/prayer-requests", async (c) => {
+  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404);
+  const b = await c.req.json();
+  const reqId = randomUUID();
+  const newReq: StoredPrayerRequest = { id: reqId, requesterUserId: b.userId, requesterName: b.isAnonymous ? "Anonymous" : b.userName || "Someone", text: b.text, timestamp: new Date().toISOString(), isAnonymous: b.isAnonymous || false, prayedByUserIds: [] };
+  ci.prayerRequests.unshift(newReq);
+  await saveCircleToDb(ci);
+  trackEvent(b.userId, "prayer_request_created", { circle_code: c.req.param("code").toUpperCase(), is_anonymous: b.isAnonymous || false });
+  pushToCircleMembers(ci, b.userId, { title: "📿 New prayer request in " + ci.name, body: b.isAnonymous ? "Someone shared a prayer request" : (b.userName || "Someone") + " shared a prayer request", type: "prayer_request", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name });
+  // Async Lumi prayer generation
+  if (GEMINI_API_KEY && isGeminiAvailable() && b.text) {
+    const circleCode = c.req.param("code");
+    (async () => {
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: "You write short, heartfelt prayers (under 60 words) based on prayer requests. Write in second person addressing God. Never use dashes or hyphens as punctuation. Be warm, scriptural, personal. Return ONLY the prayer text, nothing else." }] },
+            contents: [{ role: "user", parts: [{ text: `Write a short prayer for this request: "${b.text}"` }] }]
+          })
+        });
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          const prayer = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          if (prayer.trim()) {
+            const freshCircle = getCircle(circleCode);
+            if (freshCircle) {
+              const req2 = freshCircle.prayerRequests.find(r => r.id === reqId);
+              if (req2) { req2.generatedPrayer = prayer.trim(); await saveCircleToDb(freshCircle); }
+            }
+          }
+        } else if (res.status === 429) { markGeminiRateLimited(); }
+      } catch (err: any) { console.error("[Lumi Prayer]", err.message); }
+    })();
+  }
+  return c.json({ circle: ci });
+});
+
 app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const req = ci.prayerRequests.find(r => r.id === c.req.param("rid")); if (!req) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (!req.prayedByUserIds.includes(b.userId)) { req.prayedByUserIds.push(b.userId); trackEvent(b.userId, "prayer_request_prayed", { circle_code: c.req.param("code").toUpperCase() }); if (req.requesterUserId !== b.userId) { const prayerName = ci.members.find(m => m.userId === b.userId)?.name || "Someone"; pushToUser(req.requesterUserId, { title: "🙏 " + prayerName + " is praying for you", body: req.text.length > 60 ? req.text.substring(0, 60) + "..." : req.text, type: "prayer_request_prayed", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); } } await saveCircleToDb(ci); return c.json({ circle: ci }); });
 app.delete("/api/circles/:code/prayer-requests/:rid", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const before = ci.prayerRequests.length; ci.prayerRequests = ci.prayerRequests.filter(r => r.id !== c.req.param("rid")); if (ci.prayerRequests.length === before) return c.json({ error: "Not found" }, 404); await saveCircleToDb(ci); return c.json({ success: true }); });
 app.post("/api/circles/:code/encouragements", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); console.log(`[Encourage] ${b.fromName} → ${b.toUserId?.substring(0,8)}… in circle ${c.req.param("code")}`); ci.encouragements.push({ id: randomUUID(), toUserId: b.toUserId, fromUserId: b.fromUserId, fromName: b.fromName || "Someone", message: b.message, timestamp: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.fromUserId, "encouragement_sent", { circle_code: c.req.param("code").toUpperCase(), to_user_id: b.toUserId }); pushToUser(b.toUserId, { title: "🙏 " + (b.fromName || "Someone") + " sent you encouragement", body: b.message || "Keep going — you're not alone!", type: "encouragement", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name }); return c.json({ circle: ci }); });
 app.get("/api/circles/:code/info", (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const cr = ci.members.find(m => m.userId === ci.creatorUserId); return c.json({ name: ci.name, emoji: ci.emoji, memberCount: ci.members.length, creatorName: cr?.name || null }); });
 
 // ─── Admin: posting rights + mute + role management ──────────────────
-// ─── Circle Members List (for @mention dropdown) ──────────────────
 app.get("/api/circles/:code/members-list", async (c) => {
   const u = await requireAuth(c);
   if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
@@ -672,7 +697,6 @@ app.post("/api/lumi/chat", async (c) => {
   const sanitized = messages
     .filter((m: any) => ["user", "assistant"].includes(m.role) && typeof m.content === "string")
     .slice(-20);
-  // Convert to Gemini format: role "assistant" → "model"
   const geminiContents = sanitized.map((m: any) => ({
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
@@ -738,8 +762,8 @@ async function generateDailyReflection(): Promise<{ verse: string; reference: st
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          system_instruction: { parts: [{ text: "You are a Bible verse curator. Respond ONLY with valid JSON, no markdown, no backticks, no extra text." }] },
-          contents: [{ role: "user", parts: [{ text: `Select a meaningful Bible verse for the ${getLiturgicalSeason()} liturgical season, day ${dayOfYear} of the year. Choose verses appropriate to this season's themes. Return JSON: {"verse": "the full verse text", "reference": "Book Chapter:Verse", "reflection": "2-3 warm sentences about what this verse means and why it matters today, written in the voice of a gentle pastoral guide named Lumi"}` }] }],
+          system_instruction: { parts: [{ text: "You are a Bible verse curator. Respond ONLY with valid JSON, no markdown, no backticks, no extra text. Never use dashes or hyphens as punctuation in the reflection." }] },
+          contents: [{ role: "user", parts: [{ text: `Select a meaningful Bible verse for the ${getLiturgicalSeason()} liturgical season, day ${dayOfYear} of the year. Choose verses appropriate to this season's themes. Return JSON: {"verse": "the full verse text", "reference": "Book Chapter:Verse", "reflection": "2-3 warm sentences about what this verse means and why it matters today, written in the voice of a gentle pastoral guide named Lumi. Do not use any dashes."}` }] }],
         }),
       }
     );
@@ -757,7 +781,7 @@ async function generateDailyReflection(): Promise<{ verse: string; reference: st
   } catch (err: any) { console.error("[Lumi] Generation error:", err.message); return null; }
 }
 
-// ─── Liturgical Season (server-side) ─────────────────────────────────
+// ─── Liturgical Season ─────────────────────────────────────────────
 function computeEasterDate(year: number): Date {
   const a = year % 19, b = Math.floor(year / 100), c2 = year % 100;
   const d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25);
@@ -776,15 +800,9 @@ function getLiturgicalSeason(date: Date = new Date()): string {
   const eDay = easter.getTime();
   const today = new Date(y, m, d).getTime();
   const day = 86400000;
-
-  // Ash Wednesday = Easter - 46 days
   const ashWed = eDay - 46 * day;
-  // Palm Sunday = Easter - 7 days
   const palmSun = eDay - 7 * day;
-  // Pentecost = Easter + 49 days
   const pentecost = eDay + 49 * day;
-
-  // Advent: 4 Sundays before Dec 25
   const christmas = new Date(y, 11, 25).getTime();
   let adventStart = christmas;
   let count = 0;
@@ -792,10 +810,8 @@ function getLiturgicalSeason(date: Date = new Date()): string {
     const check = new Date(christmas - i * day);
     if (check.getDay() === 0) { count++; if (count === 4) { adventStart = check.getTime(); break; } }
   }
-
   if (today >= adventStart && today < christmas) return "advent";
   if (today >= christmas && today <= new Date(y, 0, 6).getTime() + (m === 11 ? 365 * day : 0)) return "christmas";
-  // Handle Jan 1-6 for Christmas
   if (m === 0 && d <= 6) return "christmas";
   if (today >= palmSun && today < eDay) return "holyWeek";
   if (today >= ashWed && today < palmSun) return "lent";
@@ -806,16 +822,12 @@ function getLiturgicalSeason(date: Date = new Date()): string {
 app.get("/api/seasonal/verse-of-the-day", async (c) => {
   const season = getLiturgicalSeason();
   const today = new Date().toISOString().split("T")[0];
-
-  // Try existing daily reflection first
   try {
     const existing = await pool.query("SELECT * FROM daily_reflections WHERE date=$1", [today]);
     if (existing.rows[0]) {
       return c.json({ verse: existing.rows[0].verse, reference: existing.rows[0].reference, season });
     }
   } catch {}
-
-  // Generate on-demand if not yet available
   if (GEMINI_API_KEY) {
     const seasonNames: Record<string, string> = { advent: "Advent", christmas: "Christmas", lent: "Lent", holyWeek: "Holy Week", easter: "Easter", ordinaryTime: "Ordinary Time" };
     try {
@@ -835,8 +847,6 @@ app.get("/api/seasonal/verse-of-the-day", async (c) => {
       }
     } catch {}
   }
-
-  // Fallback
   return c.json({ verse: "Be still, and know that I am God.", reference: "Psalm 46:10", season });
 });
 
@@ -852,41 +862,19 @@ const FAV_ALLOWED_MEDIA: Record<string, string[]> = {
 const FAV_MAX_IMAGE_PDF = 20 * 1024 * 1024;
 const FAV_MAX_AUDIO_VIDEO = 50 * 1024 * 1024;
 
-app.get("/api/favorites", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const r = await pool.query("SELECT * FROM favorites WHERE user_id=$1 AND is_deleted=false ORDER BY created_at DESC", [u.id]);
-  return c.json({ favorites: r.rows });
-});
+app.get("/api/favorites", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const r = await pool.query("SELECT * FROM favorites WHERE user_id=$1 AND is_deleted=false ORDER BY created_at DESC", [u.id]); return c.json({ favorites: r.rows }); });
 
 app.post("/api/favorites", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   const body = await c.req.parseBody();
-  const title = (body.title as string) || null;
-  const source = (body.source as string) || "app";
-  const prayerText = (body.prayerText as string) || null;
-  const prayerId = (body.prayerId as string) || null;
-  const transcript = (body.transcript as string) || null;
-  const mediaFile = body.mediaFile as File | undefined;
-
-  // Validate source
+  const title = (body.title as string) || null; const source = (body.source as string) || "app";
+  const prayerText = (body.prayerText as string) || null; const prayerId = (body.prayerId as string) || null;
+  const transcript = (body.transcript as string) || null; const mediaFile = body.mediaFile as File | undefined;
   const validSources = ["app", "text", "image", "ocr", "pdf", "audio", "video"];
   if (!validSources.includes(source)) return c.json({ error: "Invalid source type." }, 422);
-
-  // For app saves, check duplicate
-  if (source === "app" && prayerId) {
-    const existing = await pool.query("SELECT id FROM favorites WHERE user_id=$1 AND prayer_id=$2 AND is_deleted=false", [u.id, prayerId]);
-    if (existing.rows.length > 0) return c.json({ error: "Already saved." }, 409);
-  }
-
-  // For text imports, require minimum content
+  if (source === "app" && prayerId) { const existing = await pool.query("SELECT id FROM favorites WHERE user_id=$1 AND prayer_id=$2 AND is_deleted=false", [u.id, prayerId]); if (existing.rows.length > 0) return c.json({ error: "Already saved." }, 409); }
   if (source === "text" && (!prayerText || prayerText.trim().length < 10)) return c.json({ error: "Prayer text must be at least 10 characters." }, 422);
-
-  let mediaUrl: string | null = null;
-  let mediaType: string | null = null;
-  let mediaFilename: string | null = null;
-
+  let mediaUrl: string | null = null; let mediaType: string | null = null; let mediaFilename: string | null = null;
   if (mediaFile && mediaFile.size > 0) {
     const ft = mediaFile.type;
     const isImageOrPdf = FAV_ALLOWED_MEDIA.image.includes(ft) || FAV_ALLOWED_MEDIA.pdf.includes(ft);
@@ -894,570 +882,163 @@ app.post("/api/favorites", async (c) => {
     if (!isImageOrPdf && !isAudioVideo) return c.json({ error: "Unsupported file format." }, 422);
     const maxSize = isAudioVideo ? FAV_MAX_AUDIO_VIDEO : FAV_MAX_IMAGE_PDF;
     if (mediaFile.size > maxSize) return c.json({ error: `File too large. Maximum size is ${isAudioVideo ? "50" : "20"} MB.` }, 413);
-
     if (FAV_ALLOWED_MEDIA.image.includes(ft)) mediaType = "image";
     else if (FAV_ALLOWED_MEDIA.audio.includes(ft)) mediaType = "audio";
     else if (FAV_ALLOWED_MEDIA.video.includes(ft)) mediaType = "video";
     else if (FAV_ALLOWED_MEDIA.pdf.includes(ft)) mediaType = "pdf";
-
     try {
       const ext = mediaFile.name.split(".").pop() || "bin";
       const key = `favorites/${Date.now()}-${randomUUID().substring(0, 8)}.${ext}`;
-      if (s3) {
-        await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await mediaFile.arrayBuffer()), ContentType: ft }));
-        mediaUrl = `${R2_PUBLIC_URL}/${key}`;
-      } else { return c.json({ error: "Storage not configured." }, 500); }
+      if (s3) { await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await mediaFile.arrayBuffer()), ContentType: ft })); mediaUrl = `${R2_PUBLIC_URL}/${key}`; } else { return c.json({ error: "Storage not configured." }, 500); }
       mediaFilename = mediaFile.name;
     } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); }
   }
-
-  const r = await pool.query(
-    `INSERT INTO favorites (user_id,title,source,prayer_text,prayer_id,media_url,media_type,media_filename,transcript) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-    [u.id, title, source, prayerText, prayerId, mediaUrl, mediaType, mediaFilename, transcript]
-  );
+  const r = await pool.query(`INSERT INTO favorites (user_id,title,source,prayer_text,prayer_id,media_url,media_type,media_filename,transcript) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`, [u.id, title, source, prayerText, prayerId, mediaUrl, mediaType, mediaFilename, transcript]);
   trackEvent(u.id, "favorite_saved", { source });
   return c.json({ favorite: r.rows[0] }, 201);
 });
 
-app.delete("/api/favorites/:favoriteId", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const r = await pool.query("UPDATE favorites SET is_deleted=true, updated_at=NOW() WHERE id=$1 AND user_id=$2 AND is_deleted=false RETURNING id", [c.req.param("favoriteId"), u.id]);
-  if (!r.rows.length) return c.json({ error: "Not found" }, 404);
-  return c.body(null, 204);
-});
+app.delete("/api/favorites/:favoriteId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const r = await pool.query("UPDATE favorites SET is_deleted=true, updated_at=NOW() WHERE id=$1 AND user_id=$2 AND is_deleted=false RETURNING id", [c.req.param("favoriteId"), u.id]); if (!r.rows.length) return c.json({ error: "Not found" }, 404); return c.body(null, 204); });
 
 app.post("/api/favorites/transcribe", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   if (!GEMINI_API_KEY) return c.json({ error: "Something went wrong. Please try again." }, 500);
-
-  const body = await c.req.parseBody();
-  const mediaFile = body.mediaFile as File | undefined;
+  const body = await c.req.parseBody(); const mediaFile = body.mediaFile as File | undefined;
   if (!mediaFile || mediaFile.size === 0) return c.json({ error: "No file provided." }, 422);
   if (mediaFile.size > FAV_MAX_AUDIO_VIDEO) return c.json({ error: "File too large. Maximum size is 50 MB." }, 413);
-
   const ft = mediaFile.type;
-  const isAudio = FAV_ALLOWED_MEDIA.audio.includes(ft);
-  const isVideo = FAV_ALLOWED_MEDIA.video.includes(ft);
+  const isAudio = FAV_ALLOWED_MEDIA.audio.includes(ft); const isVideo = FAV_ALLOWED_MEDIA.video.includes(ft);
   if (!isAudio && !isVideo) return c.json({ error: "Unsupported file format." }, 422);
-
-  // Gemini has a ~20MB inline limit; reject larger files for transcription
   if (mediaFile.size > 20 * 1024 * 1024) return c.json({ error: "File too large for transcription. Maximum is 20 MB." }, 413);
-
   try {
     const fileBuffer = Buffer.from(await mediaFile.arrayBuffer());
     const base64Data = fileBuffer.toString("base64");
-
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { inline_data: { mime_type: ft, data: base64Data } },
-              { text: "Please transcribe this audio/video recording word for word. Return only the transcription text, nothing else. If the recording is a prayer, preserve the prayerful tone." }
-            ]
-          }]
-        }),
-      }
-    );
-
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contents: [{ parts: [{ inline_data: { mime_type: ft, data: base64Data } }, { text: "Please transcribe this audio/video recording word for word. Return only the transcription text, nothing else. If the recording is a prayer, preserve the prayerful tone." }] }] }),
+    });
     if (res.status === 429) return c.json({ error: "Transcription is busy. Please try again in a moment." }, 429);
-    if (!res.ok) {
-      const errText = await res.text().catch(() => "");
-      console.error("[Transcribe] Gemini error:", res.status, errText.substring(0, 200));
-      return c.json({ error: "Something went wrong. Please try again." }, 500);
-    }
-
+    if (!res.ok) { const errText = await res.text().catch(() => ""); console.error("[Transcribe] Gemini error:", res.status, errText.substring(0, 200)); return c.json({ error: "Something went wrong. Please try again." }, 500); }
     const data = (await res.json()) as any;
     const transcript = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
     if (!transcript.trim()) return c.json({ error: "No speech could be detected in this file." }, 422);
-
     trackEvent(u.id, "prayer_transcribed", { file_type: ft });
     return c.json({ transcript: transcript.trim() });
-  } catch (err: any) {
-    console.error("[Transcribe] Error:", err.message);
-    return c.json({ error: "Something went wrong. Please try again." }, 500);
-  }
+  } catch (err: any) { console.error("[Transcribe] Error:", err.message); return c.json({ error: "Something went wrong. Please try again." }, 500); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── NOTIFICATIONS ──────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-
-app.get("/api/notifications", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const filter = c.req.query("filter") || "all";
-  let q = "SELECT * FROM notifications WHERE user_id=$1 AND is_deleted=false";
-  if (filter === "unread") q += " AND is_read=false";
-  q += " ORDER BY created_at DESC LIMIT 100";
-  const r = await pool.query(q, [u.id]);
-  const unread = await pool.query("SELECT COUNT(*) as count FROM notifications WHERE user_id=$1 AND is_deleted=false AND is_read=false", [u.id]);
-  return c.json({ notifications: r.rows, unreadCount: parseInt(unread.rows[0]?.count || "0") });
-});
-
-app.post("/api/notifications/read", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const { notificationIds, all } = await c.req.json();
-  if (all) {
-    await pool.query("UPDATE notifications SET is_read=true WHERE user_id=$1 AND is_read=false", [u.id]);
-  } else if (Array.isArray(notificationIds) && notificationIds.length > 0) {
-    await pool.query("UPDATE notifications SET is_read=true WHERE id = ANY($1) AND user_id=$2", [notificationIds, u.id]);
-  }
-  return c.json({ success: true });
-});
-
-app.delete("/api/notifications/:notificationId", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  await pool.query("UPDATE notifications SET is_deleted=true WHERE id=$1 AND user_id=$2", [c.req.param("notificationId"), u.id]);
-  return c.body(null, 204);
-});
-
-app.get("/api/notifications/preferences", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const r = await pool.query("SELECT * FROM notification_preferences WHERE user_id=$1", [u.id]);
-  if (r.rows[0]) {
-    const p = r.rows[0];
-    return c.json({ encouragements: p.encouragements, prayers_shared: p.prayers_shared, prayer_requests: p.prayer_requests, circle_posts: p.circle_posts, post_replies: p.post_replies, post_reactions: p.post_reactions, circle_members: p.circle_members, streak_milestones: p.streak_milestones, streak_freeze: p.streak_freeze });
-  }
-  return c.json({ encouragements: true, prayers_shared: true, prayer_requests: true, circle_posts: true, post_replies: true, post_reactions: true, circle_members: true, streak_milestones: true, streak_freeze: true });
-});
-
-app.patch("/api/notifications/preferences", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const body = await c.req.json();
-  const cols = ["encouragements","prayers_shared","prayer_requests","circle_posts","post_replies","post_reactions","circle_members","streak_milestones","streak_freeze"];
-  // Ensure row exists
-  await pool.query("INSERT INTO notification_preferences (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [u.id]);
-  for (const col of cols) {
-    if (body[col] !== undefined) {
-      await pool.query(`UPDATE notification_preferences SET ${col}=$1, updated_at=NOW() WHERE user_id=$2`, [!!body[col], u.id]);
-    }
-  }
-  const r = await pool.query("SELECT * FROM notification_preferences WHERE user_id=$1", [u.id]);
-  const p = r.rows[0];
-  return c.json({ encouragements: p.encouragements, prayers_shared: p.prayers_shared, prayer_requests: p.prayer_requests, circle_posts: p.circle_posts, post_replies: p.post_replies, post_reactions: p.post_reactions, circle_members: p.circle_members, streak_milestones: p.streak_milestones, streak_freeze: p.streak_freeze });
-});
+app.get("/api/notifications", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const filter = c.req.query("filter") || "all"; let q = "SELECT * FROM notifications WHERE user_id=$1 AND is_deleted=false"; if (filter === "unread") q += " AND is_read=false"; q += " ORDER BY created_at DESC LIMIT 100"; const r = await pool.query(q, [u.id]); const unread = await pool.query("SELECT COUNT(*) as count FROM notifications WHERE user_id=$1 AND is_deleted=false AND is_read=false", [u.id]); return c.json({ notifications: r.rows, unreadCount: parseInt(unread.rows[0]?.count || "0") }); });
+app.post("/api/notifications/read", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const { notificationIds, all } = await c.req.json(); if (all) { await pool.query("UPDATE notifications SET is_read=true WHERE user_id=$1 AND is_read=false", [u.id]); } else if (Array.isArray(notificationIds) && notificationIds.length > 0) { await pool.query("UPDATE notifications SET is_read=true WHERE id = ANY($1) AND user_id=$2", [notificationIds, u.id]); } return c.json({ success: true }); });
+app.delete("/api/notifications/:notificationId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); await pool.query("UPDATE notifications SET is_deleted=true WHERE id=$1 AND user_id=$2", [c.req.param("notificationId"), u.id]); return c.body(null, 204); });
+app.get("/api/notifications/preferences", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const r = await pool.query("SELECT * FROM notification_preferences WHERE user_id=$1", [u.id]); if (r.rows[0]) { const p = r.rows[0]; return c.json({ encouragements: p.encouragements, prayers_shared: p.prayers_shared, prayer_requests: p.prayer_requests, circle_posts: p.circle_posts, post_replies: p.post_replies, post_reactions: p.post_reactions, circle_members: p.circle_members, streak_milestones: p.streak_milestones, streak_freeze: p.streak_freeze }); } return c.json({ encouragements: true, prayers_shared: true, prayer_requests: true, circle_posts: true, post_replies: true, post_reactions: true, circle_members: true, streak_milestones: true, streak_freeze: true }); });
+app.patch("/api/notifications/preferences", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const body = await c.req.json(); const cols = ["encouragements","prayers_shared","prayer_requests","circle_posts","post_replies","post_reactions","circle_members","streak_milestones","streak_freeze"]; await pool.query("INSERT INTO notification_preferences (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [u.id]); for (const col of cols) { if (body[col] !== undefined) { await pool.query(`UPDATE notification_preferences SET ${col}=$1, updated_at=NOW() WHERE user_id=$2`, [!!body[col], u.id]); } } const r = await pool.query("SELECT * FROM notification_preferences WHERE user_id=$1", [u.id]); const p = r.rows[0]; return c.json({ encouragements: p.encouragements, prayers_shared: p.prayers_shared, prayer_requests: p.prayer_requests, circle_posts: p.circle_posts, post_replies: p.post_replies, post_reactions: p.post_reactions, circle_members: p.circle_members, streak_milestones: p.streak_milestones, streak_freeze: p.streak_freeze }); });
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── ENCOURAGEMENTS ─────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-
 app.post("/api/encouragements", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   const { recipientId, message } = await c.req.json();
   if (!recipientId || !message) return c.json({ error: "recipientId and message required" }, 400);
   if (message.length > 140) return c.json({ error: "Message too long. Maximum 140 characters." }, 422);
   if (recipientId === u.id) return c.json({ error: "You can't send an encouragement to yourself." }, 422);
-
-  // Rate limit: 1 per sender per recipient per 24h
   const recent = await pool.query("SELECT id FROM encouragements WHERE sender_user_id=$1 AND recipient_user_id=$2 AND created_at > NOW() - INTERVAL '24 hours'", [u.id, recipientId]);
-  if (recent.rows.length > 0) {
-    const recipient = await pool.query("SELECT name FROM users WHERE id=$1", [recipientId]);
-    const recipientName = recipient.rows[0]?.name || "this person";
-    return c.json({ error: `You already encouraged ${recipientName} today. Come back tomorrow.` }, 429);
-  }
-
+  if (recent.rows.length > 0) { const recipient = await pool.query("SELECT name FROM users WHERE id=$1", [recipientId]); const recipientName = recipient.rows[0]?.name || "this person"; return c.json({ error: `You already encouraged ${recipientName} today. Come back tomorrow.` }, 429); }
   const r = await pool.query("INSERT INTO encouragements (sender_user_id, sender_name, recipient_user_id, message) VALUES ($1,$2,$3,$4) RETURNING *", [u.id, u.name || "Someone", recipientId, message]);
   trackEvent(u.id, "encouragement_sent_direct", { recipient_id: recipientId });
-
-  pushToUser(recipientId, {
-    title: "Someone is praying for you 🙏",
-    body: `${u.name || "Someone"} sent you an encouragement`,
-    type: "encouragement",
-  });
-
+  pushToUser(recipientId, { title: "Someone is praying for you 🙏", body: `${u.name || "Someone"} sent you an encouragement`, type: "encouragement" });
   return c.json({ encouragementId: r.rows[0].id, sentAt: r.rows[0].created_at });
 });
 
-app.get("/api/encouragements/:encouragementId", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const r = await pool.query("SELECT * FROM encouragements WHERE id=$1 AND (sender_user_id=$2 OR recipient_user_id=$2)", [c.req.param("encouragementId"), u.id]);
-  if (!r.rows[0]) return c.json({ error: "Not found" }, 404);
-  return c.json({ encouragement: r.rows[0] });
-});
+app.get("/api/encouragements/:encouragementId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const r = await pool.query("SELECT * FROM encouragements WHERE id=$1 AND (sender_user_id=$2 OR recipient_user_id=$2)", [c.req.param("encouragementId"), u.id]); if (!r.rows[0]) return c.json({ error: "Not found" }, 404); return c.json({ encouragement: r.rows[0] }); });
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── PRAYER SHARING ─────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-
-app.post("/api/prayers/share", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const { recipientId, prayerId, prayerTitle, prayerText } = await c.req.json();
-  if (!recipientId) return c.json({ error: "recipientId required" }, 400);
-  if (!prayerText && !prayerId) return c.json({ error: "prayerText or prayerId required" }, 400);
-
-  const r = await pool.query("INSERT INTO prayer_shares (sender_user_id, sender_name, recipient_user_id, prayer_id, prayer_title, prayer_text) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [u.id, u.name || "Someone", recipientId, prayerId || null, prayerTitle || null, prayerText || null]);
-  trackEvent(u.id, "prayer_shared", { recipient_id: recipientId });
-
-  pushToUser(recipientId, {
-    title: "A prayer was shared with you 🕯️",
-    body: `${u.name || "Someone"} shared a prayer with you${prayerTitle ? ": " + prayerTitle : ""}`,
-    type: "prayer_shared",
-  });
-
-  return c.json({ shareId: r.rows[0].id, sentAt: r.rows[0].created_at });
-});
+app.post("/api/prayers/share", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const { recipientId, prayerId, prayerTitle, prayerText } = await c.req.json(); if (!recipientId) return c.json({ error: "recipientId required" }, 400); if (!prayerText && !prayerId) return c.json({ error: "prayerText or prayerId required" }, 400); const r = await pool.query("INSERT INTO prayer_shares (sender_user_id, sender_name, recipient_user_id, prayer_id, prayer_title, prayer_text) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [u.id, u.name || "Someone", recipientId, prayerId || null, prayerTitle || null, prayerText || null]); trackEvent(u.id, "prayer_shared", { recipient_id: recipientId }); pushToUser(recipientId, { title: "A prayer was shared with you 🕯️", body: `${u.name || "Someone"} shared a prayer with you${prayerTitle ? ": " + prayerTitle : ""}`, type: "prayer_shared" }); return c.json({ shareId: r.rows[0].id, sentAt: r.rows[0].created_at }); });
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── SHARED PRAYERS (Favorites Sharing) ─────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-
 app.post("/api/shared-prayers", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   const { favoriteId, recipientIds, circleId, note } = await c.req.json();
   if (!favoriteId) return c.json({ error: "favoriteId required" }, 400);
   if (note && note.length > 140) return c.json({ error: "Note too long. Maximum 140 characters." }, 422);
-
-  // Get the favorite prayer
   const fav = await pool.query("SELECT * FROM favorites WHERE id=$1 AND user_id=$2 AND is_deleted=false", [favoriteId, u.id]);
   if (!fav.rows[0]) return c.json({ error: "Favorite not found" }, 404);
   const f = fav.rows[0];
-
-  // Resolve recipients
   let resolvedIds: string[] = [];
-  if (circleId) {
-    const ci = getCircle(circleId);
-    if (!ci) return c.json({ error: "Circle not found" }, 404);
-    if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You can only share prayers with people in your circles." }, 403);
-    resolvedIds = ci.members.map(m => m.userId).filter(id => id !== u.id);
-  } else if (Array.isArray(recipientIds) && recipientIds.length > 0) {
-    if (recipientIds.length > 20) return c.json({ error: "You can share with a maximum of 20 people at once." }, 422);
-    resolvedIds = recipientIds.filter((id: string) => id !== u.id);
-  } else {
-    return c.json({ error: "Please select at least one recipient." }, 400);
-  }
-
+  if (circleId) { const ci = getCircle(circleId); if (!ci) return c.json({ error: "Circle not found" }, 404); if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You can only share prayers with people in your circles." }, 403); resolvedIds = ci.members.map(m => m.userId).filter(id => id !== u.id); }
+  else if (Array.isArray(recipientIds) && recipientIds.length > 0) { if (recipientIds.length > 20) return c.json({ error: "You can share with a maximum of 20 people at once." }, 422); resolvedIds = recipientIds.filter((id: string) => id !== u.id); }
+  else { return c.json({ error: "Please select at least one recipient." }, 400); }
   if (resolvedIds.length === 0) return c.json({ error: "Please select at least one recipient." }, 400);
-
   let sharedCount = 0;
-  for (const rid of resolvedIds) {
-    await pool.query(
-      `INSERT INTO shared_prayers (sender_user_id, sender_name, recipient_user_id, favorite_id, note, prayer_text, prayer_title, source, media_url, media_type, transcript) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [u.id, u.name || "Someone", rid, favoriteId, note || null, f.prayer_text, f.title, f.source, f.media_url, f.media_type, f.transcript]
-    );
-    pushToUser(rid, {
-      title: circleId ? `${u.name || "Someone"} shared a prayer with your circle 🙏` : "A prayer was shared with you 🕯️",
-      body: note ? `${u.name || "Someone"}: ${note}` : `${u.name || "Someone"} shared a prayer with you${f.title ? ": " + f.title : ""}`,
-      type: "prayer_shared",
-    });
-    sharedCount++;
-  }
-
+  for (const rid of resolvedIds) { await pool.query(`INSERT INTO shared_prayers (sender_user_id, sender_name, recipient_user_id, favorite_id, note, prayer_text, prayer_title, source, media_url, media_type, transcript) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [u.id, u.name || "Someone", rid, favoriteId, note || null, f.prayer_text, f.title, f.source, f.media_url, f.media_type, f.transcript]); pushToUser(rid, { title: circleId ? `${u.name || "Someone"} shared a prayer with your circle 🙏` : "A prayer was shared with you 🕯️", body: note ? `${u.name || "Someone"}: ${note}` : `${u.name || "Someone"} shared a prayer with you${f.title ? ": " + f.title : ""}`, type: "prayer_shared" }); sharedCount++; }
   trackEvent(u.id, "prayer_favorite_shared", { recipient_count: sharedCount, source: f.source });
   return c.json({ sharedCount, sharedAt: new Date().toISOString() });
 });
 
-app.get("/api/shared-prayers/received", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const r = await pool.query(`
-    SELECT id, sender_user_id, sender_name, recipient_user_id, favorite_id, note,
-           prayer_text, prayer_title, source, media_url, media_type, transcript,
-           is_saved, is_deleted, created_at
-    FROM shared_prayers WHERE recipient_user_id=$1 AND is_deleted=false
-    UNION ALL
-    SELECT id, sender_user_id, sender_name, recipient_user_id, NULL as favorite_id, NULL as note,
-           prayer_text, prayer_title, NULL as source, NULL as media_url, NULL as media_type, NULL as transcript,
-           false as is_saved, false as is_deleted, created_at
-    FROM prayer_shares WHERE recipient_user_id=$1
-    ORDER BY created_at DESC
-  `, [u.id]);
-  return c.json({ sharedPrayers: r.rows });
-});
-
-app.delete("/api/shared-prayers/:sharedPrayerId", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  await pool.query("UPDATE shared_prayers SET is_deleted=true WHERE id=$1 AND recipient_user_id=$2", [c.req.param("sharedPrayerId"), u.id]);
-  return c.body(null, 204);
-});
+app.get("/api/shared-prayers/received", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const r = await pool.query(`SELECT id, sender_user_id, sender_name, recipient_user_id, favorite_id, note, prayer_text, prayer_title, source, media_url, media_type, transcript, is_saved, is_deleted, created_at FROM shared_prayers WHERE recipient_user_id=$1 AND is_deleted=false UNION ALL SELECT id, sender_user_id, sender_name, recipient_user_id, NULL as favorite_id, NULL as note, prayer_text, prayer_title, NULL as source, NULL as media_url, NULL as media_type, NULL as transcript, false as is_saved, false as is_deleted, created_at FROM prayer_shares WHERE recipient_user_id=$1 ORDER BY created_at DESC`, [u.id]); return c.json({ sharedPrayers: r.rows }); });
+app.delete("/api/shared-prayers/:sharedPrayerId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); await pool.query("UPDATE shared_prayers SET is_deleted=true WHERE id=$1 AND recipient_user_id=$2", [c.req.param("sharedPrayerId"), u.id]); return c.body(null, 204); });
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── REFERRALS & REWARDS ────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-
-function generateReferralCode(name: string): string {
-  const prefix = (name || "PRAY").replace(/[^A-Z]/gi, "").substring(0, 5).toUpperCase() || "PRAY";
-  const digits = Math.floor(1000 + Math.random() * 9000);
-  return `${prefix}${digits}`;
-}
+function generateReferralCode(name: string): string { const prefix = (name || "PRAY").replace(/[^A-Z]/gi, "").substring(0, 5).toUpperCase() || "PRAY"; const digits = Math.floor(1000 + Math.random() * 9000); return `${prefix}${digits}`; }
 
 async function evaluateTierRewards(userId: string): Promise<void> {
   const confirmed = await pool.query("SELECT COUNT(*) as count FROM referrals WHERE referrer_user_id=$1 AND status='confirmed'", [userId]);
   const count = parseInt(confirmed.rows[0]?.count || "0");
-  const tiers = [
-    { tier: 1, threshold: 1, type: "7_days_free", days: 7 },
-    { tier: 2, threshold: 5, type: "1_month_free", days: 30 },
-    { tier: 3, threshold: 10, type: "50_off_lifetime", days: 0 },
-    { tier: 4, threshold: 20, type: "free_lifetime", days: 0 },
-  ];
-
+  const tiers = [{ tier: 1, threshold: 1, type: "7_days_free", days: 7 }, { tier: 2, threshold: 5, type: "1_month_free", days: 30 }, { tier: 3, threshold: 10, type: "50_off_lifetime", days: 0 }, { tier: 4, threshold: 20, type: "free_lifetime", days: 0 }];
   for (const t of tiers) {
     if (count >= t.threshold) {
-      // Check if already granted
       const existing = await pool.query("SELECT id FROM referral_rewards WHERE user_id=$1 AND tier=$2", [userId, t.tier]);
       if (existing.rows.length > 0) continue;
-
-      // Grant reward
       await pool.query("INSERT INTO referral_rewards (user_id, tier, reward_type) VALUES ($1,$2,$3)", [userId, t.tier, t.type]);
-
-      // Grant via RevenueCat API (tiers 1, 2, 4)
       if (REVENUECAT_SECRET_KEY && (t.tier === 1 || t.tier === 2 || t.tier === 4)) {
-        try {
-          const duration = t.tier === 4 ? "lifetime" : t.tier === 2 ? "monthly" : "weekly";
-          await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}/entitlements/premium/promotional`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ duration }),
-          });
-          console.log(`[Referral] Granted tier ${t.tier} (${t.type}) to ${userId.substring(0, 8)}`);
-        } catch (err: any) { console.error(`[Referral] RC grant error tier ${t.tier}:`, err.message); }
+        try { const duration = t.tier === 4 ? "lifetime" : t.tier === 2 ? "monthly" : "weekly"; await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration }) }); console.log(`[Referral] Granted tier ${t.tier} (${t.type}) to ${userId.substring(0, 8)}`); } catch (err: any) { console.error(`[Referral] RC grant error tier ${t.tier}:`, err.message); }
       }
-
       trackEvent(userId, "referral_reward_earned", { tier: t.tier, reward: t.type, referral_count: count });
     }
   }
 }
 
-app.get("/api/referrals/me", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-
-  const codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]);
-  const code = codeResult.rows[0]?.code || null;
-
-  const referrals = await pool.query("SELECT id, referred_user_id, status, created_at, confirmed_at FROM referrals WHERE referrer_user_id=$1 ORDER BY created_at DESC", [u.id]);
-
-  // Enrich with names
-  const enriched = [];
-  for (const ref of referrals.rows) {
-    let name = null;
-    if (ref.referred_user_id) {
-      const usr = await pool.query("SELECT name FROM users WHERE id=$1", [ref.referred_user_id]);
-      name = usr.rows[0]?.name || null;
-    }
-    enriched.push({ ...ref, referred_name: name });
-  }
-
-  const confirmedCount = referrals.rows.filter((r: any) => r.status === "confirmed").length;
-  const rewards = await pool.query("SELECT tier, reward_type, granted_at FROM referral_rewards WHERE user_id=$1 ORDER BY tier", [u.id]);
-
-  let currentTier = 0;
-  if (confirmedCount >= 20) currentTier = 4;
-  else if (confirmedCount >= 10) currentTier = 3;
-  else if (confirmedCount >= 5) currentTier = 2;
-  else if (confirmedCount >= 1) currentTier = 1;
-
-  const nextTierThresholds = [1, 5, 10, 20];
-  const nextTierAt = nextTierThresholds.find(t => t > confirmedCount) || null;
-
-  return c.json({
-    code,
-    link: code ? `https://pramen.app/join/${code}` : null,
-    referrals: enriched,
-    confirmedCount,
-    currentTier,
-    nextTierAt,
-    rewards: rewards.rows,
-  });
-});
-
-app.post("/api/referrals/generate", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-
-  // Return existing code if already generated
-  const existing = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]);
-  if (existing.rows[0]) return c.json({ code: existing.rows[0].code, link: `https://pramen.app/join/${existing.rows[0].code}` });
-
-  // Generate unique code with retry
-  let code = "";
-  for (let attempt = 0; attempt < 10; attempt++) {
-    code = generateReferralCode(u.name || "PRAY");
-    const collision = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [code]);
-    if (collision.rows.length === 0) break;
-  }
-
-  await pool.query("INSERT INTO referral_codes (user_id, code) VALUES ($1, $2)", [u.id, code]);
-  trackEvent(u.id, "referral_code_generated", { code });
-  return c.json({ code, link: `https://pramen.app/join/${code}` });
-});
-
-app.post("/api/referrals/track", async (c) => {
-  // No auth required — called during onboarding
-  const { referralCode, newUserId, newUserEmail } = await c.req.json();
-  if (!referralCode) return c.json({ error: "referralCode required" }, 400);
-
-  // Find referrer
-  const referrer = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [referralCode.toUpperCase()]);
-  if (!referrer.rows[0]) return c.json({ error: "Invalid referral code" }, 404);
-  const referrerId = referrer.rows[0].user_id;
-
-  // Self-referral check
-  if (newUserId && newUserId === referrerId) return c.json({ error: "You cannot refer yourself." }, 422);
-
-  // Check if already tracked
-  if (newUserId) {
-    const dup = await pool.query("SELECT id FROM referrals WHERE referrer_user_id=$1 AND referred_user_id=$2", [referrerId, newUserId]);
-    if (dup.rows.length > 0) return c.json({ error: "This referral has already been tracked." }, 409);
-  }
-
-  const r = await pool.query("INSERT INTO referrals (referrer_user_id, referred_user_id, referred_email) VALUES ($1,$2,$3) RETURNING id", [referrerId, newUserId || null, newUserEmail || null]);
-  trackEvent(referrerId, "referral_tracked", { referred_user_id: newUserId, code: referralCode });
-
-  // Extend new user's trial from 7 days to 30 days
-  if (newUserId) {
-    const now = new Date();
-    const te30 = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
-    await pool.query("UPDATE users SET trial_end_date=$1, updated_at=NOW() WHERE id=$2 AND subscription_status='trial'", [te30, newUserId]);
-    console.log(`[Referral] Extended trial to 30d for ${newUserId.substring(0, 8)}… (code: ${referralCode})`);
-  }
-
-  return c.json({ referralId: r.rows[0].id, trialDays: 30 });
-});
-
-app.post("/api/referrals/confirm", async (c) => {
-  // Internal — called from webhook logic
-  const sec = c.req.header("X-Admin-Secret");
-  if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
-  const { referredUserId } = await c.req.json();
-  if (!referredUserId) return c.json({ error: "referredUserId required" }, 400);
-
-  const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [referredUserId]);
-  if (ref.rows[0]) {
-    await evaluateTierRewards(ref.rows[0].referrer_user_id);
-    pushToUser(ref.rows[0].referrer_user_id, {
-      title: "🎉 Referral confirmed!",
-      body: "Someone you invited just subscribed. Check your rewards!",
-      type: "referral_confirmed",
-    });
-  }
-  return c.json({ confirmed: ref.rows.length });
-});
-
-app.post("/api/referrals/reverse", async (c) => {
-  const sec = c.req.header("X-Admin-Secret");
-  if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
-  const { referredUserId } = await c.req.json();
-  if (!referredUserId) return c.json({ error: "referredUserId required" }, 400);
-
-  await pool.query("UPDATE referrals SET status='reversed', reversed_at=NOW() WHERE referred_user_id=$1 AND status='confirmed'", [referredUserId]);
-  return c.json({ reversed: true });
-});
-
-app.get("/api/referrals/circle/:code", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const code = c.req.param("code").toUpperCase();
-  const ci = getCircle(code);
-  if (!ci) return c.json({ count: 0 });
-  const memberIds = ci.members.map(m => m.userId);
-  const result = await pool.query("SELECT COUNT(*) as count FROM referrals WHERE referrer_user_id=$1 AND referred_user_id = ANY($2) AND status='confirmed'", [u.id, memberIds]);
-  return c.json({ count: parseInt(result.rows[0]?.count || "0") });
-});
-
+app.get("/api/referrals/me", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]); const code = codeResult.rows[0]?.code || null; const referrals = await pool.query("SELECT id, referred_user_id, status, created_at, confirmed_at FROM referrals WHERE referrer_user_id=$1 ORDER BY created_at DESC", [u.id]); const enriched = []; for (const ref of referrals.rows) { let name = null; if (ref.referred_user_id) { const usr = await pool.query("SELECT name FROM users WHERE id=$1", [ref.referred_user_id]); name = usr.rows[0]?.name || null; } enriched.push({ ...ref, referred_name: name }); } const confirmedCount = referrals.rows.filter((r: any) => r.status === "confirmed").length; const rewards = await pool.query("SELECT tier, reward_type, granted_at FROM referral_rewards WHERE user_id=$1 ORDER BY tier", [u.id]); let currentTier = 0; if (confirmedCount >= 20) currentTier = 4; else if (confirmedCount >= 10) currentTier = 3; else if (confirmedCount >= 5) currentTier = 2; else if (confirmedCount >= 1) currentTier = 1; const nextTierThresholds = [1, 5, 10, 20]; const nextTierAt = nextTierThresholds.find(t => t > confirmedCount) || null; return c.json({ code, link: code ? `https://pramen.app/join/${code}` : null, referrals: enriched, confirmedCount, currentTier, nextTierAt, rewards: rewards.rows }); });
+app.post("/api/referrals/generate", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const existing = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]); if (existing.rows[0]) return c.json({ code: existing.rows[0].code, link: `https://pramen.app/join/${existing.rows[0].code}` }); let code = ""; for (let attempt = 0; attempt < 10; attempt++) { code = generateReferralCode(u.name || "PRAY"); const collision = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [code]); if (collision.rows.length === 0) break; } await pool.query("INSERT INTO referral_codes (user_id, code) VALUES ($1, $2)", [u.id, code]); trackEvent(u.id, "referral_code_generated", { code }); return c.json({ code, link: `https://pramen.app/join/${code}` }); });
+app.post("/api/referrals/track", async (c) => { const { referralCode, newUserId, newUserEmail } = await c.req.json(); if (!referralCode) return c.json({ error: "referralCode required" }, 400); const referrer = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [referralCode.toUpperCase()]); if (!referrer.rows[0]) return c.json({ error: "Invalid referral code" }, 404); const referrerId = referrer.rows[0].user_id; if (newUserId && newUserId === referrerId) return c.json({ error: "You cannot refer yourself." }, 422); if (newUserId) { const dup = await pool.query("SELECT id FROM referrals WHERE referrer_user_id=$1 AND referred_user_id=$2", [referrerId, newUserId]); if (dup.rows.length > 0) return c.json({ error: "This referral has already been tracked." }, 409); } const r = await pool.query("INSERT INTO referrals (referrer_user_id, referred_user_id, referred_email) VALUES ($1,$2,$3) RETURNING id", [referrerId, newUserId || null, newUserEmail || null]); trackEvent(referrerId, "referral_tracked", { referred_user_id: newUserId, code: referralCode }); if (newUserId) { const now = new Date(); const te30 = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); await pool.query("UPDATE users SET trial_end_date=$1, updated_at=NOW() WHERE id=$2 AND subscription_status='trial'", [te30, newUserId]); console.log(`[Referral] Extended trial to 30d for ${newUserId.substring(0, 8)}… (code: ${referralCode})`); } return c.json({ referralId: r.rows[0].id, trialDays: 30 }); });
+app.post("/api/referrals/confirm", async (c) => { const sec = c.req.header("X-Admin-Secret"); if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const { referredUserId } = await c.req.json(); if (!referredUserId) return c.json({ error: "referredUserId required" }, 400); const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [referredUserId]); if (ref.rows[0]) { await evaluateTierRewards(ref.rows[0].referrer_user_id); pushToUser(ref.rows[0].referrer_user_id, { title: "🎉 Referral confirmed!", body: "Someone you invited just subscribed. Check your rewards!", type: "referral_confirmed" }); } return c.json({ confirmed: ref.rows.length }); });
+app.post("/api/referrals/reverse", async (c) => { const sec = c.req.header("X-Admin-Secret"); if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const { referredUserId } = await c.req.json(); if (!referredUserId) return c.json({ error: "referredUserId required" }, 400); await pool.query("UPDATE referrals SET status='reversed', reversed_at=NOW() WHERE referred_user_id=$1 AND status='confirmed'", [referredUserId]); return c.json({ reversed: true }); });
+app.get("/api/referrals/circle/:code", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ count: 0 }); const memberIds = ci.members.map(m => m.userId); const result = await pool.query("SELECT COUNT(*) as count FROM referrals WHERE referrer_user_id=$1 AND referred_user_id = ANY($2) AND status='confirmed'", [u.id, memberIds]); return c.json({ count: parseInt(result.rows[0]?.count || "0") }); });
 app.post("/api/referrals/invite-batch", async (c) => {
-  const u = await requireAuth(c);
-  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   const { invites } = await c.req.json();
   if (!Array.isArray(invites) || invites.length === 0) return c.json({ error: "Please add at least one valid email address." }, 400);
   if (invites.length > 5) return c.json({ error: "Maximum 5 invites at a time." }, 422);
-
-  // Rate limit: 5 per user per 24h
   const recent = await pool.query("SELECT COUNT(*) as count FROM invite_emails WHERE referrer_user_id=$1 AND created_at > NOW() - INTERVAL '24 hours'", [u.id]);
   if (parseInt(recent.rows[0]?.count || "0") >= 5) return c.json({ error: "You've reached the invite limit for today. Try again tomorrow." }, 429);
-
-  // Get or generate referral code
   let codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]);
-  if (!codeResult.rows[0]) {
-    const code = generateReferralCode(u.name || "PRAY");
-    await pool.query("INSERT INTO referral_codes (user_id, code) VALUES ($1, $2) ON CONFLICT DO NOTHING", [u.id, code]);
-    codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]);
-  }
-  const referralCode = codeResult.rows[0]?.code || "";
-  const referralLink = `https://pramen.app/join/${referralCode}`;
-  const referrerName = u.name || "A friend";
-
+  if (!codeResult.rows[0]) { const code = generateReferralCode(u.name || "PRAY"); await pool.query("INSERT INTO referral_codes (user_id, code) VALUES ($1, $2) ON CONFLICT DO NOTHING", [u.id, code]); codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]); }
+  const referralCode = codeResult.rows[0]?.code || ""; const referralLink = `https://pramen.app/join/${referralCode}`; const referrerName = u.name || "A friend";
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  let sent = 0;
-  const failed: { email: string; reason: string }[] = [];
-  const alreadyMembers: { email: string }[] = [];
-
+  let sent = 0; const failed: { email: string; reason: string }[] = []; const alreadyMembers: { email: string }[] = [];
   for (const inv of invites) {
-    const name = (inv.name || "").trim();
-    const email = (inv.email || "").trim().toLowerCase();
+    const name = (inv.name || "").trim(); const email = (inv.email || "").trim().toLowerCase();
     if (!name || name.length < 2 || !emailRegex.test(email)) { failed.push({ email: email || "invalid", reason: "Invalid name or email" }); continue; }
-
-    // Check if already a member
     const existing = await pool.query("SELECT id FROM users WHERE email=$1", [email]);
     if (existing.rows.length > 0) { alreadyMembers.push({ email }); continue; }
-
-    // Send email via Resend
     if (RESEND_API_KEY) {
       try {
-        const htmlBody = `<div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 16px; color: #2C1810;">
-  <p style="font-size: 18px; font-weight: 600; color: #C0735A;">prAmen</p>
-  <p>Hi ${name},</p>
-  <p>${referrerName} wants to pray alongside you.</p>
-  <p>They invited you to join <strong>prAmen</strong> — a daily prayer app that helps Christians build a simple, meaningful prayer habit.</p>
-  <p>As their guest, you get <strong>50% off your first month</strong>.</p>
-  <p style="text-align: center; margin: 28px 0;">
-    <a href="${referralLink}" style="display: inline-block; background: #C0735A; color: #fff; text-decoration: none; padding: 14px 32px; border-radius: 24px; font-weight: 600; font-size: 16px;">Join prAmen</a>
-  </p>
-  <p style="color: #9E7E6E; font-size: 14px;">The offer is waiting for you. No pressure.</p>
-  <p style="color: #9E7E6E; font-size: 14px;">— The prAmen team</p>
-  <hr style="border: none; border-top: 1px solid #E0D4C4; margin: 24px 0;">
-  <p style="color: #9E7E6E; font-size: 11px;">You received this because ${referrerName} invited you. <a href="https://pramen.app" style="color: #9E7E6E;">Unsubscribe</a></p>
-</div>`;
-
-        const res = await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            from: RESEND_FROM_EMAIL,
-            to: email,
-            subject: `${referrerName} is praying for you 🙏 — Join them on prAmen`,
-            html: htmlBody,
-            text: `Hi ${name},\n\n${referrerName} wants to pray alongside you. They invited you to join prAmen — a daily prayer app that helps Christians build a simple, meaningful prayer habit.\n\nAs their guest, you get 50% off your first month.\n\nJoin here: ${referralLink}\n\nThe offer is waiting for you. No pressure.\n\n— The prAmen team`,
-          }),
-        });
-
-        if (res.ok) {
-          await pool.query("INSERT INTO invite_emails (referrer_user_id, friend_name, friend_email, status, referral_code) VALUES ($1,$2,$3,'sent',$4)", [u.id, name, email, referralCode]);
-          // Create pending referral
-          await pool.query("INSERT INTO referrals (referrer_user_id, referred_email, status) VALUES ($1,$2,'pending') ON CONFLICT DO NOTHING", [u.id, email]);
-          sent++;
-        } else {
-          const errText = await res.text().catch(() => "");
-          console.error("[Invite] Resend error:", res.status, errText.substring(0, 200));
-          failed.push({ email, reason: "Delivery failed" });
-          await pool.query("INSERT INTO invite_emails (referrer_user_id, friend_name, friend_email, status, referral_code) VALUES ($1,$2,$3,'failed',$4)", [u.id, name, email, referralCode]);
-        }
-      } catch (err: any) {
-        console.error("[Invite] Send error:", err.message);
-        failed.push({ email, reason: "Delivery failed" });
-      }
-    } else {
-      // No email provider — store invite but don't send
-      await pool.query("INSERT INTO invite_emails (referrer_user_id, friend_name, friend_email, status, referral_code) VALUES ($1,$2,$3,'stored',$4)", [u.id, name, email, referralCode]);
-      await pool.query("INSERT INTO referrals (referrer_user_id, referred_email, status) VALUES ($1,$2,'pending') ON CONFLICT DO NOTHING", [u.id, email]);
-      sent++;
-    }
+        const htmlBody = `<div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 16px; color: #2C1810;"><p style="font-size: 18px; font-weight: 600; color: #C0735A;">prAmen</p><p>Hi ${name},</p><p>${referrerName} wants to pray alongside you.</p><p>They invited you to join <strong>prAmen</strong> — a daily prayer app that helps Christians build a simple, meaningful prayer habit.</p><p>As their guest, you get <strong>50% off your first month</strong>.</p><p style="text-align: center; margin: 28px 0;"><a href="${referralLink}" style="display: inline-block; background: #C0735A; color: #fff; text-decoration: none; padding: 14px 32px; border-radius: 24px; font-weight: 600; font-size: 16px;">Join prAmen</a></p><p style="color: #9E7E6E; font-size: 14px;">The offer is waiting for you. No pressure.</p><p style="color: #9E7E6E; font-size: 14px;">— The prAmen team</p><hr style="border: none; border-top: 1px solid #E0D4C4; margin: 24px 0;"><p style="color: #9E7E6E; font-size: 11px;">You received this because ${referrerName} invited you. <a href="https://pramen.app" style="color: #9E7E6E;">Unsubscribe</a></p></div>`;
+        const res = await fetch("https://api.resend.com/emails", { method: "POST", headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ from: RESEND_FROM_EMAIL, to: email, subject: `${referrerName} is praying for you 🙏 — Join them on prAmen`, html: htmlBody, text: `Hi ${name},\n\n${referrerName} wants to pray alongside you. They invited you to join prAmen.\n\nJoin here: ${referralLink}\n\n— The prAmen team` }) });
+        if (res.ok) { await pool.query("INSERT INTO invite_emails (referrer_user_id, friend_name, friend_email, status, referral_code) VALUES ($1,$2,$3,'sent',$4)", [u.id, name, email, referralCode]); await pool.query("INSERT INTO referrals (referrer_user_id, referred_email, status) VALUES ($1,$2,'pending') ON CONFLICT DO NOTHING", [u.id, email]); sent++; }
+        else { const errText = await res.text().catch(() => ""); console.error("[Invite] Resend error:", res.status, errText.substring(0, 200)); failed.push({ email, reason: "Delivery failed" }); await pool.query("INSERT INTO invite_emails (referrer_user_id, friend_name, friend_email, status, referral_code) VALUES ($1,$2,$3,'failed',$4)", [u.id, name, email, referralCode]); }
+      } catch (err: any) { console.error("[Invite] Send error:", err.message); failed.push({ email, reason: "Delivery failed" }); }
+    } else { await pool.query("INSERT INTO invite_emails (referrer_user_id, friend_name, friend_email, status, referral_code) VALUES ($1,$2,$3,'stored',$4)", [u.id, name, email, referralCode]); await pool.query("INSERT INTO referrals (referrer_user_id, referred_email, status) VALUES ($1,$2,'pending') ON CONFLICT DO NOTHING", [u.id, email]); sent++; }
   }
-
   trackEvent(u.id, "onboarding_invites_sent", { sent, failed: failed.length, already_members: alreadyMembers.length });
   return c.json({ sent, failed, alreadyMembers });
 });
@@ -1465,259 +1046,109 @@ app.post("/api/referrals/invite-batch", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 // ─── FIND MY CHURCH ─────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-
 async function enrichChurch(placeId: string, name: string, address: string): Promise<void> {
   if (!GEMINI_API_KEY) { await pool.query("UPDATE church_profiles SET enrichment_status='unavailable' WHERE place_id=$1", [placeId]); return; }
   try {
-    // Query Wikipedia for context
     let wikiText = "";
-    try {
-      const wRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`);
-      if (wRes.ok) { const wd = (await wRes.json()) as any; wikiText = wd.extract || ""; }
-    } catch {}
-    if (!wikiText) {
-      try {
-        const wRes2 = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name + " church")}`);
-        if (wRes2.ok) { const wd2 = (await wRes2.json()) as any; wikiText = wd2.extract || ""; }
-      } catch {}
-    }
-
-    const prompt = wikiText
-      ? `Given this Wikipedia text about "${name}" at "${address}": "${wikiText.substring(0, 1500)}"\n\nExtract JSON: {"year_founded":"year or century or null","architectural_style":"style or null","patron_saint":"name or null","diocese":"name or null","description":"2-3 sentence historical description","notable_features":["feature1","feature2"]}`
-      : `For the church "${name}" at "${address}", provide what you know. Return JSON: {"year_founded":"year or century or null","architectural_style":"style or null","patron_saint":"name or null","diocese":"name or null","description":"2-3 sentence description or null","notable_features":[]}. If you don't know, use null for that field.`;
-
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ system_instruction: { parts: [{ text: "You enrich church profiles. Respond ONLY with valid JSON, no markdown, no backticks." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }] }),
-    });
+    try { const wRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`); if (wRes.ok) { const wd = (await wRes.json()) as any; wikiText = wd.extract || ""; } } catch {}
+    if (!wikiText) { try { const wRes2 = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name + " church")}`); if (wRes2.ok) { const wd2 = (await wRes2.json()) as any; wikiText = wd2.extract || ""; } } catch {} }
+    const prompt = wikiText ? `Given this Wikipedia text about "${name}" at "${address}": "${wikiText.substring(0, 1500)}"\n\nExtract JSON: {"year_founded":"year or century or null","architectural_style":"style or null","patron_saint":"name or null","diocese":"name or null","description":"2-3 sentence historical description","notable_features":["feature1","feature2"]}` : `For the church "${name}" at "${address}", provide what you know. Return JSON: {"year_founded":"year or century or null","architectural_style":"style or null","patron_saint":"name or null","diocese":"name or null","description":"2-3 sentence description or null","notable_features":[]}. If you don't know, use null for that field.`;
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ system_instruction: { parts: [{ text: "You enrich church profiles. Respond ONLY with valid JSON, no markdown, no backticks." }] }, contents: [{ role: "user", parts: [{ text: prompt }] }] }) });
     if (!res.ok) { await pool.query("UPDATE church_profiles SET enrichment_status='unavailable' WHERE place_id=$1", [placeId]); return; }
-    const data = (await res.json()) as any;
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+    const data = (await res.json()) as any; const text = data.candidates?.[0]?.content?.parts?.[0]?.text || ""; const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
     const status = parsed.description ? "enriched" : "partial";
-    await pool.query(`UPDATE church_profiles SET enrichment_status=$1, year_founded=$2, architectural_style=$3, patron_saint=$4, diocese=$5, description=$6, notable_features=$7, updated_at=NOW() WHERE place_id=$8`,
-      [status, parsed.year_founded || null, parsed.architectural_style || null, parsed.patron_saint || null, parsed.diocese || null, parsed.description || null, JSON.stringify(parsed.notable_features || []), placeId]);
+    await pool.query(`UPDATE church_profiles SET enrichment_status=$1, year_founded=$2, architectural_style=$3, patron_saint=$4, diocese=$5, description=$6, notable_features=$7, updated_at=NOW() WHERE place_id=$8`, [status, parsed.year_founded || null, parsed.architectural_style || null, parsed.patron_saint || null, parsed.diocese || null, parsed.description || null, JSON.stringify(parsed.notable_features || []), placeId]);
     console.log(`[Church] Enriched ${name}: ${status}`);
-  } catch (err: any) {
-    console.error("[Church] Enrichment error:", err.message);
-    await pool.query("UPDATE church_profiles SET enrichment_status='unavailable' WHERE place_id=$1", [placeId]);
-  }
+  } catch (err: any) { console.error("[Church] Enrichment error:", err.message); await pool.query("UPDATE church_profiles SET enrichment_status='unavailable' WHERE place_id=$1", [placeId]); }
 }
 
-app.get("/api/churches/search", async (c) => {
-  if (!GOOGLE_PLACES_API_KEY) return c.json({ error: "Church search not configured" }, 500);
-  const lat = c.req.query("lat"); const lng = c.req.query("lng");
-  if (!lat || !lng) return c.json({ error: "lat and lng required" }, 400);
-  const radius = c.req.query("radius") || "5000";
-  const denomination = c.req.query("denomination") || "";
+app.get("/api/churches/search", async (c) => { if (!GOOGLE_PLACES_API_KEY) return c.json({ error: "Church search not configured" }, 500); const lat = c.req.query("lat"); const lng = c.req.query("lng"); if (!lat || !lng) return c.json({ error: "lat and lng required" }, 400); const radius = c.req.query("radius") || "5000"; const denomination = c.req.query("denomination") || ""; const baseUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=church&key=${GOOGLE_PLACES_API_KEY}`; const urlWithKeyword = denomination ? `${baseUrl}&keyword=${encodeURIComponent(denomination + " church")}` : baseUrl; try { let allResults: any[] = []; let nextUrl: string | null = urlWithKeyword; let page = 0; while (nextUrl && page < 3) { if (page > 0) await new Promise(r => setTimeout(r, 2000)); const res = await fetch(nextUrl); if (!res.ok) break; const data = (await res.json()) as any; allResults = allResults.concat(data.results || []); nextUrl = data.next_page_token ? `https://maps.googleapis.com/maps/api/place/nearbysearch/json?pagetoken=${data.next_page_token}&key=${GOOGLE_PLACES_API_KEY}` : null; page++; } const results = allResults.map((p: any) => ({ placeId: p.place_id, name: p.name, address: p.vicinity || p.formatted_address || "", lat: p.geometry?.location?.lat, lng: p.geometry?.location?.lng, rating: p.rating || null, ratingCount: p.user_ratings_total || 0, openNow: p.opening_hours?.open_now ?? null, photoRef: p.photos?.[0]?.photo_reference ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=${p.photos[0].photo_reference}&key=${GOOGLE_PLACES_API_KEY}` : null })); let filtered = results; const minRating = c.req.query("minRating"); if (minRating) filtered = filtered.filter((r: any) => r.rating >= parseFloat(minRating)); const openNow = c.req.query("openNow"); if (openNow === "true") filtered = filtered.filter((r: any) => r.openNow === true); return c.json({ churches: filtered }); } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); } });
 
-  // Only add keyword when filtering by denomination — bare keyword+type=church suppresses results
-  const baseUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=church&key=${GOOGLE_PLACES_API_KEY}`;
-  const urlWithKeyword = denomination
-    ? `${baseUrl}&keyword=${encodeURIComponent(denomination + " church")}`
-    : baseUrl;
+app.get("/api/churches/:placeId", async (c) => { const placeId = c.req.param("placeId"); const cached = await pool.query("SELECT * FROM church_profiles WHERE place_id=$1", [placeId]); if (cached.rows[0] && cached.rows[0].enrichment_status !== "pending") { return c.json({ church: cached.rows[0], enrichmentStatus: cached.rows[0].enrichment_status }); } if (!GOOGLE_PLACES_API_KEY) return c.json({ error: "Not configured" }, 500); try { const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,geometry,formatted_phone_number,website,rating,user_ratings_total,opening_hours,photos,types&key=${GOOGLE_PLACES_API_KEY}`; const res = await fetch(url); if (!res.ok) return c.json({ error: "Church not found." }, 404); const data = (await res.json()) as any; const r = data.result; if (!r) return c.json({ error: "Church not found." }, 404); const photos = (r.photos || []).slice(0, 5).map((p: any) => `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photo_reference=${p.photo_reference}&key=${GOOGLE_PLACES_API_KEY}`); await pool.query(`INSERT INTO church_profiles (place_id, name, address, lat, lng, phone, website, rating, rating_count, opening_hours, photos, enrichment_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending') ON CONFLICT (place_id) DO UPDATE SET name=$2, address=$3, phone=$6, website=$7, rating=$8, rating_count=$9, opening_hours=$10, photos=$11, updated_at=NOW()`, [placeId, r.name, r.formatted_address, r.geometry?.location?.lat, r.geometry?.location?.lng, r.formatted_phone_number || null, r.website || null, r.rating || null, r.user_ratings_total || 0, JSON.stringify(r.opening_hours || {}), JSON.stringify(photos)]); enrichChurch(placeId, r.name, r.formatted_address).catch(() => {}); const profile = (await pool.query("SELECT * FROM church_profiles WHERE place_id=$1", [placeId])).rows[0]; return c.json({ church: profile, enrichmentStatus: "pending" }); } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); } });
 
-  try {
-    // Fetch up to 3 pages (60 results max) using next_page_token
-    let allResults: any[] = [];
-    let nextUrl: string | null = urlWithKeyword;
-    let page = 0;
-
-    while (nextUrl && page < 3) {
-      if (page > 0) await new Promise(r => setTimeout(r, 2000));
-      const res = await fetch(nextUrl);
-      if (!res.ok) break;
-      const data = (await res.json()) as any;
-      allResults = allResults.concat(data.results || []);
-      nextUrl = data.next_page_token
-        ? `https://maps.googleapis.com/maps/api/place/nearbysearch/json?pagetoken=${data.next_page_token}&key=${GOOGLE_PLACES_API_KEY}`
-        : null;
-      page++;
-    }
-
-    const results = allResults.map((p: any) => ({
-      placeId: p.place_id, name: p.name,
-      address: p.vicinity || p.formatted_address || "",
-      lat: p.geometry?.location?.lat, lng: p.geometry?.location?.lng,
-      rating: p.rating || null, ratingCount: p.user_ratings_total || 0,
-      openNow: p.opening_hours?.open_now ?? null,
-      photoRef: p.photos?.[0]?.photo_reference
-        ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photo_reference=${p.photos[0].photo_reference}&key=${GOOGLE_PLACES_API_KEY}`
-        : null,
-    }));
-
-    let filtered = results;
-    const minRating = c.req.query("minRating"); if (minRating) filtered = filtered.filter((r: any) => r.rating >= parseFloat(minRating));
-    const openNow = c.req.query("openNow"); if (openNow === "true") filtered = filtered.filter((r: any) => r.openNow === true);
-
-    return c.json({ churches: filtered });
-  } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); }
-});
-
-app.get("/api/churches/:placeId", async (c) => {
-  const placeId = c.req.param("placeId");
-  // Check cache
-  const cached = await pool.query("SELECT * FROM church_profiles WHERE place_id=$1", [placeId]);
-  if (cached.rows[0] && cached.rows[0].enrichment_status !== "pending") {
-    return c.json({ church: cached.rows[0], enrichmentStatus: cached.rows[0].enrichment_status });
-  }
-
-  if (!GOOGLE_PLACES_API_KEY) return c.json({ error: "Not configured" }, 500);
-
-  try {
-    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=name,formatted_address,geometry,formatted_phone_number,website,rating,user_ratings_total,opening_hours,photos,types&key=${GOOGLE_PLACES_API_KEY}`;
-    const res = await fetch(url);
-    if (!res.ok) return c.json({ error: "Church not found." }, 404);
-    const data = (await res.json()) as any;
-    const r = data.result;
-    if (!r) return c.json({ error: "Church not found." }, 404);
-
-    const photos = (r.photos || []).slice(0, 5).map((p: any) => `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photo_reference=${p.photo_reference}&key=${GOOGLE_PLACES_API_KEY}`);
-
-    // Upsert into cache
-    await pool.query(`INSERT INTO church_profiles (place_id, name, address, lat, lng, phone, website, rating, rating_count, opening_hours, photos, enrichment_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending') ON CONFLICT (place_id) DO UPDATE SET name=$2, address=$3, phone=$6, website=$7, rating=$8, rating_count=$9, opening_hours=$10, photos=$11, updated_at=NOW()`,
-      [placeId, r.name, r.formatted_address, r.geometry?.location?.lat, r.geometry?.location?.lng, r.formatted_phone_number || null, r.website || null, r.rating || null, r.user_ratings_total || 0, JSON.stringify(r.opening_hours || {}), JSON.stringify(photos)]);
-
-    // Trigger async enrichment
-    enrichChurch(placeId, r.name, r.formatted_address).catch(() => {});
-
-    const profile = (await pool.query("SELECT * FROM church_profiles WHERE place_id=$1", [placeId])).rows[0];
-    return c.json({ church: profile, enrichmentStatus: "pending" });
-  } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); }
-});
-
-app.get("/api/churches/:placeId/enrichment", async (c) => {
-  const r = await pool.query("SELECT enrichment_status, year_founded, architectural_style, patron_saint, diocese, description, notable_features FROM church_profiles WHERE place_id=$1", [c.req.param("placeId")]);
-  if (!r.rows[0]) return c.json({ status: "unavailable" });
-  return c.json({ status: r.rows[0].enrichment_status, enrichedData: r.rows[0].enrichment_status !== "pending" ? r.rows[0] : null });
-});
-
-app.get("/api/churches/saved", async (c) => {
-  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const r = await pool.query("SELECT * FROM saved_churches WHERE user_id=$1 AND is_deleted=false ORDER BY created_at DESC", [u.id]);
-  return c.json({ savedChurches: r.rows });
-});
-
-app.post("/api/churches/saved", async (c) => {
-  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const ct = c.req.header("content-type") || "";
-  let placeId: string, churchName: string, address: string, lat: number, lng: number, tags: string[], review: string | null, notes: string | null, rating: number | null;
-  let body: any = {};
-  if (ct.includes("application/json")) {
-    const j = await c.req.json() as any;
-    placeId = j.placeId; churchName = j.churchName; address = j.address;
-    lat = j.lat || 0; lng = j.lng || 0;
-    tags = Array.isArray(j.tags) ? j.tags : [];
-    review = j.review || null; notes = j.notes || null;
-    rating = j.rating != null ? parseInt(j.rating) : null;
-  } else {
-    body = await c.req.parseBody();
-    placeId = body.placeId as string; churchName = body.churchName as string; address = body.address as string;
-    lat = parseFloat(body.lat as string || "0"); lng = parseFloat(body.lng as string || "0");
-    tags = body.tags ? JSON.parse(body.tags as string) : [];
-    review = (body.review as string) || null; notes = (body.notes as string) || null;
-    rating = body.rating ? parseInt(body.rating as string) : null;
-  }
-  if (!placeId) return c.json({ error: "placeId required" }, 400);
-
-  // Handle photos
-  let photoUrls: string[] = [];
-  for (let i = 0; i < 5; i++) {
-    const photo = body[`photo${i}`] as File | undefined;
-    if (photo && photo.size > 0) {
-      if (photo.size > 10 * 1024 * 1024) return c.json({ error: "Photo too large. Maximum size is 10 MB." }, 413);
-      try {
-        const ext = photo.name.split(".").pop() || "jpg";
-        const key = `churches/${Date.now()}-${randomUUID().substring(0, 8)}.${ext}`;
-        if (s3) { await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await photo.arrayBuffer()), ContentType: photo.type })); photoUrls.push(`${R2_PUBLIC_URL}/${key}`); }
-      } catch {}
-    }
-  }
-
-  const r = await pool.query(`INSERT INTO saved_churches (user_id, place_id, church_name, address, lat, lng, tags, review, notes, rating, photos) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-    [u.id, placeId, churchName, address, lat, lng, tags, review, notes, rating, JSON.stringify(photoUrls)]);
-  trackEvent(u.id, "church_saved", { place_id: placeId });
-  return c.json({ savedChurch: r.rows[0] }, 201);
-});
-
-app.patch("/api/churches/saved/:savedId", async (c) => {
-  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const body = await c.req.json();
-  const sets: string[] = []; const vals: any[] = []; let idx = 1;
-  if (body.tags !== undefined) { sets.push(`tags=$${idx++}`); vals.push(body.tags); }
-  if (body.review !== undefined) { sets.push(`review=$${idx++}`); vals.push(body.review); }
-  if (body.notes !== undefined) { sets.push(`notes=$${idx++}`); vals.push(body.notes); }
-  if (body.rating !== undefined) { sets.push(`rating=$${idx++}`); vals.push(body.rating); }
-  if (sets.length === 0) return c.json({ error: "Nothing to update" }, 400);
-  sets.push(`updated_at=NOW()`);
-  vals.push(c.req.param("savedId"), u.id);
-  const r = await pool.query(`UPDATE saved_churches SET ${sets.join(",")} WHERE id=$${idx++} AND user_id=$${idx} AND is_deleted=false RETURNING *`, vals);
-  if (!r.rows[0]) return c.json({ error: "Not found" }, 404);
-  return c.json({ savedChurch: r.rows[0] });
-});
-
-app.delete("/api/churches/saved/:savedId", async (c) => {
-  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  await pool.query("UPDATE saved_churches SET is_deleted=true, updated_at=NOW() WHERE id=$1 AND user_id=$2", [c.req.param("savedId"), u.id]);
-  return c.body(null, 204);
-});
-
-app.post("/api/churches/share", async (c) => {
-  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
-  const { savedChurchId, circleCode, note } = await c.req.json();
-  if (!savedChurchId || !circleCode) return c.json({ error: "savedChurchId and circleCode required" }, 400);
-  if (note && note.length > 140) return c.json({ error: "Note too long. Maximum 140 characters." }, 422);
-
-  const saved = await pool.query("SELECT sc.*, cp.place_id as cp_place_id, cp.lat as cp_lat, cp.lng as cp_lng FROM saved_churches sc LEFT JOIN church_profiles cp ON sc.place_id = cp.place_id WHERE sc.id=$1 AND sc.user_id=$2 AND sc.is_deleted=false", [savedChurchId, u.id]);
-  if (!saved.rows[0]) return c.json({ error: "Saved church not found" }, 404);
-  const ci = getCircle(circleCode); if (!ci) return c.json({ error: "Circle not found" }, 404);
-  if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You can only share churches with your circles." }, 403);
-
-  const church = saved.rows[0];
-
-  // 1. Record the share
-  const r = await pool.query(
-    "INSERT INTO church_shares (sender_user_id, sender_name, saved_church_id, circle_code, note) VALUES ($1,$2,$3,$4,$5) RETURNING *",
-    [u.id, u.name || "Someone", savedChurchId, circleCode, note || null]
-  );
-
-  // 2. Create a circle_posts entry so it appears in the feed
-  const churchMeta = JSON.stringify({
-    place_id: church.place_id,
-    church_name: church.church_name,
-    address: church.address,
-    lat: church.cp_lat || church.lat,
-    lng: church.cp_lng || church.lng,
-    note: note || null,
-  });
-  await pool.query(
-    `INSERT INTO circle_posts (circle_code, author_user_id, author_name, content, media_type, media_url, status, published_at) VALUES ($1,$2,$3,$4,'church',$5,'published',NOW())`,
-    [circleCode.toUpperCase(), u.id, u.name || "Someone", note || null, churchMeta]
-  );
-
-  // 3. Push notification to all circle members
-  pushToCircleMembers(ci, u.id, {
-    title: `⛪ ${u.name || "Someone"} shared a church`,
-    body: `${church.church_name}${note ? ` — "${note}"` : ""} in ${ci.name}`,
-    type: "church_shared", circleCode, circleName: ci.name,
-  });
-
-  trackEvent(u.id, "church_shared", { place_id: church.place_id, circle_code: circleCode });
-  return c.json({ shareId: r.rows[0].id, sharedAt: r.rows[0].created_at });
-});
+app.get("/api/churches/:placeId/enrichment", async (c) => { const r = await pool.query("SELECT enrichment_status, year_founded, architectural_style, patron_saint, diocese, description, notable_features FROM church_profiles WHERE place_id=$1", [c.req.param("placeId")]); if (!r.rows[0]) return c.json({ status: "unavailable" }); return c.json({ status: r.rows[0].enrichment_status, enrichedData: r.rows[0].enrichment_status !== "pending" ? r.rows[0] : null }); });
+app.get("/api/churches/saved", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const r = await pool.query("SELECT * FROM saved_churches WHERE user_id=$1 AND is_deleted=false ORDER BY created_at DESC", [u.id]); return c.json({ savedChurches: r.rows }); });
+app.post("/api/churches/saved", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const ct = c.req.header("content-type") || ""; let placeId: string, churchName: string, address: string, lat: number, lng: number, tags: string[], review: string | null, notes: string | null, rating: number | null; let body: any = {}; if (ct.includes("application/json")) { const j = await c.req.json() as any; placeId = j.placeId; churchName = j.churchName; address = j.address; lat = j.lat || 0; lng = j.lng || 0; tags = Array.isArray(j.tags) ? j.tags : []; review = j.review || null; notes = j.notes || null; rating = j.rating != null ? parseInt(j.rating) : null; } else { body = await c.req.parseBody(); placeId = body.placeId as string; churchName = body.churchName as string; address = body.address as string; lat = parseFloat(body.lat as string || "0"); lng = parseFloat(body.lng as string || "0"); tags = body.tags ? JSON.parse(body.tags as string) : []; review = (body.review as string) || null; notes = (body.notes as string) || null; rating = body.rating ? parseInt(body.rating as string) : null; } if (!placeId) return c.json({ error: "placeId required" }, 400); let photoUrls: string[] = []; for (let i = 0; i < 5; i++) { const photo = body[`photo${i}`] as File | undefined; if (photo && photo.size > 0) { if (photo.size > 10 * 1024 * 1024) return c.json({ error: "Photo too large. Maximum size is 10 MB." }, 413); try { const ext = photo.name.split(".").pop() || "jpg"; const key = `churches/${Date.now()}-${randomUUID().substring(0, 8)}.${ext}`; if (s3) { await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await photo.arrayBuffer()), ContentType: photo.type })); photoUrls.push(`${R2_PUBLIC_URL}/${key}`); } } catch {} } } const r = await pool.query(`INSERT INTO saved_churches (user_id, place_id, church_name, address, lat, lng, tags, review, notes, rating, photos) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, [u.id, placeId, churchName, address, lat, lng, tags, review, notes, rating, JSON.stringify(photoUrls)]); trackEvent(u.id, "church_saved", { place_id: placeId }); return c.json({ savedChurch: r.rows[0] }, 201); });
+app.patch("/api/churches/saved/:savedId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const body = await c.req.json(); const sets: string[] = []; const vals: any[] = []; let idx = 1; if (body.tags !== undefined) { sets.push(`tags=$${idx++}`); vals.push(body.tags); } if (body.review !== undefined) { sets.push(`review=$${idx++}`); vals.push(body.review); } if (body.notes !== undefined) { sets.push(`notes=$${idx++}`); vals.push(body.notes); } if (body.rating !== undefined) { sets.push(`rating=$${idx++}`); vals.push(body.rating); } if (sets.length === 0) return c.json({ error: "Nothing to update" }, 400); sets.push(`updated_at=NOW()`); vals.push(c.req.param("savedId"), u.id); const r = await pool.query(`UPDATE saved_churches SET ${sets.join(",")} WHERE id=$${idx++} AND user_id=$${idx} AND is_deleted=false RETURNING *`, vals); if (!r.rows[0]) return c.json({ error: "Not found" }, 404); return c.json({ savedChurch: r.rows[0] }); });
+app.delete("/api/churches/saved/:savedId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); await pool.query("UPDATE saved_churches SET is_deleted=true, updated_at=NOW() WHERE id=$1 AND user_id=$2", [c.req.param("savedId"), u.id]); return c.body(null, 204); });
+app.post("/api/churches/share", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const { savedChurchId, circleCode, note } = await c.req.json(); if (!savedChurchId || !circleCode) return c.json({ error: "savedChurchId and circleCode required" }, 400); if (note && note.length > 140) return c.json({ error: "Note too long. Maximum 140 characters." }, 422); const saved = await pool.query("SELECT sc.*, cp.place_id as cp_place_id, cp.lat as cp_lat, cp.lng as cp_lng FROM saved_churches sc LEFT JOIN church_profiles cp ON sc.place_id = cp.place_id WHERE sc.id=$1 AND sc.user_id=$2 AND sc.is_deleted=false", [savedChurchId, u.id]); if (!saved.rows[0]) return c.json({ error: "Saved church not found" }, 404); const ci = getCircle(circleCode); if (!ci) return c.json({ error: "Circle not found" }, 404); if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You can only share churches with your circles." }, 403); const church = saved.rows[0]; const r = await pool.query("INSERT INTO church_shares (sender_user_id, sender_name, saved_church_id, circle_code, note) VALUES ($1,$2,$3,$4,$5) RETURNING *", [u.id, u.name || "Someone", savedChurchId, circleCode, note || null]); const churchMeta = JSON.stringify({ place_id: church.place_id, church_name: church.church_name, address: church.address, lat: church.cp_lat || church.lat, lng: church.cp_lng || church.lng, note: note || null }); await pool.query(`INSERT INTO circle_posts (circle_code, author_user_id, author_name, content, media_type, media_url, status, published_at) VALUES ($1,$2,$3,$4,'church',$5,'published',NOW())`, [circleCode.toUpperCase(), u.id, u.name || "Someone", note || null, churchMeta]); pushToCircleMembers(ci, u.id, { title: `⛪ ${u.name || "Someone"} shared a church`, body: `${church.church_name}${note ? ` — "${note}"` : ""} in ${ci.name}`, type: "church_shared", circleCode, circleName: ci.name }); trackEvent(u.id, "church_shared", { place_id: church.place_id, circle_code: circleCode }); return c.json({ shareId: r.rows[0].id, sharedAt: r.rows[0].created_at }); });
 
 // ═══════════════════════════════════════════════════════════════════
-// ─── CIRCLE POSTS ───────────────────────────────────────────────
+// ─── CIRCLE POSTS (FIX #8: no scheduled, FIX #9: tag-only notify, FIX #12: spiritual emojis, FIX #16: one reaction per user) ──
 // ═══════════════════════════════════════════════════════════════════
 async function enrichPosts(posts: any[], currentUserId: string) { if (!posts.length) return []; const ids = posts.map(p => p.id); const rx = await pool.query("SELECT post_id, emoji, COUNT(*) as count FROM post_reactions WHERE post_id = ANY($1) GROUP BY post_id, emoji", [ids]); const urx = await pool.query("SELECT post_id, emoji FROM post_reactions WHERE post_id = ANY($1) AND user_id = $2", [ids, currentUserId]); const rm: Record<string, { emoji: string; count: number; reactedByCurrentUser: boolean }[]> = {}; for (const r of rx.rows) { if (!rm[r.post_id]) rm[r.post_id] = []; rm[r.post_id].push({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: false }); } for (const r of urx.rows) { const arr = rm[r.post_id]; if (arr) { const x = arr.find(a => a.emoji === r.emoji); if (x) x.reactedByCurrentUser = true; } } const rc = await pool.query("SELECT post_id, COUNT(*) as count FROM post_replies WHERE post_id = ANY($1) AND is_deleted=false GROUP BY post_id", [ids]); const rcm: Record<string, number> = {}; for (const r of rc.rows) rcm[r.post_id] = parseInt(r.count); const authorIds = [...new Set(posts.map(p => p.author_user_id))]; const au = await pool.query("SELECT id, name, avatar_url FROM users WHERE id = ANY($1)", [authorIds]).catch(() => ({ rows: [] })); const aum: Record<string, { name: string; avatar_url: string | null }> = {}; for (const u of au.rows) aum[u.id] = { name: u.name, avatar_url: u.avatar_url }; return posts.map(p => ({ ...p, author_name: aum[p.author_user_id]?.name || p.author_name, author_avatar_url: aum[p.author_user_id]?.avatar_url || null, isAdmin: isAdmin(p.author_user_id), reactions: rm[p.id] || [], replyCount: rcm[p.id] || 0 })); }
 
 app.get("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403); const cursor = c.req.query("cursor"); const lim = 20; let q = "SELECT * FROM circle_posts WHERE circle_code=$1 AND status='published'"; const p: any[] = [c.req.param("code").toUpperCase()]; if (cursor) { q += " AND published_at < $2"; p.push(cursor); } q += ` ORDER BY published_at DESC LIMIT $${p.length + 1}`; p.push(lim + 1); const r = await pool.query(q, p); const posts = r.rows.slice(0, lim); const nextCursor = r.rows.length > lim ? posts[posts.length - 1].published_at.toISOString() : null; return c.json({ posts: await enrichPosts(posts, u.id), nextCursor, hasPostingRights: canPostInCircle(u.id, ci, u.device_user_id) }); });
 
-app.post("/api/circles/:code/posts", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (!canPostInCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403); const body = await c.req.parseBody(); const content = (body.content as string) || null; const scheduledAt = (body.scheduledAt as string) || null; const mediaFile = body.mediaFile as File | undefined; let mediaUrl: string | null = null, mediaType: string | null = null, mediaFilename: string | null = null, mediaSizeBytes: number | null = null; if (mediaFile && mediaFile.size > 0) { if (mediaFile.size > MAX_FILE_SIZE) return c.json({ error: "File too large. Maximum size is 50 MB." }, 413); const ft = mediaFile.type; if (ALLOWED_MEDIA.image.includes(ft)) mediaType = "image"; else if (ALLOWED_MEDIA.video.includes(ft)) mediaType = "video"; else if (ALLOWED_MEDIA.audio.includes(ft)) mediaType = "audio"; else return c.json({ error: "Unsupported file format." }, 422); try { mediaUrl = await uploadMedia(await mediaFile.arrayBuffer(), mediaFile.name, ft); mediaFilename = mediaFile.name; mediaSizeBytes = mediaFile.size; } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); } } if (!content && !mediaUrl) return c.json({ error: "Post must have text or media." }, 422); const taggedRaw = (body.taggedUserIds as string) || "[]"; let taggedUserIds: string[] = []; try { taggedUserIds = JSON.parse(taggedRaw); } catch {} const status = scheduledAt ? "scheduled" : "published"; const publishedAt = scheduledAt ? null : new Date().toISOString(); if (scheduledAt && new Date(scheduledAt).getTime() < Date.now() + 600000) return c.json({ error: "Schedule time must be at least 10 minutes from now." }, 422); const r = await pool.query(`INSERT INTO circle_posts (circle_code,author_user_id,author_name,content,media_type,media_url,media_filename,media_size_bytes,status,scheduled_at,published_at,tagged_user_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`, [code, u.id, u.name||"", content, mediaType, mediaUrl, mediaFilename, mediaSizeBytes, status, scheduledAt, publishedAt, taggedUserIds]); trackEvent(u.id, "post_created", { circle_code: code, media_type: mediaType, status, tagged_count: taggedUserIds.length }); if (status === "published") { const isEveryoneTag = taggedUserIds.includes("everyone"); if (isEveryoneTag) { const resolvedTags = ci.members.map(m => m.userId).filter(id => id !== u.id); taggedUserIds = ["everyone"]; for (const mid of resolvedTags) { pushToUser(mid, { title: "📢 " + (u.name || "Someone") + " tagged everyone in " + ci.name, body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "New announcement", type: "post_mention", circleCode: code, circleName: ci.name }); } } else { pushToCircleMembers(ci, u.id, { title: "📝 " + (u.name || "Someone") + " posted in " + ci.name, body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "New " + (mediaType || "text") + " post", type: "new_post", circleCode: code, circleName: ci.name }); for (const taggedId of taggedUserIds) { if (taggedId !== u.id) pushToUser(taggedId, { title: "📌 " + (u.name || "Someone") + " mentioned you", body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "You were mentioned in a post", type: "post_mention", circleCode: code, circleName: ci.name }); } } } return c.json({ post: { ...r.rows[0], isAdmin: isAdmin(u.id), reactions: [], replyCount: 0 } }, 201); });
+// FIX #8: Scheduled posts removed. FIX #9: Only tagged users get notified.
+app.post("/api/circles/:code/posts", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const code = c.req.param("code").toUpperCase(); const ci = getCircle(code);
+  if (!ci) return c.json({ error: "Not found" }, 404);
+  if (!canPostInCircle(u.id, ci, u.device_user_id)) return c.json({ error: "You don't have permission to do this." }, 403);
+  const body = await c.req.parseBody();
+  const content = (body.content as string) || null;
+  const mediaFile = body.mediaFile as File | undefined;
+  let mediaUrl: string | null = null, mediaType: string | null = null, mediaFilename: string | null = null, mediaSizeBytes: number | null = null;
+  if (mediaFile && mediaFile.size > 0) {
+    if (mediaFile.size > MAX_FILE_SIZE) return c.json({ error: "File too large. Maximum size is 50 MB." }, 413);
+    const ft = mediaFile.type;
+    if (ALLOWED_MEDIA.image.includes(ft)) mediaType = "image";
+    else if (ALLOWED_MEDIA.video.includes(ft)) mediaType = "video";
+    else if (ALLOWED_MEDIA.audio.includes(ft)) mediaType = "audio";
+    else return c.json({ error: "Unsupported file format." }, 422);
+    try { mediaUrl = await uploadMedia(await mediaFile.arrayBuffer(), mediaFile.name, ft); mediaFilename = mediaFile.name; mediaSizeBytes = mediaFile.size; } catch (err: any) { return c.json({ error: "Something went wrong. Please try again." }, 500); }
+  }
+  if (!content && !mediaUrl) return c.json({ error: "Post must have text or media." }, 422);
+  const taggedRaw = (body.taggedUserIds as string) || "[]";
+  let taggedUserIds: string[] = [];
+  try { taggedUserIds = JSON.parse(taggedRaw); } catch {}
+  const publishedAt = new Date().toISOString();
+  const r = await pool.query(`INSERT INTO circle_posts (circle_code,author_user_id,author_name,content,media_type,media_url,media_filename,media_size_bytes,status,published_at,tagged_user_ids) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'published',$9,$10) RETURNING *`, [code, u.id, u.name||"", content, mediaType, mediaUrl, mediaFilename, mediaSizeBytes, publishedAt, taggedUserIds]);
+  trackEvent(u.id, "post_created", { circle_code: code, media_type: mediaType, tagged_count: taggedUserIds.length });
+  // FIX #9: Only notify tagged users, not all circle members
+  const isEveryoneTag = taggedUserIds.includes("everyone");
+  if (isEveryoneTag) {
+    const resolvedTags = ci.members.map(m => m.userId).filter(id => id !== u.id);
+    for (const mid of resolvedTags) {
+      pushToUser(mid, { title: "📢 " + (u.name || "Someone") + " tagged everyone in " + ci.name, body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "New announcement", type: "post_mention", circleCode: code, circleName: ci.name });
+    }
+  } else {
+    // Only notify tagged users — no broadcast to all members
+    for (const taggedId of taggedUserIds) {
+      if (taggedId !== u.id) pushToUser(taggedId, { title: "📌 " + (u.name || "Someone") + " mentioned you in " + ci.name, body: content ? (content.length > 60 ? content.substring(0, 60) + "..." : content) : "You were mentioned in a post", type: "post_mention", circleCode: code, circleName: ci.name });
+    }
+  }
+  return c.json({ post: { ...r.rows[0], isAdmin: isAdmin(u.id), reactions: [], replyCount: 0 } }, 201);
+});
 
 app.delete("/api/posts/:postId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status != 'deleted'", [c.req.param("postId")]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); if (p.rows[0].author_user_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403); await pool.query("UPDATE circle_posts SET status='deleted',updated_at=NOW() WHERE id=$1", [c.req.param("postId")]); return c.body(null, 204); });
 
-app.post("/api/posts/:postId/reactions", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const { emoji } = await c.req.json(); if (!emoji || !["🙏","❤️","🔥","👏"].includes(emoji)) return c.json({ error: "Invalid emoji" }, 422); const pid = c.req.param("postId"); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status='published'", [pid]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); try { await pool.query("INSERT INTO post_reactions (post_id,user_id,emoji) VALUES ($1,$2,$3)", [pid, u.id, emoji]); if (p.rows[0].author_user_id !== u.id) pushToUser(p.rows[0].author_user_id, { title: (u.name || "Someone") + " reacted " + emoji, body: "on your post", type: "post_reaction", circleCode: p.rows[0].circle_code }); } catch { await pool.query("DELETE FROM post_reactions WHERE post_id=$1 AND user_id=$2 AND emoji=$3", [pid, u.id, emoji]); } const rxr = await pool.query("SELECT emoji, COUNT(*) as count FROM post_reactions WHERE post_id=$1 GROUP BY emoji", [pid]); const urxr = await pool.query("SELECT emoji FROM post_reactions WHERE post_id=$1 AND user_id=$2", [pid, u.id]); const us = new Set(urxr.rows.map((r: any) => r.emoji)); return c.json({ reactions: rxr.rows.map((r: any) => ({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: us.has(r.emoji) })) }); });
+// FIX #12: Spiritual emojis. FIX #16: One reaction per user per post (toggle).
+app.post("/api/posts/:postId/reactions", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const { emoji } = await c.req.json();
+  if (!emoji || !["🙏","✝️","🕊️","❤️‍🔥"].includes(emoji)) return c.json({ error: "Invalid emoji" }, 422);
+  const pid = c.req.param("postId");
+  const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status='published'", [pid]);
+  if (!p.rows[0]) return c.json({ error: "Not found" }, 404);
+  try {
+    const existing = await pool.query("SELECT emoji FROM post_reactions WHERE post_id=$1 AND user_id=$2", [pid, u.id]);
+    if (existing.rows.length > 0 && existing.rows[0].emoji === emoji) {
+      // Toggle off: same emoji tapped again
+      await pool.query("DELETE FROM post_reactions WHERE post_id=$1 AND user_id=$2", [pid, u.id]);
+    } else {
+      // Replace any existing reaction with new one
+      await pool.query("DELETE FROM post_reactions WHERE post_id=$1 AND user_id=$2", [pid, u.id]);
+      await pool.query("INSERT INTO post_reactions (post_id,user_id,emoji) VALUES ($1,$2,$3)", [pid, u.id, emoji]);
+      if (p.rows[0].author_user_id !== u.id) pushToUser(p.rows[0].author_user_id, { title: (u.name || "Someone") + " reacted " + emoji, body: "on your post", type: "post_reaction", circleCode: p.rows[0].circle_code });
+    }
+  } catch (err: any) { console.error("[Reaction] Error:", err.message); }
+  const rxr = await pool.query("SELECT emoji, COUNT(*) as count FROM post_reactions WHERE post_id=$1 GROUP BY emoji", [pid]);
+  const urxr = await pool.query("SELECT emoji FROM post_reactions WHERE post_id=$1 AND user_id=$2", [pid, u.id]);
+  const us = new Set(urxr.rows.map((r: any) => r.emoji));
+  return c.json({ reactions: rxr.rows.map((r: any) => ({ emoji: r.emoji, count: parseInt(r.count), reactedByCurrentUser: us.has(r.emoji) })) });
+});
 
 app.get("/api/posts/:postId/replies", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const pid = c.req.param("postId"); const cursor = c.req.query("cursor"); const lim = 20; let q = "SELECT * FROM post_replies WHERE post_id=$1 AND is_deleted=false"; const p: any[] = [pid]; if (cursor) { q += " AND created_at > $2"; p.push(cursor); } q += ` ORDER BY created_at ASC LIMIT $${p.length + 1}`; p.push(lim + 1); const r = await pool.query(q, p); const replies = r.rows.slice(0, lim); const nextCursor = r.rows.length > lim ? replies[replies.length - 1].created_at.toISOString() : null; return c.json({ replies, nextCursor }); });
 
@@ -1725,12 +1156,7 @@ app.post("/api/posts/:postId/replies", async (c) => { const u = await requireAut
 
 app.delete("/api/replies/:replyId", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const r = await pool.query("SELECT r.*, p.author_user_id as post_author_id FROM post_replies r JOIN circle_posts p ON r.post_id=p.id WHERE r.id=$1 AND r.is_deleted=false", [c.req.param("replyId")]); if (!r.rows[0]) return c.json({ error: "Not found" }, 404); if (r.rows[0].author_user_id !== u.id && r.rows[0].post_author_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403); await pool.query("UPDATE post_replies SET is_deleted=true WHERE id=$1", [c.req.param("replyId")]); return c.body(null, 204); });
 
-app.get("/api/circles/:code/posts/scheduled", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const q = isAdmin(u.id) ? "SELECT * FROM circle_posts WHERE circle_code=$1 AND status='scheduled' ORDER BY scheduled_at ASC" : "SELECT * FROM circle_posts WHERE circle_code=$1 AND status='scheduled' AND author_user_id=$2 ORDER BY scheduled_at ASC"; const p = isAdmin(u.id) ? [code] : [code, u.id]; return c.json({ scheduledPosts: (await pool.query(q, p)).rows }); });
-
-app.patch("/api/posts/:postId/schedule", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const p = await pool.query("SELECT * FROM circle_posts WHERE id=$1 AND status='scheduled'", [c.req.param("postId")]); if (!p.rows[0]) return c.json({ error: "Not found" }, 404); if (p.rows[0].author_user_id !== u.id && !isAdmin(u.id)) return c.json({ error: "You don't have permission to do this." }, 403); const { scheduledAt } = await c.req.json(); if (scheduledAt === null || scheduledAt === undefined) { await pool.query("UPDATE circle_posts SET status='deleted',updated_at=NOW() WHERE id=$1", [c.req.param("postId")]); return c.json({ cancelled: true }); } if (new Date(scheduledAt).getTime() < Date.now() + 600000) return c.json({ error: "Schedule time must be at least 10 minutes from now." }, 422); const r = await pool.query("UPDATE circle_posts SET scheduled_at=$1,updated_at=NOW() WHERE id=$2 RETURNING *", [scheduledAt, c.req.param("postId")]); return c.json({ post: r.rows[0] }); });
-
-// ─── Scheduled Post Publisher ────────────────────────────────────────
-async function publishScheduledPosts(): Promise<void> { try { const r = await pool.query("UPDATE circle_posts SET status='published',published_at=NOW(),updated_at=NOW() WHERE status='scheduled' AND scheduled_at <= NOW() RETURNING *"); for (const post of r.rows) { const ci = getCircle(post.circle_code); if (ci) pushToCircleMembers(ci, post.author_user_id, { title: "📝 " + (post.author_name || "Someone") + " posted in " + ci.name, body: post.content ? (post.content.length > 60 ? post.content.substring(0, 60) + "..." : post.content) : "New post", type: "new_post", circleCode: post.circle_code, circleName: ci.name }); console.log(`[Scheduler] Published ${post.id}`); } } catch (err: any) { console.error("[Scheduler]", err.message); } }
+// Scheduled posts removed (FIX #8)
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── POSTHOG EVENTS ─────────────────────────────────────────────
@@ -1825,15 +1251,15 @@ async function start() {
   setInterval(() => { pullPlausibleMetrics().catch(() => {}); }, 60 * 60 * 1000);
   setInterval(() => { pullAppleSalesReport().catch(() => {}); }, 6 * 60 * 60 * 1000);
   setInterval(() => { pullAppleAnalytics().catch(() => {}); }, 12 * 60 * 60 * 1000);
-  setInterval(() => { publishScheduledPosts().catch(() => {}); }, 60 * 1000);
-  setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000); // delay 5min after startup
+  // Scheduled posts interval removed (FIX #8)
+  setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v3.9.7 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v4.0.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
-    console.log(`   Dashboard: /dashboard?key=... | Circles: ${circles.size} | Scheduler: active (60s)\n`);
+    console.log(`   Dashboard: /dashboard?key=... | Circles: ${circles.size}\n`);
   });
 }
 start();
