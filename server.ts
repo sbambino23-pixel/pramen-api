@@ -255,7 +255,7 @@ async function initDb(): Promise<void> {
     // Enforce one reaction per user per post (drop old unique constraint, add new one)
     await client.query(`ALTER TABLE post_reactions DROP CONSTRAINT IF EXISTS post_reactions_post_id_user_id_emoji_key`).catch(() => {});
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_one_per_user ON post_reactions(post_id, user_id)`).catch(() => {});
-    console.log("DB initialized (v4.0.7 — fix member avatar resolution for device-ID users)");
+    console.log("DB initialized (v4.0.8 — remove tier rewards stub, add RC grant status checks)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -488,15 +488,16 @@ app.post("/webhooks/revenuecat", async (c) => {
           const referrerId = ref.rows[0].referrer_user_id;
           if (REVENUECAT_SECRET_KEY) {
             try {
-              await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(referrerId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
-              console.log(`[Referral] Granted 30d to referrer ${referrerId.substring(0, 8)}`);
+              const r1 = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(referrerId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
+              if (r1.ok) console.log(`[Referral] Granted 30d to referrer ${referrerId.substring(0, 8)}`);
+              else console.error(`[Referral] Grant referrer failed: ${r1.status} ${await r1.text().catch(() => "")}`);
             } catch (err: any) { console.error("[Referral] Grant referrer error:", err.message); }
             try {
-              await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(resolvedUid)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
-              console.log(`[Referral] Granted 30d to referred ${resolvedUid.substring(0, 8)}`);
+              const r2 = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(resolvedUid)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
+              if (r2.ok) console.log(`[Referral] Granted 30d to referred ${resolvedUid.substring(0, 8)}`);
+              else console.error(`[Referral] Grant referred failed: ${r2.status} ${await r2.text().catch(() => "")}`);
             } catch (err: any) { console.error("[Referral] Grant referred error:", err.message); }
           }
-          evaluateTierRewards(referrerId).catch(() => {});
           pushToUser(referrerId, { title: "🎉 You both got 30 days free!", body: "Your friend just subscribed. You've both been upgraded to 30 days of premium.", type: "referral_confirmed" });
           pushToUser(resolvedUid, { title: "🎉 Welcome! 30 days free unlocked", body: "Thanks to your friend's invite, you both get 30 days of premium free.", type: "referral_reward" });
           trackEvent(referrerId, "referral_30d_granted", { referred_user_id: resolvedUid });
@@ -1037,12 +1038,12 @@ app.delete("/api/shared-prayers/:sharedPrayerId", async (c) => { const u = await
 // ═══════════════════════════════════════════════════════════════════
 function generateReferralCode(name: string): string { const prefix = (name || "PRAY").replace(/[^A-Z]/gi, "").substring(0, 5).toUpperCase() || "PRAY"; const digits = Math.floor(1000 + Math.random() * 9000); return `${prefix}${digits}`; }
 
-async function evaluateTierRewards(userId: string): Promise<void> { return; }
+
 
 app.get("/api/referrals/me", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]); const code = codeResult.rows[0]?.code || null; const referrals = await pool.query("SELECT id, referred_user_id, status, created_at, confirmed_at FROM referrals WHERE referrer_user_id=$1 ORDER BY created_at DESC", [u.id]); const enriched = []; for (const ref of referrals.rows) { let name = null; if (ref.referred_user_id) { const usr = await pool.query("SELECT name FROM users WHERE id=$1", [ref.referred_user_id]); name = usr.rows[0]?.name || null; } enriched.push({ ...ref, referred_name: name }); } const confirmedCount = referrals.rows.filter((r: any) => r.status === "confirmed").length; return c.json({ code, link: code ? `https://pramen.app/join/${code}` : null, referrals: enriched, confirmedCount }); });
 app.post("/api/referrals/generate", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const existing = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]); if (existing.rows[0]) return c.json({ code: existing.rows[0].code, link: `https://pramen.app/join/${existing.rows[0].code}` }); let code = ""; for (let attempt = 0; attempt < 10; attempt++) { code = generateReferralCode(u.name || "PRAY"); const collision = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [code]); if (collision.rows.length === 0) break; } await pool.query("INSERT INTO referral_codes (user_id, code) VALUES ($1, $2)", [u.id, code]); trackEvent(u.id, "referral_code_generated", { code }); return c.json({ code, link: `https://pramen.app/join/${code}` }); });
 app.post("/api/referrals/track", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const { referralCode, newUserEmail } = await c.req.json(); if (!referralCode) return c.json({ error: "referralCode required" }, 400); const referrer = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [referralCode.toUpperCase()]); if (!referrer.rows[0]) return c.json({ error: "Invalid referral code" }, 404); const referrerId = referrer.rows[0].user_id; if (u.id === referrerId) return c.json({ error: "You cannot refer yourself." }, 422); const dup = await pool.query("SELECT id FROM referrals WHERE referrer_user_id=$1 AND referred_user_id=$2", [referrerId, u.id]); if (dup.rows.length > 0) return c.json({ error: "This referral has already been tracked." }, 409); const r = await pool.query("INSERT INTO referrals (referrer_user_id, referred_user_id, referred_email) VALUES ($1,$2,$3) RETURNING id", [referrerId, u.id, newUserEmail || null]); trackEvent(referrerId, "referral_tracked", { referred_user_id: u.id, code: referralCode }); const now = new Date(); const te30 = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); await pool.query("UPDATE users SET trial_end_date=$1, updated_at=NOW() WHERE id=$2 AND subscription_status='trial'", [te30, u.id]); console.log(`[Referral] Extended trial to 30d for ${u.id.substring(0, 8)}… (code: ${referralCode})`); return c.json({ referralId: r.rows[0].id, trialDays: 30, discountApplied: true }); });
-app.post("/api/referrals/confirm", async (c) => { const sec = c.req.header("X-Admin-Secret"); if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const { referredUserId } = await c.req.json(); if (!referredUserId) return c.json({ error: "referredUserId required" }, 400); const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [referredUserId]); if (ref.rows[0]) { await evaluateTierRewards(ref.rows[0].referrer_user_id); pushToUser(ref.rows[0].referrer_user_id, { title: "🎉 Referral confirmed!", body: "Someone you invited just subscribed. Check your rewards!", type: "referral_confirmed" }); } return c.json({ confirmed: ref.rows.length }); });
+app.post("/api/referrals/confirm", async (c) => { const sec = c.req.header("X-Admin-Secret"); if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const { referredUserId } = await c.req.json(); if (!referredUserId) return c.json({ error: "referredUserId required" }, 400); const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [referredUserId]); if (ref.rows[0]) { pushToUser(ref.rows[0].referrer_user_id, { title: "🎉 Referral confirmed!", body: "Someone you invited just subscribed. Check your rewards!", type: "referral_confirmed" }); } return c.json({ confirmed: ref.rows.length }); });
 app.post("/api/referrals/reverse", async (c) => { const sec = c.req.header("X-Admin-Secret"); if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const { referredUserId } = await c.req.json(); if (!referredUserId) return c.json({ error: "referredUserId required" }, 400); await pool.query("UPDATE referrals SET status='reversed', reversed_at=NOW() WHERE referred_user_id=$1 AND status='confirmed'", [referredUserId]); return c.json({ reversed: true }); });
 app.get("/api/referrals/circle/:code", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ count: 0 }); const memberIds = ci.members.map(m => m.userId); const result = await pool.query("SELECT COUNT(*) as count FROM referrals WHERE referrer_user_id=$1 AND referred_user_id = ANY($2) AND status='confirmed'", [u.id, memberIds]); return c.json({ count: parseInt(result.rows[0]?.count || "0") }); });
 app.post("/api/referrals/invite-batch", async (c) => {
@@ -1300,7 +1301,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v4.0.7 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v4.0.8 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
