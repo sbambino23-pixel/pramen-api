@@ -255,7 +255,7 @@ async function initDb(): Promise<void> {
     // Enforce one reaction per user per post (drop old unique constraint, add new one)
     await client.query(`ALTER TABLE post_reactions DROP CONSTRAINT IF EXISTS post_reactions_post_id_user_id_emoji_key`).catch(() => {});
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_one_per_user ON post_reactions(post_id, user_id)`).catch(() => {});
-    console.log("DB initialized (v4.0.6 — interactive notifications, encouragement prayed tracking)");
+    console.log("DB initialized (v4.0.7 — fix member avatar resolution for device-ID users)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -330,7 +330,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "4.0.6", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "4.0.7", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, lumi: !!GEMINI_API_KEY, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Push Diagnostics ────────────────────────────────────────────────
@@ -512,7 +512,7 @@ app.post("/webhooks/revenuecat", async (c) => {
 // ─── CIRCLES ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const code = generateCircleCode(); const ci: StoredCircle = { id: randomUUID(), name: b.name || "Prayer Circle", code, emoji: b.emoji || "🏠", creatorUserId: b.userId, members: [{ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString(), role: "creator" }], prayerRequests: [], encouragements: [], createdAt: new Date().toISOString() }; await saveCircleToDb(ci); trackEvent(b.userId, "circle_created", { circle_id: ci.id, circle_code: code, circle_name: ci.name }); return c.json({ circle: ci }, 201); });
-app.get("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); try { const memberIds = ci.members.map(m => m.userId).filter(Boolean); if (memberIds.length > 0) { const avatars = await pool.query("SELECT id, avatar_url, name FROM users WHERE id = ANY($1)", [memberIds]); const avatarMap: Record<string, { avatar_url: string | null; name: string }> = {}; for (const row of avatars.rows) avatarMap[row.id] = { avatar_url: row.avatar_url, name: row.name }; const enriched = { ...ci, members: ci.members.map(m => ({ ...m, avatarUrl: avatarMap[m.userId]?.avatar_url || m.avatarUrl || null, name: avatarMap[m.userId]?.name || m.name })) }; return c.json({ circle: enriched }); } } catch (err: any) { console.error("[Circle] Avatar enrich error:", err.message); } return c.json({ circle: ci }); });
+app.get("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); try { const memberIds = ci.members.map(m => m.userId).filter(Boolean); if (memberIds.length > 0) { const avatars = await pool.query("SELECT id, device_user_id, avatar_url, name FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); const avatarMap: Record<string, { avatar_url: string | null; name: string }> = {}; for (const row of avatars.rows) { avatarMap[row.id] = { avatar_url: row.avatar_url, name: row.name }; if (row.device_user_id) avatarMap[row.device_user_id] = { avatar_url: row.avatar_url, name: row.name }; } const enriched = { ...ci, members: ci.members.map(m => ({ ...m, avatarUrl: avatarMap[m.userId]?.avatar_url || m.avatarUrl || null, name: avatarMap[m.userId]?.name || m.name })) }; return c.json({ circle: enriched }); } } catch (err: any) { console.error("[Circle] Avatar enrich error:", err.message); } return c.json({ circle: ci }); });
 app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); pushToUser(ci.creatorUserId, { title: "👥 " + (b.userName || "Someone") + " joined " + ci.name + "!", body: ci.members.length + " members are now praying together", type: "member_joined", circleCode: code, circleName: ci.name }); return c.json({ circle: ci }); });
 app.put("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (b.name) ci.name = b.name; if (b.emoji) ci.emoji = b.emoji; await saveCircleToDb(ci); return c.json({ circle: ci }); });
 
@@ -625,7 +625,7 @@ app.get("/api/circles/:code/members-list", async (c) => {
   if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "Not a member" }, 403);
   const memberIds = ci.members.map(m => m.userId).filter(Boolean);
   let avatarMap: Record<string, string | null> = {};
-  try { const av = await pool.query("SELECT id, avatar_url FROM users WHERE id = ANY($1)", [memberIds]); for (const r of av.rows) avatarMap[r.id] = r.avatar_url; } catch {}
+  try { const av = await pool.query("SELECT id, device_user_id, avatar_url FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); for (const r of av.rows) { avatarMap[r.id] = r.avatar_url; if (r.device_user_id) avatarMap[r.device_user_id] = r.avatar_url; } } catch {}
   return c.json({
     members: ci.members.map(m => ({
       userId: m.userId,
@@ -1300,7 +1300,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v4.0.6 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v4.0.7 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
