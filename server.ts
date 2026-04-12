@@ -255,7 +255,7 @@ async function initDb(): Promise<void> {
     // Enforce one reaction per user per post (drop old unique constraint, add new one)
     await client.query(`ALTER TABLE post_reactions DROP CONSTRAINT IF EXISTS post_reactions_post_id_user_id_emoji_key`).catch(() => {});
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_reactions_one_per_user ON post_reactions(post_id, user_id)`).catch(() => {});
-    console.log("DB initialized (v4.0.8 — remove tier rewards stub, add RC grant status checks)");
+    console.log("DB initialized (v4.0.9 — fix post edit avatar loss)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -1167,7 +1167,8 @@ app.patch("/api/posts/:postId", async (c) => {
   const { content } = await c.req.json();
   if (!content?.trim()) return c.json({ error: "Post content cannot be empty." }, 422);
   const r = await pool.query("UPDATE circle_posts SET content=$1, updated_at=NOW() WHERE id=$2 RETURNING *", [content.trim(), pid]);
-  return c.json({ post: r.rows[0] });
+  const authorAvatar = await pool.query("SELECT avatar_url FROM users WHERE id=$1", [r.rows[0].author_user_id]);
+  return c.json({ post: { ...r.rows[0], author_avatar_url: authorAvatar.rows[0]?.avatar_url || null } });
 });
 
 // FIX #12: Spiritual emojis. FIX #16: One reaction per user per post (toggle).
@@ -1301,7 +1302,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v4.0.8 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v4.0.9 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"} | Lumi: ${GEMINI_API_KEY ? "✓" : "✗"}`);
