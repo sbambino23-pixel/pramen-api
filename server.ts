@@ -310,6 +310,23 @@ app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "
 app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.1.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
+// ─── Lightweight sync check — returns updated_at timestamps for user's circles ───
+app.get("/api/circles/sync-check", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const userCircleCodes = getUserCircleCodes(u.device_user_id || u.id);
+  if (userCircleCodes.length === 0) return c.json({ circles: [] });
+  try {
+    const result = await pool.query("SELECT code, updated_at FROM circles WHERE code = ANY($1)", [userCircleCodes]);
+    const today = new Date().toISOString().split("T")[0];
+    const circleStates = result.rows.map((r: any) => {
+      const ci = getCircle(r.code);
+      const prayedToday = ci ? ci.members.filter(m => m.lastPrayedDate && new Date(m.lastPrayedDate).toISOString().split("T")[0] === today).length : 0;
+      return { code: r.code, updatedAt: r.updated_at, prayedToday, totalMembers: ci?.members.length || 0 };
+    });
+    return c.json({ circles: circleStates, serverTime: new Date().toISOString() });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
 // ─── Push Diagnostics ────────────────────────────────────────────────
 app.get("/api/dashboard/push-status", async (c) => {
   const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
