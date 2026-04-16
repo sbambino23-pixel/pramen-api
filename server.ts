@@ -307,7 +307,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.1.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.2.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Lightweight sync check — returns updated_at timestamps for user's circles ───
@@ -562,27 +562,53 @@ app.delete("/api/circles/:code/members/:userId", async (c) => {
 });
 app.delete("/api/circles/:code", async (c) => { const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); trackEvent(ci.creatorUserId, "circle_deleted", { circle_code: code }); await deleteCircleFromDb(code); return c.json({ success: true }); });
 
-// ─── Prayer Requests (FIX #11: Lumi-generated prayer) ────────────────
+// ─── Member status endpoint (for Circle Today widget) ───
+app.get("/api/circles/:code/member-status", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404);
+  if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "Not a member" }, 403);
+  const today = new Date().toISOString().split("T")[0];
+  const memberIds = ci.members.map(m => m.userId).filter(Boolean);
+  let avatarMap: Record<string, string | null> = {};
+  try { const av = await pool.query("SELECT id, device_user_id, avatar_url FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); for (const r of av.rows) { avatarMap[r.id] = r.avatar_url; if (r.device_user_id) avatarMap[r.device_user_id] = r.avatar_url; } } catch {}
+  const members = ci.members.map(m => {
+    const prayedToday = m.lastPrayedDate && new Date(m.lastPrayedDate).toISOString().split("T")[0] === today;
+    return { userId: m.userId, name: m.name, avatarUrl: avatarMap[m.userId] || m.avatarUrl || null, prayedToday, prayedAt: prayedToday ? m.lastPrayedDate : null, streakCount: m.streakCount || 0, role: m.role || "member" };
+  });
+  return c.json({ members, totalMembers: ci.members.length, prayedToday: members.filter(m => m.prayedToday).length });
+});
+
+// ─── Prayer Requests (Unified: supports circle-wide + personal targeting) ────────────────
 app.post("/api/circles/:code/prayer-requests", async (c) => {
   const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404);
   const b = await c.req.json();
   const reqId = randomUUID();
   const targetUserId = b.targetUserId || null;
   const targetType = targetUserId ? "personal" : "circle";
-  const newReq: StoredPrayerRequest = { id: reqId, requesterUserId: b.userId, requesterName: b.isAnonymous ? "Anonymous" : b.userName || "Someone", text: b.text, timestamp: new Date().toISOString(), isAnonymous: b.isAnonymous || false, prayedByUserIds: [], targetUserId: targetUserId || undefined, targetType, status: "active" };
+  // Auto-generate default text if user didn't type anything (unified nudge flow)
+  let requestText = (b.text || "").trim();
+  if (!requestText) {
+    if (targetType === "personal") {
+      const defaults = ["Hey, praying today? Join us 🙏", "Thinking of you. Let's pray together today.", "Praying for you today. Want to join?", "You're in my prayers today 🙏"];
+      requestText = defaults[Math.floor(Math.random() * defaults.length)];
+    } else {
+      requestText = "Let's pray together today 🙏";
+    }
+  }
+  const newReq: StoredPrayerRequest = { id: reqId, requesterUserId: b.userId, requesterName: b.isAnonymous ? "Anonymous" : b.userName || "Someone", text: requestText, timestamp: new Date().toISOString(), isAnonymous: b.isAnonymous || false, prayedByUserIds: [], targetUserId: targetUserId || undefined, targetType, status: "active" };
   ci.prayerRequests.unshift(newReq);
   await saveCircleToDb(ci);
   trackEvent(b.userId, "prayer_request_created", { circle_code: c.req.param("code").toUpperCase(), is_anonymous: b.isAnonymous || false, target_type: targetType });
   if (targetType === "personal" && targetUserId) {
     // Personal request — only notify the target
     const targetMember = ci.members.find(m => m.userId === targetUserId);
-    pushToUser(targetUserId, { title: "🙏 " + (b.isAnonymous ? "Someone" : (b.userName || "Someone")) + " is asking you to pray", body: b.text.length > 60 ? b.text.substring(0, 60) + "..." : b.text, type: "prayer_request_personal", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: reqId, senderUserId: b.userId, senderName: b.userName || "Someone" } });
+    pushToUser(targetUserId, { title: "🙏 " + (b.isAnonymous ? "Someone" : (b.userName || "Someone")) + " is asking you to pray", body: requestText.length > 60 ? requestText.substring(0, 60) + "..." : requestText, type: "prayer_request_personal", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: reqId, senderUserId: b.userId, senderName: b.userName || "Someone" } });
   } else {
     // Circle-wide request — notify all members
     pushToCircleMembers(ci, b.userId, { title: "📿 New prayer request in " + ci.name, body: b.isAnonymous ? "Someone shared a prayer request" : (b.userName || "Someone") + " shared a prayer request", type: "prayer_request", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: reqId } });
   }
-  // Async Lumi prayer generation
-  if (GEMINI_API_KEY && isGeminiAvailable() && b.text) {
+  // Async Lumi prayer generation (only for user-written requests, not auto-generated nudges)
+  if (GEMINI_API_KEY && isGeminiAvailable() && b.text && b.text.trim().length > 10) {
     const circleCode = c.req.param("code");
     (async () => {
       try {
@@ -1158,7 +1184,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.1.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.2.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
