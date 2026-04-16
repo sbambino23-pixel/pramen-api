@@ -307,7 +307,7 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.2.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.2.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Lightweight sync check — returns updated_at timestamps for user's circles ───
@@ -1000,30 +1000,21 @@ app.get("/api/circles/:code/activity", async (c) => {
 function computeCircleStreak(circle: StoredCircle): number {
   if (circle.members.length === 0) return 0;
   const today = new Date().toISOString().split("T")[0];
-  let streak = 0;
-  for (let d = 0; d < 365; d++) {
-    const checkDate = new Date(Date.now() - d * 86400000).toISOString().split("T")[0];
-    const allPrayed = circle.members.every(m => {
-      if (!m.lastPrayedDate) return false;
-      const memberDate = new Date(m.lastPrayedDate).toISOString().split("T")[0];
-      if (d === 0) return memberDate === checkDate;
-      // For past days, check if their streak count implies they prayed that day
-      return memberDate >= checkDate;
-    });
-    if (d === 0 && !allPrayed) {
-      // Check if it's early in the day - allow today to not count yet
-      const allPrayedYesterday = circle.members.every(m => {
-        if (!m.lastPrayedDate) return false;
-        const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
-        return new Date(m.lastPrayedDate).toISOString().split("T")[0] >= yesterday;
-      });
-      if (!allPrayedYesterday) break;
-      continue; // Skip today, start counting from yesterday
-    }
-    if (!allPrayed) break;
-    streak++;
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
+  // For a circle streak to be valid, EVERY member must currently have an active
+  // individual streak (prayed today, or prayed yesterday with today not yet counted).
+  // The circle streak equals the minimum of all members' individual streak counts,
+  // since the group chain is only as strong as its weakest link.
+  let minStreak = Infinity;
+  for (const m of circle.members) {
+    if (!m.lastPrayedDate) return 0;
+    const memberDate = new Date(m.lastPrayedDate).toISOString().split("T")[0];
+    const streakActive = memberDate === today || memberDate === yesterday;
+    if (!streakActive) return 0;
+    const memberStreak = m.streakCount || 0;
+    if (memberStreak < minStreak) minStreak = memberStreak;
   }
-  return streak;
+  return minStreak === Infinity ? 0 : minStreak;
 }
 
 app.get("/api/circles/:code/streak", async (c) => {
@@ -1184,7 +1175,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.2.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.2.1 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
