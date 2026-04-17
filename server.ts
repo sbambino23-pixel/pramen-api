@@ -236,7 +236,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_ask_log (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, asker_user_id TEXT NOT NULL, target_user_id TEXT, day DATE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prayer_ask_log_unique ON prayer_ask_log (circle_code, asker_user_id, COALESCE(target_user_id, ''), day)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
-    console.log("DB initialized (v5.3.0 — one-ask-per-day prayer_ask_log added)");
+    console.log("DB initialized (v5.4.0 — timezone-fair prayedToday via 24h rolling window)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -311,7 +311,15 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.3.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.4.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+
+// v5.4.0 — "prayed today" = 24-hour rolling window (timezone-fair across users).
+// Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
+const PRAYED_TODAY_WINDOW_MS = 24 * 60 * 60 * 1000;
+function prayedRecently(lastPrayedDate: string | null | undefined): boolean {
+  if (!lastPrayedDate) return false;
+  return Date.now() - new Date(lastPrayedDate).getTime() < PRAYED_TODAY_WINDOW_MS;
+}
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
 // ─── Lightweight sync check — returns updated_at timestamps for user's circles ───
@@ -321,10 +329,9 @@ app.get("/api/circles/sync-check", async (c) => {
   if (userCircleCodes.length === 0) return c.json({ circles: [] });
   try {
     const result = await pool.query("SELECT code, updated_at FROM circles WHERE code = ANY($1)", [userCircleCodes]);
-    const today = new Date().toISOString().split("T")[0];
     const circleStates = result.rows.map((r: any) => {
       const ci = getCircle(r.code);
-      const prayedToday = ci ? ci.members.filter(m => m.lastPrayedDate && new Date(m.lastPrayedDate).toISOString().split("T")[0] === today).length : 0;
+      const prayedToday = ci ? ci.members.filter(m => prayedRecently(m.lastPrayedDate)).length : 0;
       return { code: r.code, updatedAt: r.updated_at, prayedToday, totalMembers: ci?.members.length || 0 };
     });
     return c.json({ circles: circleStates, serverTime: new Date().toISOString() });
@@ -571,12 +578,11 @@ app.get("/api/circles/:code/member-status", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
   const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404);
   if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "Not a member" }, 403);
-  const today = new Date().toISOString().split("T")[0];
   const memberIds = ci.members.map(m => m.userId).filter(Boolean);
   let avatarMap: Record<string, string | null> = {};
   try { const av = await pool.query("SELECT id, device_user_id, avatar_url FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); for (const r of av.rows) { avatarMap[r.id] = r.avatar_url; if (r.device_user_id) avatarMap[r.device_user_id] = r.avatar_url; } } catch {}
   const members = ci.members.map(m => {
-    const prayedToday = m.lastPrayedDate && new Date(m.lastPrayedDate).toISOString().split("T")[0] === today;
+    const prayedToday = prayedRecently(m.lastPrayedDate);
     return { userId: m.userId, name: m.name, avatarUrl: avatarMap[m.userId] || m.avatarUrl || null, prayedToday, prayedAt: prayedToday ? m.lastPrayedDate : null, streakCount: m.streakCount || 0, role: m.role || "member" };
   });
   return c.json({ members, totalMembers: ci.members.length, prayedToday: members.filter(m => m.prayedToday).length });
@@ -1056,8 +1062,7 @@ app.get("/api/circles/:code/streak", async (c) => {
   const ci = getCircle(c.req.param("code"));
   if (!ci) return c.json({ error: "Not found" }, 404);
   const streak = computeCircleStreak(ci);
-  const today = new Date().toISOString().split("T")[0];
-  const prayedToday = ci.members.filter(m => m.lastPrayedDate && new Date(m.lastPrayedDate).toISOString().split("T")[0] === today);
+  const prayedToday = ci.members.filter(m => prayedRecently(m.lastPrayedDate));
   return c.json({ circleStreak: streak, prayedToday: prayedToday.length, totalMembers: ci.members.length, allPrayedToday: prayedToday.length === ci.members.length });
 });
 
@@ -1210,7 +1215,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.3.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.4.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
