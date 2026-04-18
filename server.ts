@@ -10,7 +10,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 const { Pool } = pg;
 
 // ─── Types ───────────────────────────────────────────────────────────
-interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; joinedAt: string; canPost?: boolean; notificationsMuted?: boolean; role?: string; avatarUrl?: string; }
+interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; lastPrayedLocalDate?: string | null; lastPrayedTimezone?: string | null; joinedAt: string; canPost?: boolean; notificationsMuted?: boolean; role?: string; avatarUrl?: string; }
 interface StoredPrayerRequest { id: string; requesterUserId: string; requesterName: string; text: string; timestamp: string; isAnonymous: boolean; prayedByUserIds: string[]; generatedPrayer?: string; targetUserId?: string; targetType: "circle" | "personal"; status: "active" | "prayed" | "answered"; }
 interface StoredCircle { id: string; name: string; code: string; emoji: string; avatarUrl?: string; creatorUserId: string; members: StoredMember[]; prayerRequests: StoredPrayerRequest[]; createdAt: string; }
 
@@ -236,7 +236,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_ask_log (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, asker_user_id TEXT NOT NULL, target_user_id TEXT, day DATE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prayer_ask_log_unique ON prayer_ask_log (circle_code, asker_user_id, COALESCE(target_user_id, ''), day)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
-    console.log("DB initialized (v5.4.0 — timezone-fair prayedToday via 24h rolling window)");
+    console.log("DB initialized (v5.5.0 — prayedToday anchored to prayer's own local day + timezone)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -311,14 +311,23 @@ const app = new Hono();
 app.use("*", cors());
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.4.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.5.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
-// v5.4.0 — "prayed today" = 24-hour rolling window (timezone-fair across users).
+// v5.5.0 — "prayed today" anchored to prayer's own local day + timezone (resets at midnight in prayer's TZ).
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
-const PRAYED_TODAY_WINDOW_MS = 24 * 60 * 60 * 1000;
-function prayedRecently(lastPrayedDate: string | null | undefined): boolean {
-  if (!lastPrayedDate) return false;
-  return Date.now() - new Date(lastPrayedDate).getTime() < PRAYED_TODAY_WINDOW_MS;
+function todayInTimezone(timezone: string): string {
+  try {
+    return new Date().toLocaleDateString("en-CA", { timeZone: timezone });
+  } catch {
+    return new Date().toISOString().split("T")[0];
+  }
+}
+function prayedTodayInOwnTZ(member: { lastPrayedDate?: string | null; lastPrayedLocalDate?: string | null; lastPrayedTimezone?: string | null; }): boolean {
+  if (member.lastPrayedLocalDate && member.lastPrayedTimezone) {
+    return todayInTimezone(member.lastPrayedTimezone) === member.lastPrayedLocalDate;
+  }
+  if (!member.lastPrayedDate) return false;
+  return Date.now() - new Date(member.lastPrayedDate).getTime() < 24 * 60 * 60 * 1000;
 }
 app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
 
@@ -331,7 +340,7 @@ app.get("/api/circles/sync-check", async (c) => {
     const result = await pool.query("SELECT code, updated_at FROM circles WHERE code = ANY($1)", [userCircleCodes]);
     const circleStates = result.rows.map((r: any) => {
       const ci = getCircle(r.code);
-      const prayedToday = ci ? ci.members.filter(m => prayedRecently(m.lastPrayedDate)).length : 0;
+      const prayedToday = ci ? ci.members.filter(m => prayedTodayInOwnTZ(m)).length : 0;
       return { code: r.code, updatedAt: r.updated_at, prayedToday, totalMembers: ci?.members.length || 0 };
     });
     return c.json({ circles: circleStates, serverTime: new Date().toISOString() });
@@ -546,7 +555,7 @@ app.put("/api/circles/:code/avatar", async (c) => {
     return c.json({ avatarUrl });
   } catch (err: any) { return c.json({ error: "Upload failed. Try again." }, 500); }
 });
-app.put("/api/circles/:code/members/:userId/status", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const b = await c.req.json(); const old = m.streakCount; if (b.streakCount !== undefined) m.streakCount = b.streakCount; if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate; if (b.name !== undefined) m.name = b.name; await saveCircleToDb(ci); if (b.lastPrayedDate) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); } if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) { trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() }); pushToCircleMembers(ci, c.req.param("userId"), { title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!", body: "Celebrate their dedication in " + ci.name, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { memberName: m.name, streakCount: b.streakCount } }); } return c.json({ circle: ci }); });
+app.put("/api/circles/:code/members/:userId/status", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const b = await c.req.json(); const old = m.streakCount; if (b.streakCount !== undefined) m.streakCount = b.streakCount; if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate; if (b.lastPrayedLocalDate !== undefined) m.lastPrayedLocalDate = b.lastPrayedLocalDate; if (b.lastPrayedTimezone !== undefined) m.lastPrayedTimezone = b.lastPrayedTimezone; if (b.name !== undefined) m.name = b.name; await saveCircleToDb(ci); if (b.lastPrayedDate) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); } if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) { trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() }); pushToCircleMembers(ci, c.req.param("userId"), { title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!", body: "Celebrate their dedication in " + ci.name, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { memberName: m.name, streakCount: b.streakCount } }); } return c.json({ circle: ci }); });
 app.delete("/api/circles/:code/members/:userId", async (c) => {
   const code = c.req.param("code").toUpperCase(); const uid = c.req.param("userId");
   const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
@@ -582,7 +591,7 @@ app.get("/api/circles/:code/member-status", async (c) => {
   let avatarMap: Record<string, string | null> = {};
   try { const av = await pool.query("SELECT id, device_user_id, avatar_url FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); for (const r of av.rows) { avatarMap[r.id] = r.avatar_url; if (r.device_user_id) avatarMap[r.device_user_id] = r.avatar_url; } } catch {}
   const members = ci.members.map(m => {
-    const prayedToday = prayedRecently(m.lastPrayedDate);
+    const prayedToday = prayedTodayInOwnTZ(m);
     return { userId: m.userId, name: m.name, avatarUrl: avatarMap[m.userId] || m.avatarUrl || null, prayedToday, prayedAt: prayedToday ? m.lastPrayedDate : null, streakCount: m.streakCount || 0, role: m.role || "member" };
   });
   return c.json({ members, totalMembers: ci.members.length, prayedToday: members.filter(m => m.prayedToday).length });
@@ -1062,7 +1071,7 @@ app.get("/api/circles/:code/streak", async (c) => {
   const ci = getCircle(c.req.param("code"));
   if (!ci) return c.json({ error: "Not found" }, 404);
   const streak = computeCircleStreak(ci);
-  const prayedToday = ci.members.filter(m => prayedRecently(m.lastPrayedDate));
+  const prayedToday = ci.members.filter(m => prayedTodayInOwnTZ(m));
   return c.json({ circleStreak: streak, prayedToday: prayedToday.length, totalMembers: ci.members.length, allPrayedToday: prayedToday.length === ci.members.length });
 });
 
@@ -1215,7 +1224,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.4.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.5.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
