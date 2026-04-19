@@ -112,7 +112,7 @@ interface PushPayload { title: string; body: string; type: string; circleCode?: 
 function sendPush(deviceToken: string, payload: PushPayload): void {
   const jwt = generateAPNsJWT();
   if (!jwt || !deviceToken) return;
-  const apnsPayload = JSON.stringify({ aps: { alert: { title: payload.title, body: payload.body }, sound: "default", badge: 1, "mutable-content": 1 }, type: payload.type, circleCode: payload.circleCode || "", circleName: payload.circleName || "" });
+  const apnsPayload = JSON.stringify({ aps: { alert: { title: payload.title, body: payload.body }, sound: "default", badge: 1, "mutable-content": 1 }, type: payload.type, circleCode: payload.circleCode || "", circleName: payload.circleName || "", ...(payload.extra || {}) });
   try {
     const client = http2.connect(`https://${APNS_HOST}`);
     client.on("error", (err) => { console.error("[APNs] Connection error:", err.message); client.close(); });
@@ -236,7 +236,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_ask_log (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, asker_user_id TEXT NOT NULL, target_user_id TEXT, day DATE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prayer_ask_log_unique ON prayer_ask_log (circle_code, asker_user_id, COALESCE(target_user_id, ''), day)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
-    console.log("DB initialized (v5.5.0 — prayedToday anchored to prayer's own local day + timezone)");
+    console.log("DB initialized (v5.6.0 — APNs payload includes extra fields for deep-link routing)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -313,7 +313,7 @@ app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "
 
 app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.5.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
-// v5.5.0 — "prayed today" anchored to prayer's own local day + timezone (resets at midnight in prayer's TZ).
+// v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
 function todayInTimezone(timezone: string): string {
   try {
@@ -1224,7 +1224,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.5.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.6.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
