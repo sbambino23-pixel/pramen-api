@@ -236,7 +236,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_ask_log (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, asker_user_id TEXT NOT NULL, target_user_id TEXT, day DATE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prayer_ask_log_unique ON prayer_ask_log (circle_code, asker_user_id, COALESCE(target_user_id, ''), day)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
-    console.log("DB initialized (v5.6.0 — APNs payload includes extra fields for deep-link routing)");
+    console.log("DB initialized (v5.7.0 — global prayed-state: fan-out member status across all user's circles)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -555,7 +555,52 @@ app.put("/api/circles/:code/avatar", async (c) => {
     return c.json({ avatarUrl });
   } catch (err: any) { return c.json({ error: "Upload failed. Try again." }, 500); }
 });
-app.put("/api/circles/:code/members/:userId/status", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const m = ci.members.find(m => m.userId === c.req.param("userId")); if (!m) return c.json({ error: "Member not found" }, 404); const b = await c.req.json(); const old = m.streakCount; if (b.streakCount !== undefined) m.streakCount = b.streakCount; if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate; if (b.lastPrayedLocalDate !== undefined) m.lastPrayedLocalDate = b.lastPrayedLocalDate; if (b.lastPrayedTimezone !== undefined) m.lastPrayedTimezone = b.lastPrayedTimezone; if (b.name !== undefined) m.name = b.name; await saveCircleToDb(ci); if (b.lastPrayedDate) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); } if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) { trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() }); pushToCircleMembers(ci, c.req.param("userId"), { title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!", body: "Celebrate their dedication in " + ci.name, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { memberName: m.name, streakCount: b.streakCount } }); } return c.json({ circle: ci }); });
+app.put("/api/circles/:code/members/:userId/status", async (c) => {
+  const ci = getCircle(c.req.param("code"));
+  if (!ci) return c.json({ error: "Not found" }, 404);
+  const m = ci.members.find(m => m.userId === c.req.param("userId"));
+  if (!m) return c.json({ error: "Member not found" }, 404);
+  const b = await c.req.json();
+  const old = m.streakCount;
+  if (b.streakCount !== undefined) m.streakCount = b.streakCount;
+  if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate;
+  if (b.lastPrayedLocalDate !== undefined) m.lastPrayedLocalDate = b.lastPrayedLocalDate;
+  if (b.lastPrayedTimezone !== undefined) m.lastPrayedTimezone = b.lastPrayedTimezone;
+  if (b.name !== undefined) m.name = b.name;
+  await saveCircleToDb(ci);
+
+  // v5.7.0 — fan out prayed-state + streak + name to every OTHER circle this user belongs to,
+  // so "prayed today" is a single global user-level fact, consistent across every circle.
+  // Per-circle attributes (role, canPost, notificationsMuted, avatarUrl) intentionally NOT propagated.
+  const targetUserId = c.req.param("userId");
+  const thisCode = c.req.param("code").toUpperCase();
+  const propagate =
+    b.lastPrayedDate !== undefined ||
+    b.lastPrayedLocalDate !== undefined ||
+    b.lastPrayedTimezone !== undefined ||
+    b.streakCount !== undefined ||
+    b.name !== undefined;
+  if (propagate) {
+    for (const [otherCode, otherCircle] of circles) {
+      if (otherCode === thisCode) continue;
+      const om = otherCircle.members.find(mm => mm.userId === targetUserId);
+      if (!om) continue;
+      if (b.lastPrayedDate !== undefined) om.lastPrayedDate = b.lastPrayedDate;
+      if (b.lastPrayedLocalDate !== undefined) om.lastPrayedLocalDate = b.lastPrayedLocalDate;
+      if (b.lastPrayedTimezone !== undefined) om.lastPrayedTimezone = b.lastPrayedTimezone;
+      if (b.streakCount !== undefined) om.streakCount = b.streakCount;
+      if (b.name !== undefined) om.name = b.name;
+      await saveCircleToDb(otherCircle);
+    }
+  }
+
+  if (b.lastPrayedDate) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); }
+  if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) {
+    trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() });
+    pushToCircleMembers(ci, c.req.param("userId"), { title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!", body: "Celebrate their dedication in " + ci.name, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { memberName: m.name, streakCount: b.streakCount } });
+  }
+  return c.json({ circle: ci });
+});
 app.delete("/api/circles/:code/members/:userId", async (c) => {
   const code = c.req.param("code").toUpperCase(); const uid = c.req.param("userId");
   const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
@@ -1224,7 +1269,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.6.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.7.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
