@@ -237,7 +237,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_ask_log (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, asker_user_id TEXT NOT NULL, target_user_id TEXT, day DATE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prayer_ask_log_unique ON prayer_ask_log (circle_code, asker_user_id, COALESCE(target_user_id, ''), day)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
-    console.log("DB initialized (v5.8.0 — localized seasonal verse-of-the-day via ?lang= param + per-language cache)");
+    console.log("DB initialized (v5.8.1 — checkLastOneStanding respects prayer's own timezone, no more false 'last one' pushes)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -1165,11 +1165,12 @@ async function checkStreakAtRisk(): Promise<void> {
 
 // ─── Last One Standing detection (called after prayer mark) ──────
 async function checkLastOneStanding(circle: StoredCircle, prayerUserId: string): Promise<void> {
-  const today = new Date().toISOString().split("T")[0];
+  // v5.8.1 — use prayedTodayInOwnTZ so the "last one standing" check respects each member's own local day.
+  // Previously used UTC date comparison, which caused false-positive pushes for users in timezones
+  // where their local "today" prayer mapped to yesterday's UTC date.
   const notPrayedToday = circle.members.filter(m => {
     if (m.userId === prayerUserId) return false;
-    if (!m.lastPrayedDate) return true;
-    return new Date(m.lastPrayedDate).toISOString().split("T")[0] !== today;
+    return !prayedTodayInOwnTZ(m);
   });
   if (notPrayedToday.length === 1) {
     // One person left - send them a gentle nudge
