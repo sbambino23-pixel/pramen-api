@@ -161,6 +161,35 @@ async function pushToCircleMembers(circle: StoredCircle, excludeUserId: string, 
   for (const uid of memberIds) { pushToUser(uid, payload); }
 }
 
+// v5.8.2 — silent background push for real-time cross-circle sync.
+// Sends content-available:1 to wake iOS app in background so it can refresh
+// the circle data immediately, not wait for the next 30s polling tick.
+function sendSilentPush(deviceToken: string, circleCode: string): void {
+  const jwt = generateAPNsJWT();
+  if (!jwt || !deviceToken) return;
+  const apnsPayload = JSON.stringify({ aps: { "content-available": 1 }, type: "silent_sync", circleCode });
+  try {
+    const client = http2.connect(`https://${APNS_HOST}`);
+    client.on("error", (err) => { console.error("[APNs silent] Connection error:", err.message); client.close(); });
+    const req = client.request({ ":method": "POST", ":path": `/3/device/${deviceToken}`, authorization: `bearer ${jwt}`, "apns-topic": APNS_BUNDLE_ID, "apns-push-type": "background", "apns-priority": "5", "apns-expiration": "0", "content-type": "application/json" });
+    req.on("response", (headers) => { const status = headers[":status"]; if (status !== 200) { let body = ""; req.on("data", (chunk: Buffer) => { body += chunk.toString(); }); req.on("end", () => { console.log(`[APNs silent] Push failed status=${status} token=${deviceToken.substring(0, 8)}...`); client.close(); }); return; } });
+    req.on("error", (err) => { console.error("[APNs silent] Request error:", err.message); });
+    req.on("end", () => { client.close(); });
+    req.write(apnsPayload); req.end();
+  } catch (err: any) { console.error("[APNs silent] Send error:", err.message); }
+}
+
+async function pushSilentSyncToCircle(circle: StoredCircle, excludeUserId: string): Promise<void> {
+  const memberIds = circle.members.filter((m) => m.userId !== excludeUserId).map((m) => m.userId);
+  if (memberIds.length === 0) return;
+  try {
+    const result = await pool.query("SELECT id, device_token FROM users WHERE id = ANY($1) AND device_token IS NOT NULL", [memberIds]);
+    for (const row of result.rows) {
+      if (row.device_token) sendSilentPush(row.device_token, circle.code);
+    }
+  } catch (err: any) { console.error("[Silent sync] pushSilentSyncToCircle error:", err.message); }
+}
+
 // ─── Admin Helpers ───────────────────────────────────────────────────
 function isAdmin(userId: string): boolean { return ADMIN_USER_ID !== "" && userId === ADMIN_USER_ID; }
 function isCircleAdmin(userId: string, circle: StoredCircle, deviceUserId?: string): boolean { if (isAdmin(userId)) return true; const m = circle.members.find(m => m.userId === userId || (deviceUserId && m.userId === deviceUserId)); return m?.role === "creator" || m?.role === "admin"; }
@@ -237,7 +266,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_ask_log (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, asker_user_id TEXT NOT NULL, target_user_id TEXT, day DATE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prayer_ask_log_unique ON prayer_ask_log (circle_code, asker_user_id, COALESCE(target_user_id, ''), day)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
-    console.log("DB initialized (v5.8.1 — checkLastOneStanding respects prayer's own timezone, no more false 'last one' pushes)");
+    console.log("DB initialized (v5.8.2 — silent APNs push on prayer fan-out for real-time cross-circle sync)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -592,8 +621,14 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
       if (b.streakCount !== undefined) om.streakCount = b.streakCount;
       if (b.name !== undefined) om.name = b.name;
       await saveCircleToDb(otherCircle);
+      // v5.8.2 — wake every other member of this fanned-out circle so their app
+      // refreshes immediately, giving real-time cross-circle sync.
+      pushSilentSyncToCircle(otherCircle, targetUserId).catch(() => {});
     }
   }
+  // v5.8.2 — also wake members of THIS circle so the prayer state propagates
+  // within ~2s instead of waiting for the 30s polling tick.
+  if (propagate) pushSilentSyncToCircle(ci, targetUserId).catch(() => {});
 
   if (b.lastPrayedDate) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); }
   if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) {
