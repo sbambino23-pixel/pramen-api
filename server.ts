@@ -201,6 +201,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS invite_tokens (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, token TEXT UNIQUE NOT NULL, circle_code TEXT NOT NULL, inviter_user_id TEXT NOT NULL, inviter_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', accepted_by_user_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), accepted_at TIMESTAMPTZ)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_token ON invite_tokens(token)`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_reflections (date DATE PRIMARY KEY, verse TEXT NOT NULL, reference TEXT NOT NULL, reflection TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE TABLE IF NOT EXISTS seasonal_verses (date DATE NOT NULL, lang TEXT NOT NULL DEFAULT 'en', verse TEXT NOT NULL, reference TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (date, lang))`);
     await client.query(`CREATE TABLE IF NOT EXISTS favorites (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, title TEXT, source TEXT NOT NULL DEFAULT 'app', prayer_text TEXT, prayer_id TEXT, media_url TEXT, media_type TEXT, media_filename TEXT, transcript TEXT, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, is_deleted, created_at DESC)`);
     await client.query(`CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, data JSONB DEFAULT '{}', is_read BOOLEAN DEFAULT false, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
@@ -236,7 +237,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_ask_log (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, asker_user_id TEXT NOT NULL, target_user_id TEXT, day DATE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prayer_ask_log_unique ON prayer_ask_log (circle_code, asker_user_id, COALESCE(target_user_id, ''), day)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
-    console.log("DB initialized (v5.7.0 — global prayed-state: fan-out member status across all user's circles)");
+    console.log("DB initialized (v5.8.0 — localized seasonal verse-of-the-day via ?lang= param + per-language cache)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -964,32 +965,49 @@ function getLiturgicalSeason(date: Date = new Date()): string {
 app.get("/api/seasonal/verse-of-the-day", async (c) => {
   const season = getLiturgicalSeason();
   const today = new Date().toISOString().split("T")[0];
+  const langRaw = (c.req.query("lang") || "en").toLowerCase();
+  const lang = ["en", "fr", "es", "pt"].includes(langRaw) ? langRaw : "en";
+  // Per-language cache (v5.8.0)
   try {
-    const existing = await pool.query("SELECT * FROM daily_reflections WHERE date=$1", [today]);
+    const existing = await pool.query("SELECT * FROM seasonal_verses WHERE date=$1 AND lang=$2", [today, lang]);
     if (existing.rows[0]) {
-      return c.json({ verse: existing.rows[0].verse, reference: existing.rows[0].reference, season });
+      return c.json({ verse: existing.rows[0].verse, reference: existing.rows[0].reference, season, lang });
     }
   } catch {}
   if (GEMINI_API_KEY) {
     const seasonNames: Record<string, string> = { advent: "Advent", christmas: "Christmas", lent: "Lent", holyWeek: "Holy Week", easter: "Easter", ordinaryTime: "Ordinary Time" };
+    const langNames: Record<string, string> = { en: "English", fr: "French", es: "Spanish", pt: "Portuguese" };
     try {
       const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000);
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          system_instruction: { parts: [{ text: "You are a Bible verse curator. Respond ONLY with valid JSON, no markdown, no backticks." }] },
-          contents: [{ role: "user", parts: [{ text: `Select a Bible verse appropriate for the ${seasonNames[season] || "Ordinary Time"} liturgical season, day ${dayOfYear}. Return JSON: {"verse": "full verse text", "reference": "Book Chapter:Verse"}` }] }],
+          system_instruction: { parts: [{ text: `You are a Bible verse curator. Respond ONLY with valid JSON, no markdown, no backticks. Return both the verse text AND the book/chapter/verse reference in ${langNames[lang]}.` }] },
+          contents: [{ role: "user", parts: [{ text: `Select a Bible verse appropriate for the ${seasonNames[season] || "Ordinary Time"} liturgical season, day ${dayOfYear}. Return JSON: {"verse": "full verse text in ${langNames[lang]}", "reference": "Book Chapter:Verse formatted in ${langNames[lang]}"}` }] }],
         }),
       });
       if (res.ok) {
         const data = (await res.json()) as any;
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
         const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-        if (parsed.verse && parsed.reference) return c.json({ verse: parsed.verse, reference: parsed.reference, season });
+        if (parsed.verse && parsed.reference) {
+          try {
+            await pool.query("INSERT INTO seasonal_verses (date, lang, verse, reference) VALUES ($1,$2,$3,$4) ON CONFLICT (date, lang) DO NOTHING", [today, lang, parsed.verse, parsed.reference]);
+          } catch {}
+          return c.json({ verse: parsed.verse, reference: parsed.reference, season, lang });
+        }
       }
     } catch {}
   }
-  return c.json({ verse: "Be still, and know that I am God.", reference: "Psalm 46:10", season });
+  // Per-language fallback
+  const fallbacks: Record<string, { verse: string; reference: string }> = {
+    en: { verse: "Be still, and know that I am God.", reference: "Psalm 46:10" },
+    fr: { verse: "Arrêtez, et sachez que je suis Dieu.", reference: "Psaume 46:10" },
+    es: { verse: "Estad quietos, y conoced que yo soy Dios.", reference: "Salmo 46:10" },
+    pt: { verse: "Aquietai-vos, e sabei que eu sou Deus.", reference: "Salmo 46:10" },
+  };
+  const fb = fallbacks[lang] || fallbacks.en;
+  return c.json({ verse: fb.verse, reference: fb.reference, season, lang });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1269,7 +1287,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.7.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.8.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
