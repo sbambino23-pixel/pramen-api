@@ -266,7 +266,9 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS prayer_ask_log (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, asker_user_id TEXT NOT NULL, target_user_id TEXT, day DATE NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prayer_ask_log_unique ON prayer_ask_log (circle_code, asker_user_id, COALESCE(target_user_id, ''), day)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
-    console.log("DB initialized (v5.8.2 — silent APNs push on prayer fan-out for real-time cross-circle sync)");
+    // v5.8.3 — throttle table for last-one-standing and similar once-per-day pushes
+    await client.query(`CREATE TABLE IF NOT EXISTS push_throttle (throttle_key TEXT PRIMARY KEY, sent_date TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`);
+    console.log("DB initialized (v5.8.3 — no last-one-standing spam: fires only on real prayer transitions + once-per-day throttle)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -592,11 +594,18 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
   if (!m) return c.json({ error: "Member not found" }, 404);
   const b = await c.req.json();
   const old = m.streakCount;
+  // v5.8.3 — capture previous state so we can detect ACTUAL transitions
+  // (and not re-fire pushes on every idempotent re-PUT from client refresh loops).
+  const prevLastPrayedDate = m.lastPrayedDate;
+  const prevLastPrayedLocalDate = m.lastPrayedLocalDate;
   if (b.streakCount !== undefined) m.streakCount = b.streakCount;
   if (b.lastPrayedDate !== undefined) m.lastPrayedDate = b.lastPrayedDate;
   if (b.lastPrayedLocalDate !== undefined) m.lastPrayedLocalDate = b.lastPrayedLocalDate;
   if (b.lastPrayedTimezone !== undefined) m.lastPrayedTimezone = b.lastPrayedTimezone;
   if (b.name !== undefined) m.name = b.name;
+  const prayedStateChanged =
+    (b.lastPrayedDate !== undefined && b.lastPrayedDate !== prevLastPrayedDate) ||
+    (b.lastPrayedLocalDate !== undefined && b.lastPrayedLocalDate !== prevLastPrayedLocalDate);
   await saveCircleToDb(ci);
 
   // v5.7.0 — fan out prayed-state + streak + name to every OTHER circle this user belongs to,
@@ -604,12 +613,10 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
   // Per-circle attributes (role, canPost, notificationsMuted, avatarUrl) intentionally NOT propagated.
   const targetUserId = c.req.param("userId");
   const thisCode = c.req.param("code").toUpperCase();
-  const propagate =
-    b.lastPrayedDate !== undefined ||
-    b.lastPrayedLocalDate !== undefined ||
-    b.lastPrayedTimezone !== undefined ||
-    b.streakCount !== undefined ||
-    b.name !== undefined;
+  // v5.8.3 — propagate only on real change, not on every idempotent client refresh PUT.
+  const streakChanged = b.streakCount !== undefined && b.streakCount !== old;
+  const nameChanged = b.name !== undefined && b.name !== m.name; // m.name already updated above, so this is always false; kept for semantic clarity
+  const propagate = prayedStateChanged || streakChanged || (b.name !== undefined);
   if (propagate) {
     for (const [otherCode, otherCircle] of circles) {
       if (otherCode === thisCode) continue;
@@ -630,7 +637,8 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
   // within ~2s instead of waiting for the 30s polling tick.
   if (propagate) pushSilentSyncToCircle(ci, targetUserId).catch(() => {});
 
-  if (b.lastPrayedDate) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); }
+  // v5.8.3 — only check last-one-standing on real prayer transitions, not idempotent re-PUTs
+  if (prayedStateChanged) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); }
   if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) {
     trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() });
     pushToCircleMembers(ci, c.req.param("userId"), { title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!", body: "Celebrate their dedication in " + ci.name, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { memberName: m.name, streakCount: b.streakCount } });
@@ -1210,6 +1218,23 @@ async function checkLastOneStanding(circle: StoredCircle, prayerUserId: string):
   if (notPrayedToday.length === 1) {
     // One person left - send them a gentle nudge
     const lastOne = notPrayedToday[0];
+    // v5.8.3 — throttle: at most one last-one-standing push per (user, circle) per calendar day in the user's own TZ.
+    // Belt-and-braces safety net so even if an upstream bug re-triggers this function, the recipient cannot be spammed.
+    const tz = lastOne.lastPrayedTimezone || "UTC";
+    const userToday = todayInTimezone(tz);
+    const throttleKey = `last_one_${lastOne.userId}_${circle.code}`;
+    try {
+      const existing = await pool.query("SELECT sent_date FROM push_throttle WHERE throttle_key=$1", [throttleKey]);
+      if (existing.rows[0]?.sent_date === userToday) {
+        return;
+      }
+      await pool.query(
+        "INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1,$2) ON CONFLICT (throttle_key) DO UPDATE SET sent_date=$2",
+        [throttleKey, userToday]
+      );
+    } catch (err) {
+      // if throttle table not ready, fall through to send (conservative first-time behavior)
+    }
     pushToUser(lastOne.userId, {
       title: "Everyone in " + circle.name + " prayed today",
       body: "You're the last one. We're waiting for you.",
