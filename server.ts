@@ -268,7 +268,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
     // v5.8.3 — throttle table for last-one-standing and similar once-per-day pushes
     await client.query(`CREATE TABLE IF NOT EXISTS push_throttle (throttle_key TEXT PRIMARY KEY, sent_date TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`);
-    console.log("DB initialized (v5.8.3 — no last-one-standing spam: fires only on real prayer transitions + once-per-day throttle)");
+    console.log("DB initialized (v5.8.4 — no-store Cache-Control on all /api/* responses so iOS URLSession never serves stale circle GETs)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -341,6 +341,18 @@ async function pullAppleSalesReport(): Promise<void> {
 // ─── Hono App ────────────────────────────────────────────────────────
 const app = new Hono();
 app.use("*", cors());
+// v5.8.4 — explicit no-cache on every API response so iOS URLSession doesn't
+// serve stale GETs. Without this, iOS falls back to protocol-cache heuristics
+// and can return cached responses for minutes, making cross-circle sync feel
+// laggy even though the server has fresh data.
+app.use("*", async (c, next) => {
+  await next();
+  if (c.req.path.startsWith("/api/")) {
+    c.header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    c.header("Pragma", "no-cache");
+    c.header("Expires", "0");
+  }
+});
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
 app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.5.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
