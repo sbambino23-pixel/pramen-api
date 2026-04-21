@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
 import { randomUUID, createHash, createSign } from "crypto";
 import { readFileSync } from "fs";
@@ -179,6 +180,39 @@ function sendSilentPush(deviceToken: string, circleCode: string): void {
   } catch (err: any) { console.error("[APNs silent] Send error:", err.message); }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// v5.9.0 — SSE live events for real-time cross-device sync.
+// Every connected user holds a persistent HTTP connection. When any user's
+// prayer state changes (or any other event worth broadcasting), the server
+// pushes a JSON line to every relevant connected client within ~100ms.
+// ═══════════════════════════════════════════════════════════════════
+type SseClient = { userId: string; send: (event: { type: string; [k: string]: any }) => Promise<void>; close: () => void };
+const sseClients = new Map<string, Set<SseClient>>(); // userId -> clients
+
+function addSseClient(userId: string, client: SseClient): void {
+  let set = sseClients.get(userId);
+  if (!set) { set = new Set(); sseClients.set(userId, set); }
+  set.add(client);
+}
+function removeSseClient(userId: string, client: SseClient): void {
+  const set = sseClients.get(userId);
+  if (!set) return;
+  set.delete(client);
+  if (set.size === 0) sseClients.delete(userId);
+}
+async function sendSseToUser(userId: string, event: { type: string; [k: string]: any }): Promise<void> {
+  const set = sseClients.get(userId);
+  if (!set || set.size === 0) return;
+  for (const client of set) {
+    try { await client.send(event); } catch { /* client gone, will be cleaned up on next heartbeat */ }
+  }
+}
+async function broadcastCircleUpdate(circle: StoredCircle, excludeUserId: string): Promise<void> {
+  const event = { type: "circle_updated", code: circle.code, updatedAt: new Date().toISOString() };
+  const recipients = circle.members.filter(m => m.userId !== excludeUserId).map(m => m.userId);
+  for (const uid of recipients) { await sendSseToUser(uid, event); }
+}
+
 async function pushSilentSyncToCircle(circle: StoredCircle, excludeUserId: string): Promise<void> {
   const memberIds = circle.members.filter((m) => m.userId !== excludeUserId).map((m) => m.userId);
   if (memberIds.length === 0) return;
@@ -268,7 +302,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
     // v5.8.3 — throttle table for last-one-standing and similar once-per-day pushes
     await client.query(`CREATE TABLE IF NOT EXISTS push_throttle (throttle_key TEXT PRIMARY KEY, sent_date TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`);
-    console.log("DB initialized (v5.8.4 — no-store Cache-Control on all /api/* responses so iOS URLSession never serves stale circle GETs)");
+    console.log("DB initialized (v5.9.0 — SSE live events: persistent connection per client, sub-second cross-device sync, silent push + polling as fallbacks)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -373,7 +407,41 @@ function prayedTodayInOwnTZ(member: { lastPrayedDate?: string | null; lastPrayed
   if (!member.lastPrayedDate) return false;
   return Date.now() - new Date(member.lastPrayedDate).getTime() < 24 * 60 * 60 * 1000;
 }
-app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size }));
+app.get("/api/circles/health", (c) => c.json({ status: "ok", circles: circles.size, sseClients: Array.from(sseClients.values()).reduce((sum, set) => sum + set.size, 0) }));
+
+// v5.9.0 — Server-Sent Events endpoint for live cross-device sync.
+// iOS opens a persistent connection when the app enters foreground.
+// Server streams JSON events (circle_updated, keepalive) until the client disconnects.
+// Every fan-out broadcasts here so clients refresh in ~100ms instead of waiting for polling.
+app.get("/api/events", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const userId = u.device_user_id || u.id;
+  return streamSSE(c, async (stream) => {
+    const client: SseClient = {
+      userId,
+      send: async (event) => {
+        await stream.writeSSE({ data: JSON.stringify(event), event: event.type });
+      },
+      close: () => { try { stream.abort(); } catch {} },
+    };
+    addSseClient(userId, client);
+    // initial hello so client knows stream is live
+    await stream.writeSSE({ data: JSON.stringify({ type: "connected", ts: Date.now() }), event: "connected" });
+    // heartbeat every 25s to keep Railway / iOS from closing the idle connection
+    const heartbeat = setInterval(() => {
+      stream.writeSSE({ data: JSON.stringify({ type: "keepalive", ts: Date.now() }), event: "keepalive" }).catch(() => {});
+    }, 25000);
+    // keep the handler alive until the client disconnects
+    await new Promise<void>((resolve) => {
+      stream.onAbort(() => {
+        clearInterval(heartbeat);
+        removeSseClient(userId, client);
+        resolve();
+      });
+    });
+  });
+});
 
 // ─── Lightweight sync check — returns updated_at timestamps for user's circles ───
 app.get("/api/circles/sync-check", async (c) => {
@@ -640,14 +708,18 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
       if (b.streakCount !== undefined) om.streakCount = b.streakCount;
       if (b.name !== undefined) om.name = b.name;
       await saveCircleToDb(otherCircle);
-      // v5.8.2 — wake every other member of this fanned-out circle so their app
-      // refreshes immediately, giving real-time cross-circle sync.
+      // v5.9.0 — live push to connected SSE clients (sub-second, reliable)
+      broadcastCircleUpdate(otherCircle, targetUserId).catch(() => {});
+      // v5.8.2 — silent APNs push as background fallback (best effort)
       pushSilentSyncToCircle(otherCircle, targetUserId).catch(() => {});
     }
   }
-  // v5.8.2 — also wake members of THIS circle so the prayer state propagates
-  // within ~2s instead of waiting for the 30s polling tick.
-  if (propagate) pushSilentSyncToCircle(ci, targetUserId).catch(() => {});
+  if (propagate) {
+    // v5.9.0 — live push to THIS circle's connected members
+    broadcastCircleUpdate(ci, targetUserId).catch(() => {});
+    // v5.8.2 — silent APNs push fallback
+    pushSilentSyncToCircle(ci, targetUserId).catch(() => {});
+  }
 
   // v5.8.3 — only check last-one-standing on real prayer transitions, not idempotent re-PUTs
   if (prayedStateChanged) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); }
