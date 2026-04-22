@@ -302,7 +302,7 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
     // v5.8.3 — throttle table for last-one-standing and similar once-per-day pushes
     await client.query(`CREATE TABLE IF NOT EXISTS push_throttle (throttle_key TEXT PRIMARY KEY, sent_date TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`);
-    console.log("DB initialized (v5.9.0 — SSE live events: persistent connection per client, sub-second cross-device sync, silent push + polling as fallbacks)");
+    console.log("DB initialized (v5.9.1 — invite tokens expire with their circle; /api/invites/:token returns 410 when circle no longer exists)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -753,7 +753,7 @@ app.delete("/api/circles/:code/members/:userId", async (c) => {
   ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci);
   return c.json({ success: true });
 });
-app.delete("/api/circles/:code", async (c) => { const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); trackEvent(ci.creatorUserId, "circle_deleted", { circle_code: code }); await deleteCircleFromDb(code); return c.json({ success: true }); });
+app.delete("/api/circles/:code", async (c) => { const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); trackEvent(ci.creatorUserId, "circle_deleted", { circle_code: code }); await deleteCircleFromDb(code); /* v5.9.1 — expire any outstanding invite tokens for this circle so share links stop working */ try { await pool.query("UPDATE invite_tokens SET status='expired' WHERE circle_code=$1 AND status='pending'", [code]); } catch (err: any) { console.error("[Circle delete] Expire invites error:", err.message); } return c.json({ success: true }); });
 
 // ─── Member status endpoint (for Circle Today widget) ───
 app.get("/api/circles/:code/member-status", async (c) => {
@@ -976,7 +976,13 @@ app.get("/api/invites/:token", async (c) => {
   const inv = result.rows[0];
   if (inv.status !== "pending") return c.json({ error: "This invite link has already been used or is no longer valid." }, 410);
   const ci = getCircle(inv.circle_code);
-  return c.json({ circleCode: inv.circle_code, circleName: ci?.name || "Prayer Circle", inviterName: inv.inviter_name, status: inv.status });
+  // v5.9.1 — if the circle was deleted after the invite was generated, expire the invite
+  // and return a clear error instead of pretending the invite is valid with fallback name.
+  if (!ci) {
+    await pool.query("UPDATE invite_tokens SET status='expired' WHERE token=$1", [token]);
+    return c.json({ error: "This circle no longer exists." }, 410);
+  }
+  return c.json({ circleCode: inv.circle_code, circleName: ci.name, inviterName: inv.inviter_name, status: inv.status });
 });
 
 app.post("/api/invites/:token/accept", async (c) => {
