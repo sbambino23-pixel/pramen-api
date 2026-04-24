@@ -879,16 +879,12 @@ async function sendMetaCAPIEvent(params: {
         event_name: params.eventName,
         event_time: Math.floor(Date.now() / 1000),
         event_id: params.eventId,
-        action_source: "app",
+        action_source: "website",
+        event_source_url: "https://pramen.app",
         user_data: userData,
         custom_data: {
           currency: params.currency || "USD",
           value: params.price || 0,
-        },
-        app_data: {
-          application_tracking_enabled: 0,
-          advertiser_tracking_enabled: 0,
-          extinfo: ["i2", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
         },
       }],
     };
