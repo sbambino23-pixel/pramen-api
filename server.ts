@@ -836,6 +836,80 @@ const RC_MAP: Record<string,string> = { INITIAL_PURCHASE: "subscription_started"
 function rcPlan(pid: string) { if (pid.includes("monthly")) return "monthly"; if (pid.includes("yearly")) return "yearly"; if (pid.includes("lifetime")) return "lifetime"; return "unknown"; }
 function rcStatus(t: string) { if (["INITIAL_PURCHASE","RENEWAL","UNCANCELLATION"].includes(t)) return "active"; if (t==="CANCELLATION") return "cancelled"; if (t==="EXPIRATION") return "expired"; if (t==="BILLING_ISSUE") return "billing_issue"; if (t==="NON_RENEWING_PURCHASE") return "lifetime"; return "unknown"; }
 
+// ═══════════════════════════════════════════════════════════════════
+// ─── META CAPI (Conversions API for iOS attribution) ────────────
+// ═══════════════════════════════════════════════════════════════════
+const META_CAPI_ACCESS_TOKEN = process.env.META_CAPI_ACCESS_TOKEN || "";
+const META_PIXEL_ID = process.env.META_PIXEL_ID || "";
+const META_CAPI_ENDPOINT = process.env.META_CAPI_ENDPOINT || "";
+
+function sha256Hash(value: string): string {
+  return createHash("sha256").update(value.trim().toLowerCase()).digest("hex");
+}
+
+function mapRcEventToMeta(rcEventType: string, periodType: string): string | null {
+  if (rcEventType === "INITIAL_PURCHASE" && periodType === "TRIAL") return "StartTrial";
+  if (rcEventType === "INITIAL_PURCHASE") return "Subscribe";
+  if (rcEventType === "RENEWAL") return "Subscribe";
+  if (rcEventType === "NON_RENEWING_PURCHASE") return "Purchase";
+  return null;
+}
+
+async function sendMetaCAPIEvent(params: {
+  eventName: string;
+  userId: string;
+  email?: string | null;
+  price: number;
+  currency: string;
+  eventId: string;
+}): Promise<void> {
+  if (!META_CAPI_ACCESS_TOKEN || !META_CAPI_ENDPOINT || !META_PIXEL_ID) {
+    console.log("[Meta CAPI] Not configured, skipping");
+    return;
+  }
+  try {
+    const userData: Record<string, any> = {
+      external_id: [sha256Hash(params.userId)],
+    };
+    if (params.email) {
+      userData.em = [sha256Hash(params.email)];
+    }
+    const payload = {
+      data: [{
+        event_name: params.eventName,
+        event_time: Math.floor(Date.now() / 1000),
+        event_id: params.eventId,
+        action_source: "app",
+        user_data: userData,
+        custom_data: {
+          currency: params.currency || "USD",
+          value: params.price || 0,
+        },
+        app_data: {
+          application_tracking_enabled: 0,
+          advertiser_tracking_enabled: 0,
+          extinfo: ["i2", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+        },
+      }],
+    };
+    const url = `${META_CAPI_ENDPOINT}?access_token=${META_CAPI_ACCESS_TOKEN}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      const data = (await res.json()) as any;
+      console.log(`[Meta CAPI] ✓ ${params.eventName} sent. events_received=${data.events_received || 0} event_id=${params.eventId.substring(0,12)}`);
+    } else {
+      const errText = await res.text().catch(() => "");
+      console.error(`[Meta CAPI] ✗ Failed status=${res.status} body=${errText.substring(0, 300)}`);
+    }
+  } catch (err: any) {
+    console.error("[Meta CAPI] Send error:", err.message);
+  }
+}
+
 app.post("/webhooks/revenuecat", async (c) => {
   try {
     const ah = c.req.header("Authorization"); const sec = process.env.REVENUECAT_WEBHOOK_SECRET;
@@ -849,6 +923,27 @@ app.post("/webhooks/revenuecat", async (c) => {
     await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, resolvedUid]).catch(() => {});
     if (resolvedUid !== rcUid) await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, rcUid]).catch(() => {});
     trackEvent(resolvedUid, name, { plan, product_id: pid, price: ev.price, currency: ev.currency, store: ev.store, environment: ev.environment, rc_original_id: rcUid, $revenue: ev.price || 0, $currency: ev.currency || "USD" });
+    // Meta CAPI: server-side event for iOS ad attribution.
+    // Skips sandbox/test environments to avoid polluting ad optimization.
+    if (ev.environment === "PRODUCTION" || !ev.environment) {
+      const metaEventName = mapRcEventToMeta(ev.type, ev.period_type || "NORMAL");
+      if (metaEventName) {
+        let userEmail: string | null = null;
+        try {
+          const userRow = await pool.query("SELECT email FROM users WHERE id=$1 LIMIT 1", [resolvedUid]);
+          userEmail = userRow.rows[0]?.email || null;
+          if (userEmail && userEmail.includes("privaterelay.appleid.com")) userEmail = null;
+        } catch {}
+        sendMetaCAPIEvent({
+          eventName: metaEventName,
+          userId: resolvedUid,
+          email: userEmail,
+          price: ev.price || 0,
+          currency: ev.currency || "USD",
+          eventId: ev.id || `${ev.type}_${resolvedUid}_${Date.now()}`,
+        }).catch((err) => console.error("[Meta CAPI] Async error:", err.message));
+      }
+    }
     identifyUser(resolvedUid, { subscription_status: status, subscription_plan: plan, last_revenue_event: name });
     try { const price = ev.price || 0; const net = price * (1 - APPLE_CUT); const today = new Date().toISOString().split("T")[0];
       await pool.query(`INSERT INTO revenue_events (user_id,event_type,plan,product_id,price,currency,environment) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [resolvedUid, name, plan, pid, price, ev.currency||"USD", ev.environment||"production"]);
@@ -1718,6 +1813,7 @@ async function start() {
     console.log(`\n🙏 prAmen API v5.8.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
+    console.log(`   Meta CAPI: ${META_CAPI_ACCESS_TOKEN ? "✓" : "✗"} pixel=${META_PIXEL_ID || "-"}`);
     console.log(`   Storage: ${R2_ACCOUNT_ID ? "✓" : "✗"} | Admin: ${ADMIN_USER_ID ? ADMIN_USER_ID.substring(0,8)+"..." : "✗"}`);
     console.log(`   Dashboard: /dashboard?key=... | Circles: ${circles.size}\n`);
   });
