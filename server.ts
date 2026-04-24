@@ -162,6 +162,239 @@ async function pushToCircleMembers(circle: StoredCircle, excludeUserId: string, 
   for (const uid of memberIds) { pushToUser(uid, payload); }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// v5.9.1 — PUSH NOTIFICATION LOCALIZATION
+// ═══════════════════════════════════════════════════════════════════
+// Every server-side push is translated into the recipient's selected app language
+// (stored in users.language). Per-recipient lookup ensures Samy in French and
+// Charles in English each get their notification in their own language.
+
+type Lang = "en" | "fr" | "es" | "pt";
+
+async function getUserLanguage(userId: string): Promise<Lang> {
+  try {
+    const r = await pool.query("SELECT language FROM users WHERE id=$1", [userId]);
+    const raw = (r.rows[0]?.language || "en").toString().toLowerCase();
+    if (raw === "fr" || raw === "es" || raw === "pt") return raw;
+    return "en";
+  } catch { return "en"; }
+}
+
+const PUSH_STRINGS: Record<string, Record<Lang, string>> = {
+  // Referrals
+  referral_both_title: {
+    en: "🎉 You both got 30 days free!",
+    fr: "🎉 Vous avez tous les deux 30 jours gratuits !",
+    es: "🎉 ¡Ambos obtuvieron 30 días gratis!",
+    pt: "🎉 Vocês dois ganharam 30 dias grátis!",
+  },
+  referral_both_body: {
+    en: "Your friend just subscribed. You've both been upgraded to 30 days of premium.",
+    fr: "Votre ami vient de s'abonner. Vous bénéficiez tous les deux de 30 jours de premium.",
+    es: "Tu amigo se acaba de suscribir. Ambos tienen 30 días de premium.",
+    pt: "Seu amigo acabou de assinar. Vocês dois têm 30 dias de premium.",
+  },
+  referral_reward_title: {
+    en: "🎉 Welcome! 30 days free unlocked",
+    fr: "🎉 Bienvenue ! 30 jours gratuits débloqués",
+    es: "🎉 ¡Bienvenido! 30 días gratis desbloqueados",
+    pt: "🎉 Bem-vindo! 30 dias grátis desbloqueados",
+  },
+  referral_reward_body: {
+    en: "Thanks to your friend's invite, you both get 30 days of premium free.",
+    fr: "Grâce à l'invitation de votre ami, vous bénéficiez tous les deux de 30 jours de premium gratuits.",
+    es: "Gracias a la invitación de tu amigo, ambos obtienen 30 días de premium gratis.",
+    pt: "Graças ao convite do seu amigo, vocês dois ganham 30 dias de premium grátis.",
+  },
+  referral_confirmed_title: {
+    en: "🎉 Referral confirmed!",
+    fr: "🎉 Parrainage confirmé !",
+    es: "🎉 ¡Referido confirmado!",
+    pt: "🎉 Indicação confirmada!",
+  },
+  referral_confirmed_body: {
+    en: "Someone you invited just subscribed. Check your rewards!",
+    fr: "Une personne que vous avez invitée vient de s'abonner. Consultez vos récompenses !",
+    es: "Alguien a quien invitaste acaba de suscribirse. ¡Revisa tus recompensas!",
+    pt: "Alguém que você convidou acabou de assinar. Confira suas recompensas!",
+  },
+
+  // Member joined
+  member_joined_title: {
+    en: "👥 {name} joined {circle}!",
+    fr: "👥 {name} a rejoint {circle} !",
+    es: "👥 ¡{name} se unió a {circle}!",
+    pt: "👥 {name} entrou em {circle}!",
+  },
+  member_joined_body: {
+    en: "{count} members are now praying together",
+    fr: "{count} membres prient maintenant ensemble",
+    es: "{count} miembros ahora oran juntos",
+    pt: "{count} membros agora oram juntos",
+  },
+
+  // Streak milestone
+  streak_milestone_title: {
+    en: "🔥 {name} hit a {count}-day streak!",
+    fr: "🔥 {name} a atteint {count} jours de suite !",
+    es: "🔥 ¡{name} alcanzó una racha de {count} días!",
+    pt: "🔥 {name} atingiu {count} dias seguidos!",
+  },
+  streak_milestone_body: {
+    en: "Celebrate their dedication in {circle}",
+    fr: "Célébrez leur constance dans {circle}",
+    es: "Celebra su dedicación en {circle}",
+    pt: "Celebre a dedicação deles em {circle}",
+  },
+
+  // Removed from circle
+  removed_from_circle_title: {
+    en: "You've been removed from a circle",
+    fr: "Vous avez été retiré d'un cercle",
+    es: "Has sido eliminado de un círculo",
+    pt: "Você foi removido de um círculo",
+  },
+  removed_from_circle_body: {
+    en: "You've been removed from {circle}.",
+    fr: "Vous avez été retiré de {circle}.",
+    es: "Has sido eliminado de {circle}.",
+    pt: "Você foi removido de {circle}.",
+  },
+
+  // Prayer request (personal — sent to one specific member)
+  prayer_request_personal_title: {
+    en: "🙏 {name} is asking you to pray",
+    fr: "🙏 {name} vous demande de prier",
+    es: "🙏 {name} te pide que ores",
+    pt: "🙏 {name} está pedindo que você ore",
+  },
+  prayer_request_personal_title_anon: {
+    en: "🙏 Someone is asking you to pray",
+    fr: "🙏 Quelqu'un vous demande de prier",
+    es: "🙏 Alguien te pide que ores",
+    pt: "🙏 Alguém está pedindo que você ore",
+  },
+
+  // Prayer request (broadcast to circle)
+  prayer_request_title: {
+    en: "📿 New prayer request in {circle}",
+    fr: "📿 Nouvelle demande de prière dans {circle}",
+    es: "📿 Nueva petición de oración en {circle}",
+    pt: "📿 Novo pedido de oração em {circle}",
+  },
+  prayer_request_body_named: {
+    en: "{name} shared a prayer request",
+    fr: "{name} a partagé une demande de prière",
+    es: "{name} compartió una petición de oración",
+    pt: "{name} compartilhou um pedido de oração",
+  },
+  prayer_request_body_anon: {
+    en: "Someone shared a prayer request",
+    fr: "Quelqu'un a partagé une demande de prière",
+    es: "Alguien compartió una petición de oración",
+    pt: "Alguém compartilhou um pedido de oração",
+  },
+
+  // Prayer request prayed (someone prayed for your request)
+  prayer_request_prayed_title: {
+    en: "🙏 {name} prayed for your request",
+    fr: "🙏 {name} a prié pour votre demande",
+    es: "🙏 {name} oró por tu petición",
+    pt: "🙏 {name} orou pelo seu pedido",
+  },
+
+  // Prayer answered
+  prayer_answered_title: {
+    en: "🙌 Prayer answered!",
+    fr: "🙌 Prière exaucée !",
+    es: "🙌 ¡Oración respondida!",
+    pt: "🙌 Oração atendida!",
+  },
+  prayer_answered_body: {
+    en: "{name}'s prayer was answered. {count} people prayed.",
+    fr: "La prière de {name} a été exaucée. {count} personnes ont prié.",
+    es: "La oración de {name} fue respondida. {count} personas oraron.",
+    pt: "A oração de {name} foi atendida. {count} pessoas oraram.",
+  },
+
+  // Promoted to admin
+  promoted_to_admin_title: {
+    en: "You're now an admin 🙏",
+    fr: "Vous êtes maintenant administrateur 🙏",
+    es: "Ahora eres administrador 🙏",
+    pt: "Agora você é administrador 🙏",
+  },
+  promoted_to_admin_body: {
+    en: "{name} made you an admin of {circle}.",
+    fr: "{name} vous a nommé administrateur de {circle}.",
+    es: "{name} te hizo administrador de {circle}.",
+    pt: "{name} tornou você administrador de {circle}.",
+  },
+
+  // Streak at risk
+  streak_at_risk_title: {
+    en: "Your {count}-day streak is at risk",
+    fr: "Votre série de {count} jours est en danger",
+    es: "Tu racha de {count} días está en riesgo",
+    pt: "Sua sequência de {count} dias está em risco",
+  },
+  streak_at_risk_body: {
+    en: "You haven't prayed today. Don't let your streak slip.",
+    fr: "Vous n'avez pas prié aujourd'hui. Ne laissez pas votre série s'interrompre.",
+    es: "No has orado hoy. No dejes que tu racha se pierda.",
+    pt: "Você não orou hoje. Não deixe sua sequência quebrar.",
+  },
+
+  // Last one standing
+  last_one_standing_title: {
+    en: "Everyone in {circle} prayed today",
+    fr: "Tout le monde dans {circle} a prié aujourd'hui",
+    es: "Todos en {circle} oraron hoy",
+    pt: "Todos em {circle} oraram hoje",
+  },
+  last_one_standing_body: {
+    en: "You're the last one. We're waiting for you.",
+    fr: "Vous êtes le dernier. Nous vous attendons.",
+    es: "Eres el último. Te estamos esperando.",
+    pt: "Você é o último. Estamos esperando você.",
+  },
+};
+
+function t(lang: Lang, key: string, params?: Record<string, string | number>): string {
+  const entry = PUSH_STRINGS[key];
+  if (!entry) return key; // missing key — return raw for easier debugging
+  let s = entry[lang] || entry.en || key;
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      s = s.replace(new RegExp(`\\{${k}\\}`, "g"), String(v));
+    }
+  }
+  return s;
+}
+
+interface LocalizedPushPayload {
+  titleKey: string;
+  bodyKey: string;
+  titleParams?: Record<string, string | number>;
+  bodyParams?: Record<string, string | number>;
+  type: string;
+  circleCode?: string;
+  circleName?: string;
+  extra?: Record<string, any>;
+}
+
+async function pushToUserLocalized(userId: string, p: LocalizedPushPayload): Promise<void> {
+  const lang = await getUserLanguage(userId);
+  const title = t(lang, p.titleKey, p.titleParams);
+  const body = t(lang, p.bodyKey, p.bodyParams);
+  await pushToUser(userId, { title, body, type: p.type, circleCode: p.circleCode, circleName: p.circleName, extra: p.extra });
+}
+
+async function pushToCircleMembersLocalized(circle: StoredCircle, excludeUserId: string, p: LocalizedPushPayload): Promise<void> {
+  const memberIds = circle.members.filter((m) => m.userId !== excludeUserId && !m.notificationsMuted).map((m) => m.userId);
+  for (const uid of memberIds) { pushToUserLocalized(uid, p); }
+}
+
 // v5.8.2 — silent background push for real-time cross-circle sync.
 // Sends content-available:1 to wake iOS app in background so it can refresh
 // the circle data immediately, not wait for the next 30s polling tick.
@@ -244,6 +477,8 @@ async function initDb(): Promise<void> {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_token TEXT`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_token_updated_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT`).catch(() => {});
+    // v5.9.1 — store user's selected app language for server-side push notification localization
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en'`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, streak_count INTEGER DEFAULT 0, highest_streak INTEGER DEFAULT 0, total_prayers INTEGER DEFAULT 0, total_minutes INTEGER DEFAULT 0, last_prayed_date TIMESTAMPTZ, sessions JSONB DEFAULT '[]'::jsonb, preferences JSONB DEFAULT '{}'::jsonb, circle_codes TEXT[] DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_apple_user_id ON users(apple_user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_google_user_id ON users(google_user_id)`);
@@ -389,7 +624,7 @@ app.use("*", async (c, next) => {
 });
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.5.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.9.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -543,6 +778,20 @@ app.get("/api/user/data", async (c) => { const ah = c.req.header("Authorization"
 app.put("/api/user/data", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const b = await c.req.json(); try { await pool.query(`INSERT INTO user_data (user_id,streak_count,highest_streak,total_prayers,total_minutes,last_prayed_date,sessions,preferences,circle_codes,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()) ON CONFLICT (user_id) DO UPDATE SET streak_count=$2,highest_streak=GREATEST(user_data.highest_streak,$3),total_prayers=$4,total_minutes=$5,last_prayed_date=$6,sessions=$7,preferences=$8,circle_codes=$9,updated_at=NOW()`, [u.id, b.streakCount||0, b.highestStreak||0, b.totalPrayers||0, b.totalMinutes||0, b.lastPrayedDate||null, JSON.stringify(b.sessions||[]), JSON.stringify(b.preferences||{}), b.circleCodes||[]]); if (b.userName && b.userName !== u.name) await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [b.userName, u.id]); return c.json({ status: "ok", synced: true }); } catch (e: any) { return c.json({ error: "Sync failed", detail: e.message }, 500); } });
 app.put("/api/user/name", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { name } = await c.req.json(); if (!name?.trim()) return c.json({ error: "Name required" }, 400); await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [name.trim(), u.id]); for (const [, ci] of circles) { const m = ci.members.find(m => m.userId === u.id || m.userId === u.device_user_id); if (m) { m.name = name.trim(); await saveCircleToDb(ci); } } return c.json({ success: true, name: name.trim() }); });
 app.put("/api/user/device-token", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { deviceToken } = await c.req.json(); if (!deviceToken) return c.json({ error: "deviceToken required" }, 400); await pool.query("UPDATE users SET device_token=$1, device_token_updated_at=NOW(), updated_at=NOW() WHERE id=$2", [deviceToken, u.id]); console.log(`[Token] Stored device token for ${u.id.substring(0,8)}… token=${deviceToken.substring(0,12)}…`); return c.json({ success: true }); });
+// v5.9.1 — user language sync so server-side push notifications arrive in the right language
+app.put("/api/user/language", async (c) => {
+  const ah = c.req.header("Authorization");
+  if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401);
+  const u = await getUserByToken(ah.replace("Bearer ", ""));
+  if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const { language } = await c.req.json();
+  const raw = (language || "").toString().toLowerCase();
+  const allowed: Lang[] = ["en", "fr", "es", "pt"];
+  const lang: Lang = (allowed as string[]).includes(raw) ? (raw as Lang) : "en";
+  await pool.query("UPDATE users SET language=$1, updated_at=NOW() WHERE id=$2", [lang, u.id]);
+  console.log(`[Lang] Set language=${lang} for user ${u.id.substring(0,8)}…`);
+  return c.json({ success: true, language: lang });
+});
 
 app.put("/api/user/avatar", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
@@ -624,8 +873,8 @@ app.post("/webhooks/revenuecat", async (c) => {
               else console.error(`[Referral] Grant referred failed: ${r2.status} ${await r2.text().catch(() => "")}`);
             } catch (err: any) { console.error("[Referral] Grant referred error:", err.message); }
           }
-          pushToUser(referrerId, { title: "🎉 You both got 30 days free!", body: "Your friend just subscribed. You've both been upgraded to 30 days of premium.", type: "referral_confirmed" });
-          pushToUser(resolvedUid, { title: "🎉 Welcome! 30 days free unlocked", body: "Thanks to your friend's invite, you both get 30 days of premium free.", type: "referral_reward" });
+          pushToUserLocalized(referrerId, { titleKey: "referral_both_title", bodyKey: "referral_both_body", type: "referral_confirmed" });
+          pushToUserLocalized(resolvedUid, { titleKey: "referral_reward_title", bodyKey: "referral_reward_body", type: "referral_reward" });
           trackEvent(referrerId, "referral_30d_granted", { referred_user_id: resolvedUid });
           trackEvent(resolvedUid, "referral_30d_granted_referred", { referrer_user_id: referrerId });
         }
@@ -640,7 +889,7 @@ app.post("/webhooks/revenuecat", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const code = generateCircleCode(); const ci: StoredCircle = { id: randomUUID(), name: b.name || "Prayer Circle", code, emoji: b.emoji || "cross.fill", creatorUserId: b.userId, members: [{ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString(), role: "creator" }], prayerRequests: [], createdAt: new Date().toISOString() }; await saveCircleToDb(ci); trackEvent(b.userId, "circle_created", { circle_id: ci.id, circle_code: code, circle_name: ci.name }); return c.json({ circle: ci }, 201); });
 app.get("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); try { const memberIds = ci.members.map(m => m.userId).filter(Boolean); if (memberIds.length > 0) { const avatars = await pool.query("SELECT id, device_user_id, avatar_url, name FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); const avatarMap: Record<string, { avatar_url: string | null; name: string }> = {}; for (const row of avatars.rows) { avatarMap[row.id] = { avatar_url: row.avatar_url, name: row.name }; if (row.device_user_id) avatarMap[row.device_user_id] = { avatar_url: row.avatar_url, name: row.name }; } const enriched = { ...ci, members: ci.members.map(m => ({ ...m, avatarUrl: avatarMap[m.userId]?.avatar_url || m.avatarUrl || null, name: avatarMap[m.userId]?.name || m.name })) }; return c.json({ circle: enriched }); } } catch (err: any) { console.error("[Circle] Avatar enrich error:", err.message); } return c.json({ circle: ci }); });
-app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); pushToUser(ci.creatorUserId, { title: "👥 " + (b.userName || "Someone") + " joined " + ci.name + "!", body: ci.members.length + " members are now praying together", type: "member_joined", circleCode: code, circleName: ci.name }); return c.json({ circle: ci }); });
+app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString() }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); pushToUserLocalized(ci.creatorUserId, { titleKey: "member_joined_title", titleParams: { name: b.userName || "Someone", circle: ci.name }, bodyKey: "member_joined_body", bodyParams: { count: ci.members.length }, type: "member_joined", circleCode: code, circleName: ci.name }); return c.json({ circle: ci }); });
 app.put("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (b.name) ci.name = b.name; if (b.emoji) ci.emoji = b.emoji; await saveCircleToDb(ci); return c.json({ circle: ci }); });
 
 // C4: Circle avatar upload
@@ -725,7 +974,7 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
   if (prayedStateChanged) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); }
   if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) {
     trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() });
-    pushToCircleMembers(ci, c.req.param("userId"), { title: "🔥 " + m.name + " hit a " + b.streakCount + "-day streak!", body: "Celebrate their dedication in " + ci.name, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { memberName: m.name, streakCount: b.streakCount } });
+    pushToCircleMembersLocalized(ci, c.req.param("userId"), { titleKey: "streak_milestone_title", titleParams: { name: m.name, count: b.streakCount }, bodyKey: "streak_milestone_body", bodyParams: { circle: ci.name }, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { memberName: m.name, streakCount: b.streakCount } });
   }
   return c.json({ circle: ci });
 });
@@ -743,7 +992,7 @@ app.delete("/api/circles/:code/members/:userId", async (c) => {
         ci.members = ci.members.filter(m => m.userId !== uid);
         trackEvent(uid, "circle_removed_by_admin", { circle_code: code, removed_by: u.id });
         ci.members.length === 0 ? await deleteCircleFromDb(code) : await saveCircleToDb(ci);
-        pushToUser(uid, { title: "You've been removed from a circle", body: `You've been removed from ${ci.name}.`, type: "removed_from_circle", circleCode: code, circleName: ci.name });
+        pushToUserLocalized(uid, { titleKey: "removed_from_circle_title", bodyKey: "removed_from_circle_body", bodyParams: { circle: ci.name }, type: "removed_from_circle", circleCode: code, circleName: ci.name });
         return c.json({ success: true });
       }
     }
@@ -825,10 +1074,18 @@ app.post("/api/circles/:code/prayer-requests", async (c) => {
   if (targetType === "personal" && targetUserId) {
     // Personal request — only notify the target
     const targetMember = ci.members.find(m => m.userId === targetUserId);
-    pushToUser(targetUserId, { title: "🙏 " + (b.isAnonymous ? "Someone" : (b.userName || "Someone")) + " is asking you to pray", body: requestText.length > 60 ? requestText.substring(0, 60) + "..." : requestText, type: "prayer_request_personal", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: reqId, senderUserId: b.userId, senderName: b.userName || "Someone" } });
+    // v5.9.1 — title is translated to recipient's language; body stays as author-written text
+    (async () => {
+      try {
+        const lang = await getUserLanguage(targetUserId);
+        const title = t(lang, b.isAnonymous ? "prayer_request_personal_title_anon" : "prayer_request_personal_title", { name: b.userName || "Someone" });
+        const body = requestText.length > 60 ? requestText.substring(0, 60) + "..." : requestText;
+        await pushToUser(targetUserId, { title, body, type: "prayer_request_personal", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: reqId, senderUserId: b.userId, senderName: b.userName || "Someone" } });
+      } catch {}
+    })();
   } else {
     // Circle-wide request — notify all members
-    pushToCircleMembers(ci, b.userId, { title: "📿 New prayer request in " + ci.name, body: b.isAnonymous ? "Someone shared a prayer request" : (b.userName || "Someone") + " shared a prayer request", type: "prayer_request", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: reqId } });
+    pushToCircleMembersLocalized(ci, b.userId, { titleKey: "prayer_request_title", titleParams: { circle: ci.name }, bodyKey: b.isAnonymous ? "prayer_request_body_anon" : "prayer_request_body_named", bodyParams: { name: b.userName || "Someone" }, type: "prayer_request", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: reqId } });
   }
   // Async Lumi prayer generation (only for user-written requests, not auto-generated nudges)
   if (GEMINI_API_KEY && isGeminiAvailable() && b.text && b.text.trim().length > 10) {
@@ -871,7 +1128,15 @@ app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => {
     if (req.requesterUserId !== b.userId) {
       const prayerName = ci.members.find(m => m.userId === b.userId)?.name || "Someone";
       // Notify the requester with read receipt
-      pushToUser(req.requesterUserId, { title: "🙏 " + prayerName + " prayed for your request", body: req.text.length > 60 ? req.text.substring(0, 60) + "..." : req.text, type: "prayer_request_prayed", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: c.req.param("rid"), prayerName, actedOn: true } });
+      // v5.9.1 — translate title to requester's language; keep body as their own request text
+      (async () => {
+        try {
+          const lang = await getUserLanguage(req.requesterUserId);
+          const title = t(lang, "prayer_request_prayed_title", { name: prayerName });
+          const body = req.text.length > 60 ? req.text.substring(0, 60) + "..." : req.text;
+          await pushToUser(req.requesterUserId, { title, body, type: "prayer_request_prayed", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: c.req.param("rid"), prayerName, actedOn: true } });
+        } catch {}
+      })();
       // Update the sender's notification with "prayed" status
       try { await pool.query("UPDATE notifications SET data = data || $1::jsonb WHERE user_id=$2 AND type IN ('prayer_request','prayer_request_personal') AND data->>'requestId'=$3 ORDER BY created_at DESC LIMIT 1", [JSON.stringify({ recipientPrayed: true, prayedByName: prayerName }), req.requesterUserId, c.req.param("rid")]); } catch {}
     }
@@ -893,7 +1158,7 @@ app.put("/api/circles/:code/prayer-requests/:rid/answered", async (c) => {
   trackEvent(u.id, "prayer_request_answered", { circle_code: c.req.param("code").toUpperCase(), prayer_count: req.prayedByUserIds.length });
   // Notify circle members that the prayer was answered
   const requesterName = req.isAnonymous ? "Someone" : req.requesterName;
-  pushToCircleMembers(ci, u.id, { title: "🙌 Prayer answered!", body: requesterName + "'s prayer was answered. " + req.prayedByUserIds.length + " people prayed.", type: "prayer_answered", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: c.req.param("rid") } });
+  pushToCircleMembersLocalized(ci, u.id, { titleKey: "prayer_answered_title", bodyKey: "prayer_answered_body", bodyParams: { name: requesterName, count: req.prayedByUserIds.length }, type: "prayer_answered", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: c.req.param("rid") } });
   return c.json({ success: true, request: req });
 });
 app.get("/api/circles/:code/info", (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const cr = ci.members.find(m => m.userId === ci.creatorUserId); return c.json({ name: ci.name, emoji: ci.emoji, memberCount: ci.members.length, creatorName: cr?.name || null }); });
@@ -934,7 +1199,7 @@ app.post("/api/circles/:code/members/:userId/promote", async (c) => {
   m.role = "admin"; m.canPost = true;
   await saveCircleToDb(ci);
   trackEvent(u.id, "circle_member_promoted", { circle_code: code, target_user_id: targetId });
-  pushToUser(targetId, { title: "You're now an admin 🙏", body: `${u.name || "Someone"} made you an admin of ${ci.name}.`, type: "promoted_to_admin", circleCode: code, circleName: ci.name });
+  pushToUserLocalized(targetId, { titleKey: "promoted_to_admin_title", bodyKey: "promoted_to_admin_body", bodyParams: { name: u.name || "Someone", circle: ci.name }, type: "promoted_to_admin", circleCode: code, circleName: ci.name });
   return c.json({ userId: targetId, role: "admin" });
 });
 
@@ -998,7 +1263,7 @@ app.post("/api/invites/:token/accept", async (c) => {
     ci.members.push({ userId: u.id, name: u.name || "", streakCount: 0, lastPrayedDate: null, joinedAt: new Date().toISOString() });
     await saveCircleToDb(ci);
     trackEvent(u.id, "circle_invite_accepted", { circle_code: inv.circle_code, circle_name: ci.name, invite_token: token });
-    pushToUser(ci.creatorUserId, { title: "👥 " + (u.name || "Someone") + " joined " + ci.name + "!", body: ci.members.length + " members praying together", type: "member_joined", circleCode: inv.circle_code, circleName: ci.name, extra: { memberName: u.name || "Someone" } });
+    pushToUserLocalized(ci.creatorUserId, { titleKey: "member_joined_title", titleParams: { name: u.name || "Someone", circle: ci.name }, bodyKey: "member_joined_body", bodyParams: { count: ci.members.length }, type: "member_joined", circleCode: inv.circle_code, circleName: ci.name, extra: { memberName: u.name || "Someone" } });
   }
   await pool.query("UPDATE invite_tokens SET status='accepted', accepted_by_user_id=$1, accepted_at=NOW() WHERE token=$2", [u.id, token]);
   return c.json({ circleCode: inv.circle_code, circleName: ci.name });
@@ -1172,7 +1437,7 @@ app.get("/api/referrals/validate/:code", async (c) => {
 app.get("/api/referrals/me", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const codeResult = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]); const code = codeResult.rows[0]?.code || null; const referrals = await pool.query("SELECT id, referred_user_id, status, created_at, confirmed_at FROM referrals WHERE referrer_user_id=$1 ORDER BY created_at DESC", [u.id]); const enriched = []; for (const ref of referrals.rows) { let name = null; if (ref.referred_user_id) { const usr = await pool.query("SELECT name FROM users WHERE id=$1", [ref.referred_user_id]); name = usr.rows[0]?.name || null; } enriched.push({ ...ref, referred_name: name }); } const confirmedCount = referrals.rows.filter((r: any) => r.status === "confirmed").length; return c.json({ code, link: code ? `https://pramen.app/ref/${code}` : null, referrals: enriched, confirmedCount }); });
 app.post("/api/referrals/generate", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const existing = await pool.query("SELECT code FROM referral_codes WHERE user_id=$1", [u.id]); if (existing.rows[0]) return c.json({ code: existing.rows[0].code, link: `https://pramen.app/ref/${existing.rows[0].code}` }); let code = ""; for (let attempt = 0; attempt < 10; attempt++) { code = generateReferralCode(u.name || "PRAY"); const collision = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [code]); if (collision.rows.length === 0) break; } await pool.query("INSERT INTO referral_codes (user_id, code) VALUES ($1, $2)", [u.id, code]); trackEvent(u.id, "referral_code_generated", { code }); return c.json({ code, link: `https://pramen.app/ref/${code}` }); });
 app.post("/api/referrals/track", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const { referralCode, newUserEmail } = await c.req.json(); if (!referralCode) return c.json({ error: "referralCode required" }, 400); const referrer = await pool.query("SELECT user_id FROM referral_codes WHERE code=$1", [referralCode.toUpperCase()]); if (!referrer.rows[0]) return c.json({ error: "Invalid referral code" }, 404); const referrerId = referrer.rows[0].user_id; if (u.id === referrerId) return c.json({ error: "You cannot refer yourself." }, 422); const dup = await pool.query("SELECT id FROM referrals WHERE referrer_user_id=$1 AND referred_user_id=$2", [referrerId, u.id]); if (dup.rows.length > 0) return c.json({ error: "This referral has already been tracked." }, 409); const r = await pool.query("INSERT INTO referrals (referrer_user_id, referred_user_id, referred_email) VALUES ($1,$2,$3) RETURNING id", [referrerId, u.id, newUserEmail || null]); trackEvent(referrerId, "referral_tracked", { referred_user_id: u.id, code: referralCode }); const now = new Date(); const te30 = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); await pool.query("UPDATE users SET trial_end_date=$1, updated_at=NOW() WHERE id=$2 AND subscription_status='trial'", [te30, u.id]); console.log(`[Referral] Extended trial to 30d for ${u.id.substring(0, 8)}… (code: ${referralCode})`); return c.json({ referralId: r.rows[0].id, trialDays: 30, discountApplied: true }); });
-app.post("/api/referrals/confirm", async (c) => { const sec = c.req.header("X-Admin-Secret"); if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const { referredUserId } = await c.req.json(); if (!referredUserId) return c.json({ error: "referredUserId required" }, 400); const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [referredUserId]); if (ref.rows[0]) { pushToUser(ref.rows[0].referrer_user_id, { title: "🎉 Referral confirmed!", body: "Someone you invited just subscribed. Check your rewards!", type: "referral_confirmed" }); } return c.json({ confirmed: ref.rows.length }); });
+app.post("/api/referrals/confirm", async (c) => { const sec = c.req.header("X-Admin-Secret"); if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const { referredUserId } = await c.req.json(); if (!referredUserId) return c.json({ error: "referredUserId required" }, 400); const ref = await pool.query("UPDATE referrals SET status='confirmed', confirmed_at=NOW() WHERE referred_user_id=$1 AND status='pending' RETURNING referrer_user_id", [referredUserId]); if (ref.rows[0]) { pushToUserLocalized(ref.rows[0].referrer_user_id, { titleKey: "referral_confirmed_title", bodyKey: "referral_confirmed_body", type: "referral_confirmed" }); } return c.json({ confirmed: ref.rows.length }); });
 app.post("/api/referrals/reverse", async (c) => { const sec = c.req.header("X-Admin-Secret"); if (sec !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const { referredUserId } = await c.req.json(); if (!referredUserId) return c.json({ error: "referredUserId required" }, 400); await pool.query("UPDATE referrals SET status='reversed', reversed_at=NOW() WHERE referred_user_id=$1 AND status='confirmed'", [referredUserId]); return c.json({ reversed: true }); });
 app.get("/api/referrals/circle/:code", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ count: 0 }); const memberIds = ci.members.map(m => m.userId); const result = await pool.query("SELECT COUNT(*) as count FROM referrals WHERE referrer_user_id=$1 AND referred_user_id = ANY($2) AND status='confirmed'", [u.id, memberIds]); return c.json({ count: parseInt(result.rows[0]?.count || "0") }); });
 app.post("/api/referrals/invite-batch", async (c) => {
@@ -1294,9 +1559,10 @@ async function checkStreakAtRisk(): Promise<void> {
     );
     for (const row of result.rows) {
       if (row.streak_count >= 3) { // Only nudge if streak is worth protecting
-        pushToUser(row.user_id, {
-          title: "Your " + row.streak_count + "-day streak is at risk",
-          body: "You haven't prayed today. Don't let your streak slip.",
+        pushToUserLocalized(row.user_id, {
+          titleKey: "streak_at_risk_title",
+          titleParams: { count: row.streak_count },
+          bodyKey: "streak_at_risk_body",
           type: "streak_at_risk"
         });
         trackEvent(row.user_id, "streak_at_risk_push", { streak_count: row.streak_count });
@@ -1335,9 +1601,10 @@ async function checkLastOneStanding(circle: StoredCircle, prayerUserId: string):
     } catch (err) {
       // if throttle table not ready, fall through to send (conservative first-time behavior)
     }
-    pushToUser(lastOne.userId, {
-      title: "Everyone in " + circle.name + " prayed today",
-      body: "You're the last one. We're waiting for you.",
+    pushToUserLocalized(lastOne.userId, {
+      titleKey: "last_one_standing_title",
+      titleParams: { circle: circle.name },
+      bodyKey: "last_one_standing_body",
       type: "last_one_standing",
       circleCode: circle.code,
       circleName: circle.name
