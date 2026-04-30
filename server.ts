@@ -775,6 +775,16 @@ app.post("/api/auth/google", async (c) => {
   } catch (e: any) { return c.json({ error: "Auth failed", detail: e.message }, 500); }
 });
 
+// Admin: migrate circle membership from old device ID to server user ID
+app.post("/api/admin/migrate-circles", async (c) => {
+  if (c.req.header("X-Admin-Secret") !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const { oldUserId, newUserId, userName } = await c.req.json();
+  if (!oldUserId || !newUserId) return c.json({ error: "oldUserId and newUserId required" }, 400);
+  await migrateCircleMembership(oldUserId, newUserId, userName || "");
+  const codes = getUserCircleCodes(newUserId);
+  return c.json({ success: true, migratedCircleCodes: codes });
+});
+
 app.put("/api/user/email-opt-in", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { optIn } = await c.req.json(); await pool.query("UPDATE users SET email_opt_in=$1,updated_at=NOW() WHERE id=$2", [!!optIn, u.id]); if (optIn) trackEvent(u.id, "email_opt_in", { email: u.email }); return c.json({ success: true }); });
 app.get("/api/admin/email-list", async (c) => { if (c.req.header("X-Admin-Secret") !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const r = await pool.query("SELECT email,name,auth_provider,created_at FROM users WHERE email_opt_in=true AND email IS NOT NULL AND email NOT LIKE '%privaterelay.appleid.com' ORDER BY created_at DESC"); return c.json({ count: r.rows.length, emails: r.rows }); });
 app.post("/api/auth/verify", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ valid: false }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ valid: false }, 401); return c.json({ valid: true, user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id) }); });
