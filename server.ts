@@ -731,7 +731,7 @@ app.post("/api/auth/apple", async (c) => {
       if (email && !user.email) { await pool.query("UPDATE users SET email=$1,updated_at=NOW() WHERE id=$2", [email, user.id]); user.email = email; }
       oldDeviceUserId = user.device_user_id;
       if (deviceUserId && deviceUserId !== user.device_user_id) {
-        await migrateCircleMembership(user.device_user_id, user.id, user.name || "");
+        if (user.device_user_id) await migrateCircleMembership(user.device_user_id, user.id, user.name || "");
         await pool.query("UPDATE users SET device_user_id=$1,updated_at=NOW() WHERE id=$2", [deviceUserId, user.id]);
       }
     } else {
@@ -742,8 +742,8 @@ app.post("/api/auth/apple", async (c) => {
       user = { id: userId, apple_user_id: appleUserId, email, name: userName, auth_token: authToken, device_user_id: deviceUserId, trial_start_date: ts, trial_end_date: te, subscription_status: "trial" };
       trackEvent(userId, "user_signed_up", { auth_provider: "apple", has_email: !!email, has_device_migration: !!deviceUserId });
     }
-    if (deviceUserId && isNewUser) await migrateCircleMembership(deviceUserId, user.id, user.name);
-    return c.json({ user: { id: user.id, name: user.name, email: user.email, authToken: user.auth_token, trialStartDate: user.trial_start_date, trialEndDate: user.trial_end_date, subscriptionStatus: user.subscription_status, avatarUrl: user.avatar_url || null, isNewUser }, data: await getUserData(user.id), circleCodes: getUserCircleCodes(user.id, user.device_user_id, oldDeviceUserId) });
+    if (deviceUserId && isNewUser) await migrateCircleMembership(deviceUserId, user.id, user.name || "");
+    return c.json({ user: { id: user.id, name: user.name, email: user.email, authToken: user.auth_token, trialStartDate: user.trial_start_date, trialEndDate: user.trial_end_date, subscriptionStatus: user.subscription_status, avatarUrl: user.avatar_url || null, isNewUser }, data: await getUserData(user.id), circleCodes: getUserCircleCodes(user.id, user.device_user_id || "", oldDeviceUserId || "") });
   } catch (e: any) { return c.json({ error: "Auth failed", detail: e.message }, 500); }
 });
 
@@ -759,7 +759,7 @@ app.post("/api/auth/google", async (c) => {
       if (fullName && !user.name) { await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [fullName, user.id]); user.name = fullName; }
       oldDeviceUserIdG = user.device_user_id;
       if (deviceUserId && deviceUserId !== user.device_user_id) {
-        await migrateCircleMembership(user.device_user_id, user.id, user.name || "");
+        if (user.device_user_id) await migrateCircleMembership(user.device_user_id, user.id, user.name || "");
         await pool.query("UPDATE users SET device_user_id=$1,updated_at=NOW() WHERE id=$2", [deviceUserId, user.id]);
       }
     } else {
@@ -770,8 +770,8 @@ app.post("/api/auth/google", async (c) => {
       user = { id: userId, google_user_id: googleUserId, email, name: userName, auth_token: authToken, device_user_id: deviceUserId, trial_start_date: ts, trial_end_date: te, subscription_status: "trial" };
       trackEvent(userId, "user_signed_up", { auth_provider: "google", has_email: true, has_device_migration: !!deviceUserId });
     }
-    if (deviceUserId && isNewUser) await migrateCircleMembership(deviceUserId, user.id, user.name);
-    return c.json({ user: { id: user.id, name: user.name, email: user.email, authToken: user.auth_token, trialStartDate: user.trial_start_date, trialEndDate: user.trial_end_date, subscriptionStatus: user.subscription_status, avatarUrl: user.avatar_url || null, isNewUser }, data: await getUserData(user.id), circleCodes: getUserCircleCodes(user.id, user.device_user_id, oldDeviceUserIdG) });
+    if (deviceUserId && isNewUser) await migrateCircleMembership(deviceUserId, user.id, user.name || "");
+    return c.json({ user: { id: user.id, name: user.name, email: user.email, authToken: user.auth_token, trialStartDate: user.trial_start_date, trialEndDate: user.trial_end_date, subscriptionStatus: user.subscription_status, avatarUrl: user.avatar_url || null, isNewUser }, data: await getUserData(user.id), circleCodes: getUserCircleCodes(user.id, user.device_user_id || "", oldDeviceUserIdG || "") });
   } catch (e: any) { return c.json({ error: "Auth failed", detail: e.message }, 500); }
 });
 
