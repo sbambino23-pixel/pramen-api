@@ -725,10 +725,15 @@ app.post("/api/auth/apple", async (c) => {
     const body = await c.req.json(); const { appleUserId, email, fullName, identityToken, deviceUserId } = body;
     if (!appleUserId) return c.json({ error: "appleUserId required" }, 400);
     let user = await getUserByAppleId(appleUserId); let isNewUser = false;
+    let oldDeviceUserId: string | null = null;
     if (user) {
       if (fullName && !user.name) { await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [fullName, user.id]); user.name = fullName; }
       if (email && !user.email) { await pool.query("UPDATE users SET email=$1,updated_at=NOW() WHERE id=$2", [email, user.id]); user.email = email; }
-      if (deviceUserId && deviceUserId !== user.device_user_id) await pool.query("UPDATE users SET device_user_id=$1,updated_at=NOW() WHERE id=$2", [deviceUserId, user.id]);
+      oldDeviceUserId = user.device_user_id;
+      if (deviceUserId && deviceUserId !== user.device_user_id) {
+        await migrateCircleMembership(user.device_user_id, user.id, user.name || "");
+        await pool.query("UPDATE users SET device_user_id=$1,updated_at=NOW() WHERE id=$2", [deviceUserId, user.id]);
+      }
     } else {
       isNewUser = true; const authToken = generateAuthToken(); const userId = randomUUID(); const userName = fullName || "";
       const ts = new Date(); const te = new Date(ts.getTime() + 7*24*60*60*1000);
@@ -738,7 +743,7 @@ app.post("/api/auth/apple", async (c) => {
       trackEvent(userId, "user_signed_up", { auth_provider: "apple", has_email: !!email, has_device_migration: !!deviceUserId });
     }
     if (deviceUserId && isNewUser) await migrateCircleMembership(deviceUserId, user.id, user.name);
-    return c.json({ user: { id: user.id, name: user.name, email: user.email, authToken: user.auth_token, trialStartDate: user.trial_start_date, trialEndDate: user.trial_end_date, subscriptionStatus: user.subscription_status, avatarUrl: user.avatar_url || null, isNewUser }, data: await getUserData(user.id), circleCodes: getUserCircleCodes(user.id, user.device_user_id) });
+    return c.json({ user: { id: user.id, name: user.name, email: user.email, authToken: user.auth_token, trialStartDate: user.trial_start_date, trialEndDate: user.trial_end_date, subscriptionStatus: user.subscription_status, avatarUrl: user.avatar_url || null, isNewUser }, data: await getUserData(user.id), circleCodes: getUserCircleCodes(user.id, user.device_user_id, oldDeviceUserId) });
   } catch (e: any) { return c.json({ error: "Auth failed", detail: e.message }, 500); }
 });
 
@@ -749,9 +754,14 @@ app.post("/api/auth/google", async (c) => {
     let verified = !idToken; if (idToken) { try { const tr = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`); if (tr.ok) { const td = (await tr.json()) as any; if (td.sub === googleUserId) verified = true; } } catch {} }
     let user = await getUserByGoogleId(googleUserId); let isNewUser = false;
     if (!user) { const ex = await getUserByEmail(email); if (ex) { await pool.query("UPDATE users SET google_user_id=$1,auth_provider=CASE WHEN auth_provider='apple' THEN 'apple+google' ELSE 'google' END,updated_at=NOW() WHERE id=$2", [googleUserId, ex.id]); user = ex; } }
+    let oldDeviceUserIdG: string | null = null;
     if (user) {
       if (fullName && !user.name) { await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [fullName, user.id]); user.name = fullName; }
-      if (deviceUserId && deviceUserId !== user.device_user_id) await pool.query("UPDATE users SET device_user_id=$1,updated_at=NOW() WHERE id=$2", [deviceUserId, user.id]);
+      oldDeviceUserIdG = user.device_user_id;
+      if (deviceUserId && deviceUserId !== user.device_user_id) {
+        await migrateCircleMembership(user.device_user_id, user.id, user.name || "");
+        await pool.query("UPDATE users SET device_user_id=$1,updated_at=NOW() WHERE id=$2", [deviceUserId, user.id]);
+      }
     } else {
       isNewUser = true; const authToken = generateAuthToken(); const userId = randomUUID(); const userName = fullName || email.split("@")[0];
       const ts = new Date(); const te = new Date(ts.getTime() + 7*24*60*60*1000);
@@ -761,7 +771,7 @@ app.post("/api/auth/google", async (c) => {
       trackEvent(userId, "user_signed_up", { auth_provider: "google", has_email: true, has_device_migration: !!deviceUserId });
     }
     if (deviceUserId && isNewUser) await migrateCircleMembership(deviceUserId, user.id, user.name);
-    return c.json({ user: { id: user.id, name: user.name, email: user.email, authToken: user.auth_token, trialStartDate: user.trial_start_date, trialEndDate: user.trial_end_date, subscriptionStatus: user.subscription_status, avatarUrl: user.avatar_url || null, isNewUser }, data: await getUserData(user.id), circleCodes: getUserCircleCodes(user.id, user.device_user_id) });
+    return c.json({ user: { id: user.id, name: user.name, email: user.email, authToken: user.auth_token, trialStartDate: user.trial_start_date, trialEndDate: user.trial_end_date, subscriptionStatus: user.subscription_status, avatarUrl: user.avatar_url || null, isNewUser }, data: await getUserData(user.id), circleCodes: getUserCircleCodes(user.id, user.device_user_id, oldDeviceUserIdG) });
   } catch (e: any) { return c.json({ error: "Auth failed", detail: e.message }, 500); }
 });
 
