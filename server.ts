@@ -48,6 +48,8 @@ const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "";
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || "";
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || "pramen-media";
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL || "";
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "AIzaSyD0WUdkjl_HBAoaojLM073AK0CuFgb5rro";
+const YT_CHANNEL_HANDLE = "fatherjohnprays";
 
 // ─── R2 Storage ──────────────────────────────────────────────────────
 const s3 = R2_ACCOUNT_ID ? new S3Client({ region: "auto", endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`, credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY } }) : null;
@@ -537,6 +539,8 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_prayer_ask_log_lookup ON prayer_ask_log (circle_code, asker_user_id, day)`);
     // v5.8.3 — throttle table for last-one-standing and similar once-per-day pushes
     await client.query(`CREATE TABLE IF NOT EXISTS push_throttle (throttle_key TEXT PRIMARY KEY, sent_date TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE TABLE IF NOT EXISTS daily_ad_metrics (date DATE NOT NULL, channel TEXT NOT NULL, campaign TEXT NOT NULL DEFAULT 'all', spend NUMERIC DEFAULT 0, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, installs INTEGER DEFAULT 0, trials INTEGER DEFAULT 0, subscriptions INTEGER DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (date, channel, campaign))`);
+    await client.query(`CREATE TABLE IF NOT EXISTS daily_organic_metrics (date DATE NOT NULL, channel TEXT NOT NULL, views INTEGER DEFAULT 0, subscribers_gained INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, watch_hours REAL DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (date, channel))`);
     console.log("DB initialized (v5.9.4 — referral system: /api/referrals/validate/:code, /ref/ deep-link path, link format updated)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
@@ -1782,6 +1786,176 @@ async function pullAppleAnalytics(): Promise<any> { const token = generateASCTok
 app.post("/api/dashboard/appstore/seed", async (c) => { const secret = c.req.query("key") || c.req.header("X-Dashboard-Key"); if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401); try { const body = await c.req.json(); const { metrics } = body; if (!Array.isArray(metrics)) return c.json({ error: "metrics array required" }, 400); let stored = 0; for (const m of metrics) { if (!m.date) continue; await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,proceeds,updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=$2,product_page_views=$3,app_units=$4,conversion_rate=$5,proceeds=$6,updated_at=NOW()`, [m.date, m.impressions||0, m.product_page_views||0, m.app_units||0, m.conversion_rate||0, m.proceeds||0]); stored++; } return c.json({ status: "ok", stored }); } catch (e: any) { return c.json({ error: e.message }, 500); } });
 
 app.get("/api/dashboard/appstore", async (c) => { const secret = c.req.query("key") || c.req.header("X-Dashboard-Key"); if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401); const token = generateASCToken(); if (!token) return c.json({ connected: false, error: "Apple API not configured" }); try { const appRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}`, { headers: { Authorization: `Bearer ${token}` } }); if (!appRes.ok) return c.json({ connected: false, error: "Apple API " + appRes.status }); const appData = (await appRes.json()) as any; const analytics = await pullAppleAnalytics(); const stored = await pool.query(`SELECT * FROM daily_app_store_metrics ORDER BY date DESC LIMIT 30`).catch(() => ({ rows: [] })); return c.json({ connected: true, app: { name: appData.data?.attributes?.name, bundleId: appData.data?.attributes?.bundleId }, analytics: analytics, daily_metrics: stored.rows, timestamp: new Date().toISOString() }); } catch (e: any) { return c.json({ connected: false, error: e.message }); } });
+
+// ═══════════════════════════════════════════════════════════════════
+// ─── GROWTH / DECISION DASHBOARD ────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+
+// POST /api/dashboard/ad-metrics — upsert daily ad spend rows
+app.post("/api/dashboard/ad-metrics", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const body = await c.req.json();
+    const entries: any[] = Array.isArray(body) ? body : body.entries || [];
+    if (!entries.length) return c.json({ error: "entries array required" }, 400);
+    let stored = 0;
+    for (const e of entries) {
+      if (!e.date || !e.channel) continue;
+      await pool.query(
+        `INSERT INTO daily_ad_metrics (date,channel,campaign,spend,impressions,clicks,installs,trials,subscriptions,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()) ON CONFLICT (date,channel,campaign) DO UPDATE SET spend=$4,impressions=$5,clicks=$6,installs=$7,trials=$8,subscriptions=$9,updated_at=NOW()`,
+        [e.date, e.channel, e.campaign||"all", e.spend||0, e.impressions||0, e.clicks||0, e.installs||0, e.trials||0, e.subscriptions||0]
+      );
+      stored++;
+    }
+    return c.json({ status: "ok", stored });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// GET /api/dashboard/growth — main decision dashboard
+app.get("/api/dashboard/growth", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    // a) Acquisition — last 30 days
+    const adRows = await pool.query(`SELECT channel, SUM(spend) as total_spend, SUM(installs) as total_installs FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY channel`).catch(() => ({ rows: [] }));
+    const orgAcq = await pool.query(`SELECT SUM(impressions) as impressions, SUM(product_page_views) as page_views, SUM(app_units) as units FROM daily_app_store_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days'`).catch(() => ({ rows: [{}] }));
+    const totalAdSpend = adRows.rows.reduce((s: number, r: any) => s + parseFloat(r.total_spend||0), 0);
+    const totalInstalls = adRows.rows.reduce((s: number, r: any) => s + parseInt(r.total_installs||0), 0);
+    const blendedCPI = totalInstalls > 0 ? totalAdSpend / totalInstalls : null;
+    const acquisitionByChannel = adRows.rows.map((r: any) => ({ channel: r.channel, spend: parseFloat(r.total_spend||0), installs: parseInt(r.total_installs||0), cpi: parseInt(r.total_installs||0) > 0 ? parseFloat(r.total_spend||0) / parseInt(r.total_installs||0) : null }));
+
+    // b) Unit economics
+    const revLast30 = await pool.query(`SELECT SUM(new_subscribers) as new_subs, SUM(cancellations) as cancels, SUM(revenue_gross) as gross FROM daily_revenue WHERE date >= CURRENT_DATE - INTERVAL '30 days'`).catch(() => ({ rows: [{}] }));
+    const revRow = revLast30.rows[0] || {};
+    const totalNewPayingSubs = parseInt(revRow.new_subs||0);
+    const totalCancels = parseInt(revRow.cancels||0);
+    const totalRevenue30d = parseFloat(revRow.gross||0);
+    const subsStatus = await pool.query(`SELECT subscription_status, COUNT(*) as count FROM users GROUP BY subscription_status`).catch(() => ({ rows: [] }));
+    const activeSubs = subsStatus.rows.filter((r: any) => r.subscription_status === "active" || r.subscription_status === "lifetime").reduce((s: number, r: any) => s + parseInt(r.count||0), 0);
+    const monthlyChurnRate = activeSubs > 0 ? totalCancels / activeSubs : null;
+    // plan breakdown for avg revenue per sub
+    const planRevRows = await pool.query(`SELECT plan, COUNT(*) as count FROM revenue_events WHERE event_type='subscription_started' AND created_at >= CURRENT_DATE - INTERVAL '90 days' GROUP BY plan`).catch(() => ({ rows: [] }));
+    const planCounts: Record<string,number> = {}; for (const r of planRevRows.rows) planCounts[r.plan] = parseInt(r.count||0);
+    const planPrices: Record<string,number> = { monthly: 3.99, yearly: 29.99/12, lifetime: 149.99 };
+    let totalPlanRevenue = 0; let totalPlanCount = 0;
+    for (const [plan, cnt] of Object.entries(planCounts)) { totalPlanRevenue += (planPrices[plan]||0) * cnt; totalPlanCount += cnt; }
+    const avgRevenuePerSub = totalPlanCount > 0 ? totalPlanRevenue / totalPlanCount : null;
+    const ltv = avgRevenuePerSub && monthlyChurnRate && monthlyChurnRate > 0 ? avgRevenuePerSub * (1 / monthlyChurnRate) : null;
+    const cpa = totalNewPayingSubs > 0 ? totalAdSpend / totalNewPayingSubs : null;
+    const roas = totalAdSpend > 0 ? totalRevenue30d / totalAdSpend : null;
+    const paybackMonths = cpa && avgRevenuePerSub && avgRevenuePerSub > 0 ? cpa / avgRevenuePerSub : null;
+
+    // c) Viral metrics
+    const circleCount = circles.size;
+    let totalCircleMembers = 0; for (const [, ci] of circles) totalCircleMembers += ci.members.length;
+    const avgMembersPerCircle = circleCount > 0 ? totalCircleMembers / circleCount : 0;
+    const inviteStats = await pool.query(`SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status='accepted') as accepted FROM invite_tokens`).catch(() => ({ rows: [{}] }));
+    const totalInvites = parseInt(inviteStats.rows[0]?.total||0);
+    const acceptedInvites = parseInt(inviteStats.rows[0]?.accepted||0);
+    const acceptanceRate = totalInvites > 0 ? acceptedInvites / totalInvites : 0;
+    const userCount = parseInt((await pool.query("SELECT COUNT(*) as c FROM users").catch(() => ({ rows: [{c:0}] }))).rows[0]?.c||0);
+    const avgInvitesPerUser = userCount > 0 ? totalInvites / userCount : 0;
+    const viralK = avgInvitesPerUser * acceptanceRate;
+
+    // d) Cohort retention (by week of signup, D1/D7/D14/D30)
+    const cohortRows = await pool.query(`SELECT DATE_TRUNC('week', u.created_at)::date as cohort_week, COUNT(DISTINCT u.id) as cohort_size, COUNT(DISTINCT CASE WHEN ud.last_prayed_date >= u.created_at + INTERVAL '1 day' AND ud.last_prayed_date < u.created_at + INTERVAL '2 days' THEN u.id END) as d1, COUNT(DISTINCT CASE WHEN ud.last_prayed_date >= u.created_at + INTERVAL '7 days' AND ud.last_prayed_date < u.created_at + INTERVAL '8 days' THEN u.id END) as d7, COUNT(DISTINCT CASE WHEN ud.last_prayed_date >= u.created_at + INTERVAL '14 days' AND ud.last_prayed_date < u.created_at + INTERVAL '15 days' THEN u.id END) as d14, COUNT(DISTINCT CASE WHEN ud.last_prayed_date >= u.created_at + INTERVAL '30 days' AND ud.last_prayed_date < u.created_at + INTERVAL '31 days' THEN u.id END) as d30 FROM users u LEFT JOIN user_data ud ON ud.user_id = u.id WHERE u.created_at >= CURRENT_DATE - INTERVAL '90 days' GROUP BY 1 ORDER BY 1 DESC LIMIT 12`).catch(() => ({ rows: [] }));
+    const cohortRetention = cohortRows.rows.map((r: any) => {
+      const sz = parseInt(r.cohort_size||1);
+      return { week: r.cohort_week, cohort_size: sz, d1_pct: sz > 0 ? Math.round(parseInt(r.d1||0)/sz*100) : 0, d7_pct: sz > 0 ? Math.round(parseInt(r.d7||0)/sz*100) : 0, d14_pct: sz > 0 ? Math.round(parseInt(r.d14||0)/sz*100) : 0, d30_pct: sz > 0 ? Math.round(parseInt(r.d30||0)/sz*100) : 0 };
+    });
+
+    // e) Streak distribution
+    const streakRows = await pool.query(`SELECT CASE WHEN streak_count=0 THEN '0' WHEN streak_count<=3 THEN '1-3' WHEN streak_count<=7 THEN '4-7' WHEN streak_count<=14 THEN '8-14' WHEN streak_count<=30 THEN '15-30' ELSE '31+' END as range, COUNT(*) as count FROM user_data GROUP BY 1 ORDER BY MIN(streak_count)`).catch(() => ({ rows: [] }));
+    const streakDistribution = streakRows.rows.map((r: any) => ({ range: r.range, count: parseInt(r.count||0) }));
+
+    // f) Decision signals
+    const avgD7 = cohortRetention.length > 0 ? cohortRetention.reduce((s: number, r: any) => s + r.d7_pct, 0) / cohortRetention.length : 0;
+    const unitEconSignal = cpa === null || ltv === null ? "gray" : cpa < ltv * 0.5 ? "green" : cpa < ltv ? "yellow" : "red";
+    const unitEconAction = unitEconSignal === "green" ? "Scale spend. CPA is well below LTV." : unitEconSignal === "yellow" ? "Optimize creative. CPA approaching LTV." : unitEconSignal === "gray" ? "Not enough data yet." : "Pause paid. CPA exceeds LTV.";
+    const viralSignal = viralK >= 0.5 ? "green" : viralK >= 0.2 ? "yellow" : "red";
+    const viralAction = viralSignal === "green" ? "Viral loop healthy. Lean into invite prompts." : viralSignal === "yellow" ? "Improve invite placement or copy." : "Fix viral loop before scaling spend.";
+    const retentionSignal = avgD7 >= 40 ? "green" : avgD7 >= 25 ? "yellow" : "red";
+    const retentionAction = retentionSignal === "green" ? "Retention strong. Safe to acquire aggressively." : retentionSignal === "yellow" ? "Improve D7 onboarding. Target 40%." : "Fix retention before scaling. D7 < 25%.";
+
+    return c.json({
+      generated_at: new Date().toISOString(),
+      acquisition: { total_ad_spend_30d: totalAdSpend, total_installs_30d: totalInstalls, blended_cpi: blendedCPI, by_channel: acquisitionByChannel, organic: { impressions: parseInt(orgAcq.rows[0]?.impressions||0), page_views: parseInt(orgAcq.rows[0]?.page_views||0), units: parseInt(orgAcq.rows[0]?.units||0) } },
+      unit_economics: { cpa, ltv, avg_revenue_per_sub: avgRevenuePerSub, monthly_churn_rate: monthlyChurnRate, roas, payback_months: paybackMonths, active_subscribers: activeSubs, revenue_30d: totalRevenue30d, plan_breakdown: planCounts },
+      viral: { circles: circleCount, total_circle_members: totalCircleMembers, avg_members_per_circle: Math.round(avgMembersPerCircle * 10) / 10, invite_tokens_created: totalInvites, invite_tokens_accepted: acceptedInvites, acceptance_rate: Math.round(acceptanceRate * 100) / 100, avg_invites_per_user: Math.round(avgInvitesPerUser * 100) / 100, viral_k: Math.round(viralK * 100) / 100 },
+      cohort_retention: cohortRetention,
+      streak_distribution: streakDistribution,
+      signals: { unit_economics: { status: unitEconSignal, action: unitEconAction, cpa, ltv }, viral_loop: { status: viralSignal, action: viralAction, k: Math.round(viralK * 100) / 100 }, retention: { status: retentionSignal, action: retentionAction, d7_avg_pct: Math.round(avgD7) } }
+    });
+  } catch (err: any) { return c.json({ error: "Growth dashboard failed", detail: err.message }, 500); }
+});
+
+// POST /api/dashboard/organic-metrics — upsert daily organic social rows
+app.post("/api/dashboard/organic-metrics", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const body = await c.req.json();
+    const entries: any[] = Array.isArray(body) ? body : body.entries || [];
+    if (!entries.length) return c.json({ error: "entries array required" }, 400);
+    let stored = 0;
+    for (const e of entries) {
+      if (!e.date || !e.channel) continue;
+      await pool.query(
+        `INSERT INTO daily_organic_metrics (date,channel,views,subscribers_gained,likes,comments,shares,watch_hours,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW()) ON CONFLICT (date,channel) DO UPDATE SET views=$3,subscribers_gained=$4,likes=$5,comments=$6,shares=$7,watch_hours=$8,updated_at=NOW()`,
+        [e.date, e.channel, e.views||0, e.subscribers_gained||0, e.likes||0, e.comments||0, e.shares||0, e.watch_hours||0]
+      );
+      stored++;
+    }
+    return c.json({ status: "ok", stored });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// GET /api/dashboard/organic — organic metrics + optional YouTube auto-pull
+app.get("/api/dashboard/organic", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  const days = Math.min(parseInt(c.req.query("days") || "30"), 90);
+  try {
+    const stored = await pool.query(`SELECT * FROM daily_organic_metrics WHERE date >= CURRENT_DATE - INTERVAL '${days} days' ORDER BY date DESC, channel`).catch(() => ({ rows: [] }));
+    const byChannel: Record<string, any[]> = {};
+    for (const r of stored.rows) { if (!byChannel[r.channel]) byChannel[r.channel] = []; byChannel[r.channel].push(r); }
+
+    // YouTube auto-pull
+    let youtubeStats: any = null;
+    if (YOUTUBE_API_KEY) {
+      try {
+        const chRes = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&forHandle=${YT_CHANNEL_HANDLE}&key=${YOUTUBE_API_KEY}`);
+        if (chRes.ok) {
+          const chData = (await chRes.json()) as any;
+          const ch = chData.items?.[0];
+          if (ch) {
+            youtubeStats = { channel_id: ch.id, title: ch.snippet?.title, subscriber_count: parseInt(ch.statistics?.subscriberCount||0), view_count: parseInt(ch.statistics?.viewCount||0), video_count: parseInt(ch.statistics?.videoCount||0) };
+            // Fetch recent videos
+            const searchRes = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${ch.id}&order=date&type=video&maxResults=10&key=${YOUTUBE_API_KEY}`);
+            if (searchRes.ok) {
+              const searchData = (await searchRes.json()) as any;
+              const videoIds = (searchData.items||[]).map((v: any) => v.id?.videoId).filter(Boolean).join(",");
+              if (videoIds) {
+                const statsRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${videoIds}&key=${YOUTUBE_API_KEY}`);
+                if (statsRes.ok) {
+                  const statsData = (await statsRes.json()) as any;
+                  youtubeStats.recent_videos = (statsData.items||[]).map((v: any) => ({ id: v.id, title: v.snippet?.title, published_at: v.snippet?.publishedAt, views: parseInt(v.statistics?.viewCount||0), likes: parseInt(v.statistics?.likeCount||0), comments: parseInt(v.statistics?.commentCount||0) }));
+                }
+              }
+            }
+          }
+        }
+      } catch (err: any) { console.error("[YouTube]", err.message); }
+    }
+
+    const totals: Record<string, any> = {};
+    for (const [ch, rows] of Object.entries(byChannel)) {
+      totals[ch] = { views: rows.reduce((s: number, r: any) => s + (r.views||0), 0), subscribers_gained: rows.reduce((s: number, r: any) => s + (r.subscribers_gained||0), 0), likes: rows.reduce((s: number, r: any) => s + (r.likes||0), 0), comments: rows.reduce((s: number, r: any) => s + (r.comments||0), 0), shares: rows.reduce((s: number, r: any) => s + (r.shares||0), 0), watch_hours: rows.reduce((s: number, r: any) => s + (r.watch_hours||0), 0) };
+    }
+    return c.json({ generated_at: new Date().toISOString(), days, by_channel: byChannel, totals, youtube: youtubeStats });
+  } catch (err: any) { return c.json({ error: "Organic dashboard failed", detail: err.message }, 500); }
+});
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── DASHBOARD ──────────────────────────────────────────────────

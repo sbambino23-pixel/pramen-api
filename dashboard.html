@@ -38,7 +38,7 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;pad
 .filter-chip{padding:3px 8px;border-radius:4px;font-size:9px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'DM Sans'}.filter-chip:hover{border-color:var(--text);color:var(--text)}.filter-chip.on{border-color:var(--gold);color:var(--gold);background:rgba(201,164,74,.06)}
 /* Funnel */
 .fs{margin-bottom:8px}.fh{display:flex;justify-content:space-between;margin-bottom:3px;align-items:center}.fn{width:18px;height:18px;border-radius:50%;background:rgba(201,164,74,.1);color:var(--gold);display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;margin-right:4px}.fl{font-size:11px;font-weight:600}.fc{font-size:14px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono'}.fd{font-size:9px;color:var(--red);margin-right:6px;font-weight:600}.fba{height:22px;background:rgba(255,255,255,.03);border-radius:5px;overflow:hidden;position:relative}.ff{height:100%;border-radius:5px}.fp{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:9px;font-weight:700;font-family:'JetBrains Mono'}
-.f-step-rate{font-size:8px;color:var(--muted);text-align:center;padding:2px 0;font-family:'JetBrains Mono'}
+.f-step-rate{font-size:8px;color:var(--muted);text-align:center;padding:2px 0;font-family:'JetBrains Mono';opacity:.5;font-style:italic}
 /* Bars */
 .br{margin-bottom:5px}.br .bl{display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px}.br .bn{font-weight:500}.br .bc{color:var(--muted);font-family:'JetBrains Mono';font-size:9px}.bt{height:3px;background:rgba(255,255,255,.04);border-radius:2px;overflow:hidden}.bf{height:100%;border-radius:2px}
 /* Misc */
@@ -59,6 +59,22 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;pad
 .insight-icon{font-size:14px;flex-shrink:0}
 /* Sparkline (CSS only mini bar chart) */
 .spark{display:flex;align-items:flex-end;gap:1px;height:24px}.spark-bar{flex:1;min-width:2px;border-radius:1px;background:var(--gold);opacity:.6;transition:all .15s}.spark-bar:hover{opacity:1}
+/* Traffic light signals */
+.signal{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.sig{flex:1;min-width:250px;padding:14px;border-radius:8px;background:var(--card);border:1px solid var(--border)}
+.sig-hdr{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.sig-dot{width:12px;height:12px;border-radius:50%}
+.sig-dot-green{background:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.4)}
+.sig-dot-yellow{background:#eab308;box-shadow:0 0 8px rgba(234,179,8,.4)}
+.sig-dot-red{background:#ef4444;box-shadow:0 0 8px rgba(239,68,68,.4)}
+.sig-dot-gray{background:#5a5a68}
+.sig-title{font-size:12px;font-weight:700;color:var(--text)}
+.sig-action{font-size:10px;color:var(--muted);margin-top:4px;line-height:1.4}
+.sig-metrics{display:flex;gap:12px;margin-top:8px;flex-wrap:wrap}
+.sig-metric{font-size:9px;color:var(--muted);font-family:'JetBrains Mono'}
+.sig-metric span{color:var(--text);font-weight:700}
+/* Cohort table */
+.cohort-tbl{width:100%;border-collapse:collapse;font-size:10px}.cohort-tbl th{text-align:center;padding:6px 8px;color:var(--muted);font-weight:700;border-bottom:1px solid var(--border);font-size:8px;text-transform:uppercase}.cohort-tbl td{padding:5px 8px;text-align:center;border-bottom:1px solid rgba(255,255,255,.03);font-family:'JetBrains Mono';font-size:10px}.cohort-tbl td:first-child{text-align:left}
 @media(max-width:900px){.kg{grid-template-columns:repeat(2,1fr)}.g2,.g3{grid-template-columns:1fr}.ug{grid-template-columns:1fr}.dr-dates{display:none}}
 </style>
 </head>
@@ -66,7 +82,7 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;pad
 <div class="c">
   <div class="hdr"><div><h1>🙏 prAmen</h1><p class="sub" id="ts">Loading...</p></div>
   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div class="live"><span class="dot"></span>LIVE</div><span id="asc-status" class="asc-badge asc-no">Apple: ...</span><button class="rbtn" onclick="loadAll()">↻ Refresh</button>
-  <div class="tabs"><button class="tab active" onclick="go('overview',this)">Overview</button><button class="tab" onclick="go('funnel',this)">Funnel</button><button class="tab" onclick="go('users',this)">Users</button><button class="tab" onclick="go('events',this)">Events</button><button class="tab" onclick="go('revenue',this)">Revenue</button><button class="tab" onclick="go('web',this)">Web</button><button class="tab" onclick="go('circles',this)">Circles</button></div></div></div>
+  <div class="tabs"><button class="tab active" onclick="go('overview',this)">Overview</button><button class="tab" onclick="go('funnel',this)">Funnel</button><button class="tab" onclick="go('users',this)">Users</button><button class="tab" onclick="go('events',this)">Events</button><button class="tab" onclick="go('revenue',this)">Revenue</button><button class="tab" onclick="go('web',this)">Web</button><button class="tab" onclick="go('circles',this)">Circles</button><button class="tab" onclick="go('growth',this)">Growth</button><button class="tab" onclick="go('organic',this)">Organic</button></div></div></div>
   <!-- Date Range Bar -->
   <div class="dr-bar">
     <span class="dr-label">Range</span>
@@ -83,7 +99,8 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;pad
 <script>
 var B=location.origin,K=new URLSearchParams(location.search).get("key")||"",
     D=null,PH=null,AP=null,RC=null,TAB="overview",SU=null,
-    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all";
+    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",
+    GR=null,OG=null;
 
 // Event colors & labels
 var C={app_opened:"#6366f1",prayer_logged:"#f59e0b",paywall_viewed:"#ef4444",paywall_plan_selected:"#ec4899",onboarding_completed:"#22c55e",circle_created:"#06b6d4",circle_left:"#64748b",prayer_request_created:"#8b5cf6",share_tapped:"#14b8a6",scripture_viewed:"#a78bfa",circle_invite_accepted:"#06b6d4",circle_member_joined:"#22d3ee",encouragement_sent:"#14b8a6",user_signed_up:"#22c55e",account_deleted:"#ef4444",email_opt_in:"#34d399",streak_milestone:"#f59e0b",subscription_started:"#22c55e",subscription_cancelled:"#ef4444",subscription_renewed:"#14b8a6",subscription_expired:"#ef4444",lifetime_purchased:"#C9A44A",billing_issue_detected:"#f97316"};
@@ -134,9 +151,11 @@ function loadAll(){
     fetch(B+"/api/dashboard?key="+K).then(function(r){return r.json()}),
     fetch(B+"/api/dashboard/events?key="+K+"&days="+maxDays+"&limit=1000").then(function(r){return r.json()}).catch(function(){return null}),
     fetch(B+"/api/dashboard/appstore?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
-    fetch(B+"/api/dashboard/revenuecat?key="+K).then(function(r){return r.json()}).catch(function(){return null})
+    fetch(B+"/api/dashboard/revenuecat?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
+    fetch(B+"/api/dashboard/growth?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
+    fetch(B+"/api/dashboard/organic?key="+K).then(function(r){return r.json()}).catch(function(){return null})
   ]).then(function(r){
-    D=r[0];PH=r[1]&&!r[1].error?r[1]:null;AP=r[2];RC=r[3]&&!r[3].error?r[3]:null;
+    D=r[0];PH=r[1]&&!r[1].error?r[1]:null;AP=r[2];RC=r[3]&&!r[3].error?r[3]:null;GR=r[4];OG=r[5];
     document.getElementById("ts").textContent=new Date().toLocaleString()+" • "+(PH?PH.total_events+" events • "+PH.total_users+" users":"PH: connecting...")+(RC?" • MRR: $"+(RC.summary?.net_mrr||0).toFixed(2):"");
     var ab=document.getElementById("asc-status");if(AP&&AP.connected){ab.className="asc-badge asc-ok";ab.textContent="Apple: ✓"}else{ab.className="asc-badge asc-no";ab.textContent="Apple: ✗"}
     updateDateLabel();render();
@@ -182,7 +201,7 @@ function computeMetrics(events){
 }
 
 // ─── Render ──────────────────────────────────────────────────
-function render(){if(!D)return;var el=document.getElementById("main");switch(TAB){case"overview":el.innerHTML=rOv();break;case"funnel":el.innerHTML=rFn();break;case"users":el.innerHTML=rUs();break;case"events":el.innerHTML=rEv();break;case"revenue":el.innerHTML=rRv();break;case"web":el.innerHTML=rWb();break;case"circles":el.innerHTML=rCr();break}}
+function render(){if(!D)return;var el=document.getElementById("main");switch(TAB){case"overview":el.innerHTML=rOv();break;case"funnel":el.innerHTML=rFn();break;case"users":el.innerHTML=rUs();break;case"events":el.innerHTML=rEv();break;case"revenue":el.innerHTML=rRv();break;case"web":el.innerHTML=rWb();break;case"circles":el.innerHTML=rCr();break;case"growth":el.innerHTML=rGr();break;case"organic":el.innerHTML=rOg();break}}
 
 // ─── KPI helper with delta ────────────────────────────────────
 function kpi(l,v,c,delta){return'<div class="k"><div class="l">'+l+'</div><div class="v" style="color:'+c+'">'+v+'</div>'+deltaHtml(delta)+'</div>'}
@@ -464,6 +483,167 @@ function rWb(){
 // ─── CIRCLES TAB ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════
 function rCr(){var cl=D.circles.circles||[];return'<div class="kg">'+kpi("Circles",D.circles.total,"var(--blue)")+kpi("Members",D.circles.total_members,"var(--indigo)")+kpi("Encouragements",D.circles.total_encouragements,"var(--teal)")+kpi("Requests",D.circles.total_prayer_requests,"var(--purple)")+'</div><div class="cd"><h3>All Prayer Circles</h3>'+(cl.length?'<table class="tbl"><tr><th>Name</th><th>Code</th><th>Members</th><th>Enc.</th><th>Req.</th><th>Created</th></tr>'+cl.map(function(c2){return'<tr><td><strong style="color:var(--text)">'+c2.name+'</strong></td><td class="mono" style="color:var(--gold)">'+c2.code+'</td><td class="mono">'+c2.members+'</td><td class="mono">'+c2.encouragements+'</td><td class="mono">'+c2.prayerRequests+'</td><td class="mono" style="color:var(--muted)">'+new Date(c2.createdAt).toLocaleDateString()+'</td></tr>'}).join('')+'</table>':'<div class="note">No circles.</div>')+'</div>'}
+
+// ═══════════════════════════════════════════════════════════════
+// ─── GROWTH TAB ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+function rGr(){
+  if(!GR||GR.error)return'<div class="note">Growth data loading... Campaigns not yet active.</div>';
+  var s=GR.signals||{};
+  var a=GR.acquisition||{};
+  var u=GR.unit_economics||{};
+  var v=GR.viral||{};
+  var cr=GR.cohort_retention||[];
+  var sd=GR.streak_distribution||[];
+
+  var html='';
+
+  // Decision signals (traffic lights)
+  html+='<div class="signal">';
+  var sigs=[
+    {title:'Unit Economics',data:s.unit_economics||{},metrics:['CPA: $'+(u.cpa!==null?u.cpa.toFixed(2):'—'),'LTV: $'+(u.ltv!==null?u.ltv.toFixed(2):'—'),'ROAS: '+(u.roas!==null?u.roas.toFixed(2)+'x':'—')]},
+    {title:'Viral Loop',data:s.viral_loop||{},metrics:['K: '+(v.viral_k||0),'Invites: '+v.invite_tokens_created,'Accept: '+Math.round((v.acceptance_rate||0)*100)+'%']},
+    {title:'Retention',data:s.retention||{},metrics:['D7 Avg: '+(s.retention?.d7_avg_pct||0)+'%','Cohorts: '+cr.length]}
+  ];
+  sigs.forEach(function(sg){
+    var st=sg.data.status||'gray';
+    html+='<div class="sig"><div class="sig-hdr"><div class="sig-dot sig-dot-'+st+'"></div><span class="sig-title">'+sg.title+'</span></div>';
+    html+='<div class="sig-action">'+(sg.data.action||'Not enough data yet.')+'</div>';
+    html+='<div class="sig-metrics">'+sg.metrics.map(function(m){return'<div class="sig-metric">'+m+'</div>'}).join('')+'</div></div>';
+  });
+  html+='</div>';
+
+  // Acquisition KPIs
+  html+='<div class="cd"><h3>Acquisition (30d)</h3>';
+  html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">'+
+    kpi("Total Ad Spend","$"+a.total_ad_spend_30d.toFixed(0),"var(--red)")+
+    kpi("Paid Installs",a.total_installs_30d,"var(--green)")+
+    kpi("Blended CPI",a.blended_cpi!==null?"$"+a.blended_cpi.toFixed(2):"—","var(--blue)")+
+    kpi("Organic Units",a.organic?.units||0,"var(--teal)")+
+    kpi("Store Impressions",a.organic?.impressions||0,"var(--indigo)")+
+  '</div>';
+  if(a.by_channel&&a.by_channel.length){
+    html+='<table class="tbl"><tr><th>Channel</th><th>Spend</th><th>Installs</th><th>CPI</th></tr>';
+    a.by_channel.forEach(function(ch){
+      html+='<tr><td style="text-transform:uppercase;font-weight:600">'+ch.channel+'</td><td class="mono">$'+ch.spend.toFixed(0)+'</td><td class="mono" style="color:var(--green)">'+ch.installs+'</td><td class="mono" style="color:var(--blue)">'+(ch.cpi!==null?'$'+ch.cpi.toFixed(2):'—')+'</td></tr>';
+    });
+    html+='</table>';
+  }
+  html+='</div>';
+
+  // Unit Economics
+  html+='<div class="g2"><div class="cd"><h3>Unit Economics</h3>';
+  html+=row("CPA (Cost per Paying Sub)",u.cpa!==null?"$"+u.cpa.toFixed(2):"—","var(--red)");
+  html+=row("LTV (Lifetime Value)",u.ltv!==null?"$"+u.ltv.toFixed(2):"—","var(--green)");
+  html+=row("Avg Revenue / Sub / Mo",u.avg_revenue_per_sub!==null?"$"+u.avg_revenue_per_sub.toFixed(2):"—","var(--gold)");
+  html+=row("Monthly Churn Rate",u.monthly_churn_rate!==null?(u.monthly_churn_rate*100).toFixed(1)+"%":"—","var(--orange)");
+  html+=row("ROAS (30d)",u.roas!==null?u.roas.toFixed(2)+"x":"—","var(--blue)");
+  html+=row("Payback Period",u.payback_months!==null?u.payback_months.toFixed(1)+" months":"—","var(--purple)");
+  html+=row("Active Subscribers",u.active_subscribers||0,"var(--green)");
+  html+=row("Revenue (30d)","$"+(u.revenue_30d||0).toFixed(2),"var(--gold)");
+  html+='</div>';
+
+  // Viral Metrics
+  html+='<div class="cd"><h3>Viral Loop</h3>';
+  html+=row("Prayer Circles",v.circles||0,"var(--blue)");
+  html+=row("Total Circle Members",v.total_circle_members||0,"var(--indigo)");
+  html+=row("Avg Members / Circle",(v.avg_members_per_circle||0).toFixed(1),"var(--teal)");
+  html+=row("Invite Tokens Created",v.invite_tokens_created||0,"var(--orange)");
+  html+=row("Invites Accepted",v.invite_tokens_accepted||0,"var(--green)");
+  html+=row("Acceptance Rate",Math.round((v.acceptance_rate||0)*100)+"%","var(--gold)");
+  html+=row("Avg Invites / User",(v.avg_invites_per_user||0).toFixed(2),"var(--purple)");
+  html+=row("Viral Coefficient (K)",(v.viral_k||0).toFixed(2),v.viral_k>=0.5?"var(--green)":v.viral_k>=0.2?"var(--yellow)":"var(--red)");
+  html+='</div></div>';
+
+  // Cohort Retention
+  if(cr.length){
+    html+='<div class="cd"><h3>Cohort Retention</h3>';
+    html+='<table class="cohort-tbl"><tr><th style="text-align:left">Cohort Week</th><th>Users</th><th>D1</th><th>D7</th><th>D14</th><th>D30</th></tr>';
+    cr.forEach(function(c){
+      var week=c.week?new Date(c.week).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—';
+      function retCell(pct){var clr=pct>=40?'var(--green)':pct>=25?'var(--orange)':'var(--red)';return'<td style="color:'+clr+'">'+pct+'%</td>'}
+      html+='<tr><td>'+week+'</td><td class="mono">'+c.cohort_size+'</td>'+retCell(c.d1_pct)+retCell(c.d7_pct)+retCell(c.d14_pct)+retCell(c.d30_pct)+'</tr>';
+    });
+    html+='</table></div>';
+  }
+
+  // Streak Distribution
+  if(sd.length){
+    html+='<div class="cd"><h3>Streak Distribution</h3>';
+    var maxStreak=Math.max.apply(null,sd.map(function(s){return s.count}));
+    sd.forEach(function(s){
+      var w=maxStreak>0?Math.round(s.count/maxStreak*100):0;
+      var clr=s.range==='0'?'var(--red)':s.range==='31+'?'var(--green)':'var(--gold)';
+      html+='<div class="br"><div class="bl"><span class="bn">'+s.range+' days</span><span class="bc">'+s.count+' users</span></div><div class="bt"><div class="bf" style="width:'+w+'%;background:'+clr+'"></div></div></div>';
+    });
+    html+='</div>';
+  }
+
+  return html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ─── ORGANIC TAB ───────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+function rOg(){
+  if(!OG)return'<div class="note">Organic data loading...</div>';
+  var yt=OG.youtube||{};
+  var stored=OG.stored_metrics||[];
+
+  var html='';
+
+  // YouTube channel stats
+  if(yt.channel){
+    var ch=yt.channel;
+    html+='<div class="cd" style="border-color:rgba(239,68,68,.2)"><h3>YouTube · @fatherjohnprays</h3>';
+    html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
+      kpi("Subscribers",parseInt(ch.subscriberCount||0).toLocaleString(),"var(--red)")+
+      kpi("Total Views",parseInt(ch.viewCount||0).toLocaleString(),"var(--blue)")+
+      kpi("Videos",parseInt(ch.videoCount||0),"var(--purple)")+
+    '</div></div>';
+  }
+
+  // Recent videos
+  if(yt.recent_videos&&yt.recent_videos.length){
+    html+='<div class="cd"><h3>Recent Videos</h3>';
+    html+='<table class="tbl"><tr><th>Title</th><th>Views</th><th>Likes</th><th>Comments</th><th>Published</th></tr>';
+    yt.recent_videos.forEach(function(v){
+      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+v.title+'</td><td class="mono" style="color:var(--blue)">'+(parseInt(v.viewCount||0)).toLocaleString()+'</td><td class="mono" style="color:var(--green)">'+(parseInt(v.likeCount||0)).toLocaleString()+'</td><td class="mono">'+(parseInt(v.commentCount||0)).toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(v.publishedAt).toLocaleDateString()+'</td></tr>';
+    });
+    html+='</table></div>';
+  }
+
+  // Stored organic metrics by channel
+  if(stored.length){
+    var channels={};
+    stored.forEach(function(r){if(!channels[r.channel])channels[r.channel]=[];channels[r.channel].push(r)});
+    Object.keys(channels).forEach(function(ch){
+      var rows=channels[ch];
+      var totalViews=rows.reduce(function(s,r){return s+(r.views||0)},0);
+      var totalLikes=rows.reduce(function(s,r){return s+(r.likes||0)},0);
+      var totalComments=rows.reduce(function(s,r){return s+(r.comments||0)},0);
+      var totalSubs=rows.reduce(function(s,r){return s+(r.subscribers_gained||0)},0);
+      html+='<div class="cd"><h3>'+ch.charAt(0).toUpperCase()+ch.slice(1)+' (stored metrics)</h3>';
+      html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(110px,1fr))">'+
+        kpi("Views",totalViews.toLocaleString(),"var(--blue)")+
+        kpi("Likes",totalLikes.toLocaleString(),"var(--green)")+
+        kpi("Comments",totalComments.toLocaleString(),"var(--purple)")+
+        kpi("Subs Gained",totalSubs.toLocaleString(),"var(--gold)")+
+      '</div>';
+      html+='<table class="tbl"><tr><th>Date</th><th>Views</th><th>Likes</th><th>Comments</th><th>Shares</th><th>Subs</th></tr>';
+      rows.slice(0,14).forEach(function(r){
+        html+='<tr><td class="mono">'+r.date.split('T')[0]+'</td><td class="mono">'+r.views+'</td><td class="mono">'+r.likes+'</td><td class="mono">'+r.comments+'</td><td class="mono">'+r.shares+'</td><td class="mono" style="color:var(--green)">'+r.subscribers_gained+'</td></tr>';
+      });
+      html+='</table></div>';
+    });
+  }
+
+  if(!yt.channel&&!stored.length){
+    html+='<div class="note">No organic data yet. YouTube auto-pulls on each page load. TikTok and Instagram will appear once API access is configured.</div>';
+  }
+
+  return html;
+}
 
 // ─── Init ────────────────────────────────────────────────────
 updateDateLabel();loadAll();setInterval(loadAll,5*60*1000);
