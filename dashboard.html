@@ -3,59 +3,58 @@
 <head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>prAmen — Command Center</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0a0a0f;--card:#111118;--border:#1c1c26;--gold:#C9A44A;--text:#d4d0c8;--muted:#5a5a68;--green:#22c55e;--red:#ef4444;--blue:#06b6d4;--pink:#ec4899;--purple:#8b5cf6;--orange:#f97316;--teal:#14b8a6;--indigo:#6366f1;--yellow:#eab308}
-*{margin:0;padding:0;box-sizing:border-box}::selection{background:var(--gold);color:var(--bg)}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:#2a2a38;border-radius:3px}
-body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;padding:14px 18px;min-height:100vh}.c{max-width:1400px;margin:0 auto}
-.hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;padding-bottom:12px;border-bottom:1px solid var(--border)}.hdr h1{font-size:20px;font-weight:700;color:var(--gold)}.hdr .sub{color:var(--muted);font-size:10px;margin-top:2px;font-family:'JetBrains Mono'}
+:root{--bg:#1A1210;--card:#261C16;--border:#3A2820;--gold:#9A6848;--text:#F5EDE4;--muted:#8A8C74;--green:#7A8A68;--red:#A84F3E;--blue:#88A8BC;--pink:#B89E82;--purple:#7A4F32;--orange:#D4845A;--teal:#7F835F;--indigo:#6B6E52;--yellow:#C9A87A}
+*{margin:0;padding:0;box-sizing:border-box}::selection{background:var(--gold);color:var(--bg)}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:#4A3828;border-radius:3px}
+body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,'SF Pro Text','Helvetica Neue',sans-serif;padding:14px 18px;min-height:100vh}.c{max-width:1400px;margin:0 auto}
+.hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;padding-bottom:12px;border-bottom:1px solid var(--border)}.hdr h1{font-size:20px;font-weight:700;color:var(--gold)}.hdr .sub{color:var(--muted);font-size:10px;margin-top:2px;font-family:ui-monospace,'SF Mono',monospace}
 .live{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--green);font-weight:600}.dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:p 2s infinite}@keyframes p{0%,100%{opacity:1}50%{opacity:.3}}
 /* Date range bar */
 .dr-bar{display:flex;align-items:center;gap:6px;margin-bottom:12px;flex-wrap:wrap;padding:8px 12px;background:var(--card);border:1px solid var(--border);border-radius:8px}
-.dr-btn{padding:4px 10px;border-radius:5px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;font-size:10px;font-weight:600;font-family:'DM Sans';transition:all .15s}.dr-btn:hover{color:var(--text);background:rgba(255,255,255,.04)}.dr-btn.active{border-color:var(--gold);background:rgba(201,164,74,.08);color:var(--gold)}
+.dr-btn{padding:4px 10px;border-radius:5px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;font-size:10px;font-weight:600;font-family:system-ui,-apple-system,sans-serif;transition:all .15s}.dr-btn:hover{color:var(--text);background:rgba(245,237,228,.04)}.dr-btn.active{border-color:var(--gold);background:rgba(154,104,72,.08);color:var(--gold)}
 .dr-sep{width:1px;height:18px;background:var(--border);margin:0 4px}
 .dr-label{font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-right:2px}
-.dr-dates{font-size:10px;color:var(--muted);font-family:'JetBrains Mono';margin-left:auto}
-.cmp-toggle{display:flex;align-items:center;gap:5px;cursor:pointer;padding:4px 10px;border-radius:5px;border:1px solid var(--border);font-size:10px;color:var(--muted);font-weight:600;transition:all .15s}.cmp-toggle:hover{border-color:var(--gold);color:var(--text)}.cmp-toggle.on{border-color:var(--blue);color:var(--blue);background:rgba(6,182,212,.06)}.cmp-dot{width:6px;height:6px;border-radius:50%;background:var(--muted);transition:all .15s}.cmp-toggle.on .cmp-dot{background:var(--blue)}
+.dr-dates{font-size:10px;color:var(--muted);font-family:ui-monospace,'SF Mono',monospace;margin-left:auto}
+.cmp-toggle{display:flex;align-items:center;gap:5px;cursor:pointer;padding:4px 10px;border-radius:5px;border:1px solid var(--border);font-size:10px;color:var(--muted);font-weight:600;transition:all .15s}.cmp-toggle:hover{border-color:var(--gold);color:var(--text)}.cmp-toggle.on{border-color:var(--blue);color:var(--blue);background:rgba(136,168,188,.06)}.cmp-dot{width:6px;height:6px;border-radius:50%;background:var(--muted);transition:all .15s}.cmp-toggle.on .cmp-dot{background:var(--blue)}
 /* Tabs */
-.tabs{display:flex;gap:3px;flex-wrap:wrap}.tab{padding:5px 10px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;font-size:10px;font-weight:600;font-family:'DM Sans'}.tab:hover{color:var(--text);background:var(--card)}.tab.active{border-color:var(--gold);background:rgba(201,164,74,.06);color:var(--gold)}
+.tabs{display:flex;gap:3px;flex-wrap:wrap}.tab{padding:5px 10px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;font-size:10px;font-weight:600;font-family:system-ui,-apple-system,sans-serif}.tab:hover{color:var(--text);background:var(--card)}.tab.active{border-color:var(--gold);background:rgba(154,104,72,.06);color:var(--gold)}
 /* KPI grid */
-.kg{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:14px}.k{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;position:relative}.k .l{font-size:8px;color:var(--muted);margin-bottom:3px;font-weight:600;text-transform:uppercase;letter-spacing:.8px}.k .v{font-size:22px;font-weight:700;font-family:'JetBrains Mono';letter-spacing:-.5px}
-.k .delta{position:absolute;top:10px;right:10px;font-size:9px;font-weight:700;font-family:'JetBrains Mono';padding:1px 5px;border-radius:3px}
-.delta-up{color:var(--green);background:rgba(34,197,94,.1)}.delta-down{color:var(--red);background:rgba(239,68,68,.1)}.delta-flat{color:var(--muted);background:rgba(255,255,255,.03)}
+.kg{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-bottom:14px}.k{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px 14px;position:relative}.k .l{font-size:8px;color:var(--muted);margin-bottom:3px;font-weight:600;text-transform:uppercase;letter-spacing:.8px}.k .v{font-size:22px;font-weight:700;font-family:ui-monospace,'SF Mono',monospace;letter-spacing:-.5px}
+.k .delta{position:absolute;top:10px;right:10px;font-size:9px;font-weight:700;font-family:ui-monospace,'SF Mono',monospace;padding:1px 5px;border-radius:3px}
+.delta-up{color:var(--green);background:rgba(122,138,104,.15)}.delta-down{color:var(--red);background:rgba(168,79,62,.15)}.delta-flat{color:var(--muted);background:rgba(245,237,228,.03)}
 /* Layout helpers */
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px}
 .cd{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:10px}.cd h3{font-size:10px;font-weight:700;margin-bottom:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}
-.tr{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:rgba(255,255,255,.02);border-radius:5px;margin-bottom:3px}.tr:hover{background:rgba(255,255,255,.04)}.tr .n{font-size:11px}.tr .ct{font-size:15px;font-weight:700;font-family:'JetBrains Mono'}
+.tr{display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:rgba(245,237,228,.02);border-radius:5px;margin-bottom:3px}.tr:hover{background:rgba(245,237,228,.04)}.tr .n{font-size:11px}.tr .ct{font-size:15px;font-weight:700;font-family:ui-monospace,'SF Mono',monospace}
 /* Table */
-.tbl{width:100%;border-collapse:collapse;font-size:10px}.tbl th{text-align:left;padding:6px 8px;color:var(--muted);font-weight:700;border-bottom:1px solid var(--border);font-size:8px;text-transform:uppercase;letter-spacing:.5px}.tbl td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.03)}.tbl tr:hover td{background:rgba(255,255,255,.02)}.mono{font-family:'JetBrains Mono';font-size:10px}
+.tbl{width:100%;border-collapse:collapse;font-size:10px}.tbl th{text-align:left;padding:6px 8px;color:var(--muted);font-weight:700;border-bottom:1px solid var(--border);font-size:8px;text-transform:uppercase;letter-spacing:.5px}.tbl td{padding:5px 8px;border-bottom:1px solid rgba(245,237,228,.03)}.tbl tr:hover td{background:rgba(245,237,228,.02)}.mono{font-family:ui-monospace,'SF Mono',monospace;font-size:10px}
 /* Users layout */
-.ug{display:grid;grid-template-columns:240px 1fr;gap:10px}.ui{padding:6px 8px;border-radius:5px;margin-bottom:2px;cursor:pointer;background:rgba(255,255,255,.02);border:1px solid transparent;font-size:10px}.ui:hover{border-color:var(--border)}.ui.ac{border-color:rgba(201,164,74,.25);background:rgba(201,164,74,.04)}.ud{width:5px;height:5px;border-radius:50%;display:inline-block;margin-right:4px}.uid{font-family:'JetBrains Mono';font-weight:500;font-size:9px}.um{display:flex;gap:4px;font-size:7px;color:var(--muted);margin-top:2px;flex-wrap:wrap}
+.ug{display:grid;grid-template-columns:240px 1fr;gap:10px}.ui{padding:6px 8px;border-radius:5px;margin-bottom:2px;cursor:pointer;background:rgba(245,237,228,.02);border:1px solid transparent;font-size:10px}.ui:hover{border-color:var(--border)}.ui.ac{border-color:rgba(154,104,72,.25);background:rgba(154,104,72,.04)}.ud{width:5px;height:5px;border-radius:50%;display:inline-block;margin-right:4px}.uid{font-family:ui-monospace,'SF Mono',monospace;font-weight:500;font-size:9px}.um{display:flex;gap:4px;font-size:7px;color:var(--muted);margin-top:2px;flex-wrap:wrap}
 /* Events */
-.el{max-height:520px;overflow-y:auto}.ei{display:flex;align-items:flex-start;gap:6px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.02)}.ed{width:5px;height:5px;border-radius:50%;margin-top:5px;flex-shrink:0}.en{font-size:11px;font-weight:500}.et{font-size:8px;color:var(--muted);font-family:'JetBrains Mono'}.tg{display:flex;gap:3px;margin-top:1px;flex-wrap:wrap}.tg span{font-size:8px}
+.el{max-height:520px;overflow-y:auto}.ei{display:flex;align-items:flex-start;gap:6px;padding:4px 0;border-bottom:1px solid rgba(245,237,228,.02)}.ed{width:5px;height:5px;border-radius:50%;margin-top:5px;flex-shrink:0}.en{font-size:11px;font-weight:500}.et{font-size:8px;color:var(--muted);font-family:ui-monospace,'SF Mono',monospace}.tg{display:flex;gap:3px;margin-top:1px;flex-wrap:wrap}.tg span{font-size:8px}
 /* Search */
-.search-bar{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}.search-input{background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:11px;font-family:'DM Sans';outline:none;flex:1;min-width:160px}.search-input:focus{border-color:var(--gold)}.search-input::placeholder{color:var(--muted)}
-.filter-chip{padding:3px 8px;border-radius:4px;font-size:9px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'DM Sans'}.filter-chip:hover{border-color:var(--text);color:var(--text)}.filter-chip.on{border-color:var(--gold);color:var(--gold);background:rgba(201,164,74,.06)}
+.search-bar{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}.search-input{background:rgba(245,237,228,.04);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:var(--text);font-size:11px;font-family:system-ui,-apple-system,sans-serif;outline:none;flex:1;min-width:160px}.search-input:focus{border-color:var(--gold)}.search-input::placeholder{color:var(--muted)}
+.filter-chip{padding:3px 8px;border-radius:4px;font-size:9px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:system-ui,-apple-system,sans-serif}.filter-chip:hover{border-color:var(--text);color:var(--text)}.filter-chip.on{border-color:var(--gold);color:var(--gold);background:rgba(154,104,72,.06)}
 /* Funnel */
-.fs{margin-bottom:8px}.fh{display:flex;justify-content:space-between;margin-bottom:3px;align-items:center}.fn{width:18px;height:18px;border-radius:50%;background:rgba(201,164,74,.1);color:var(--gold);display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;margin-right:4px}.fl{font-size:11px;font-weight:600}.fc{font-size:14px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono'}.fd{font-size:9px;color:var(--red);margin-right:6px;font-weight:600}.fba{height:22px;background:rgba(255,255,255,.03);border-radius:5px;overflow:hidden;position:relative}.ff{height:100%;border-radius:5px}.fp{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:9px;font-weight:700;font-family:'JetBrains Mono'}
-.f-step-rate{font-size:8px;color:var(--muted);text-align:center;padding:2px 0;font-family:'JetBrains Mono';opacity:.5;font-style:italic}
+.fs{margin-bottom:8px}.fh{display:flex;justify-content:space-between;margin-bottom:3px;align-items:center}.fn{width:18px;height:18px;border-radius:50%;background:rgba(154,104,72,.1);color:var(--gold);display:inline-flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;margin-right:4px}.fl{font-size:11px;font-weight:600}.fc{font-size:14px;font-weight:700;color:var(--gold);font-family:ui-monospace,'SF Mono',monospace}.fd{font-size:9px;color:var(--red);margin-right:6px;font-weight:600}.fba{height:22px;background:rgba(245,237,228,.03);border-radius:5px;overflow:hidden;position:relative}.ff{height:100%;border-radius:5px}.fp{position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:9px;font-weight:700;font-family:ui-monospace,'SF Mono',monospace}
+.f-step-rate{font-size:8px;color:var(--muted);text-align:center;padding:2px 0;font-family:ui-monospace,'SF Mono',monospace;opacity:.5;font-style:italic}
 /* Bars */
-.br{margin-bottom:5px}.br .bl{display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px}.br .bn{font-weight:500}.br .bc{color:var(--muted);font-family:'JetBrains Mono';font-size:9px}.bt{height:3px;background:rgba(255,255,255,.04);border-radius:2px;overflow:hidden}.bf{height:100%;border-radius:2px}
+.br{margin-bottom:5px}.br .bl{display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px}.br .bn{font-weight:500}.br .bc{color:var(--muted);font-family:ui-monospace,'SF Mono',monospace;font-size:9px}.bt{height:3px;background:rgba(245,237,228,.04);border-radius:2px;overflow:hidden}.bf{height:100%;border-radius:2px}
 /* Misc */
-.loading{text-align:center;padding:60px;color:var(--muted)}.err{background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);border-radius:6px;padding:10px 14px;margin-bottom:10px;color:var(--red);font-size:11px}.note{background:rgba(201,164,74,.04);border:1px solid rgba(201,164,74,.12);border-radius:6px;padding:10px 14px;margin-bottom:10px;color:var(--gold);font-size:11px}
-.rbtn{background:none;border:1px solid var(--border);color:var(--muted);padding:4px 8px;border-radius:5px;cursor:pointer;font-size:9px;font-family:'DM Sans';font-weight:600}.rbtn:hover{border-color:var(--gold);color:var(--gold)}
+.loading{text-align:center;padding:60px;color:var(--muted)}.err{background:rgba(168,79,62,.06);border:1px solid rgba(168,79,62,.15);border-radius:6px;padding:10px 14px;margin-bottom:10px;color:var(--red);font-size:11px}.note{background:rgba(154,104,72,.04);border:1px solid rgba(154,104,72,.12);border-radius:6px;padding:10px 14px;margin-bottom:10px;color:var(--gold);font-size:11px}
+.rbtn{background:none;border:1px solid var(--border);color:var(--muted);padding:4px 8px;border-radius:5px;cursor:pointer;font-size:9px;font-family:system-ui,-apple-system,sans-serif;font-weight:600}.rbtn:hover{border-color:var(--gold);color:var(--gold)}
 .seg{display:inline-flex;align-items:center;padding:1px 6px;border-radius:3px;font-size:7px;font-weight:700;letter-spacing:.3px}
-.seg-power{background:rgba(34,197,94,.12);color:var(--green)}.seg-active{background:rgba(99,102,241,.12);color:var(--indigo)}.seg-new{background:rgba(6,182,212,.12);color:var(--blue)}.seg-dormant{background:rgba(239,68,68,.08);color:var(--red)}.seg-atrisk{background:rgba(249,115,22,.12);color:var(--orange)}
-.ub{height:3px;background:rgba(255,255,255,.04);border-radius:2px;overflow:hidden;margin-top:3px;width:100%}.ubf{height:100%;border-radius:2px}
+.seg-power{background:rgba(122,138,104,.12);color:var(--green)}.seg-active{background:rgba(107,110,82,.12);color:var(--indigo)}.seg-new{background:rgba(136,168,188,.12);color:var(--blue)}.seg-dormant{background:rgba(168,79,62,.08);color:var(--red)}.seg-atrisk{background:rgba(212,132,90,.12);color:var(--orange)}
+.ub{height:3px;background:rgba(245,237,228,.04);border-radius:2px;overflow:hidden;margin-top:3px;width:100%}.ubf{height:100%;border-radius:2px}
 .usr-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(90px,1fr));gap:6px;margin-bottom:10px}
-.usr-stat{background:rgba(255,255,255,.03);border-radius:5px;padding:6px 8px;text-align:center}.usr-stat .sv{font-size:16px;font-weight:700;font-family:'JetBrains Mono'}.usr-stat .sl{font-size:7px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:1px}
-.tgap{text-align:center;padding:3px 0;color:var(--muted);font-size:8px;font-family:'JetBrains Mono';opacity:.5;font-style:italic}
+.usr-stat{background:rgba(245,237,228,.03);border-radius:5px;padding:6px 8px;text-align:center}.usr-stat .sv{font-size:16px;font-weight:700;font-family:ui-monospace,'SF Mono',monospace}.usr-stat .sl{font-size:7px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:1px}
+.tgap{text-align:center;padding:3px 0;color:var(--muted);font-size:8px;font-family:ui-monospace,'SF Mono',monospace;opacity:.5;font-style:italic}
 .usr-hdr{display:flex;align-items:center;gap:8px;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border)}
-.usr-name{font-size:14px;font-weight:700;color:var(--gold);font-family:'JetBrains Mono'}
+.usr-name{font-size:14px;font-weight:700;color:var(--gold);font-family:ui-monospace,'SF Mono',monospace}
 .usr-meta{font-size:9px;color:var(--muted)}
-.asc-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:9px;font-weight:600}.asc-ok{background:rgba(34,197,94,.1);color:var(--green)}.asc-no{background:rgba(239,68,68,.1);color:var(--red)}
+.asc-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:9px;font-weight:600}.asc-ok{background:rgba(122,138,104,.1);color:var(--green)}.asc-no{background:rgba(168,79,62,.1);color:var(--red)}
 /* Insights */
-.insight{padding:8px 12px;border-radius:6px;margin-bottom:6px;font-size:11px;display:flex;align-items:center;gap:6px}.insight-warn{background:rgba(249,115,22,.06);border:1px solid rgba(249,115,22,.15);color:var(--orange)}.insight-good{background:rgba(34,197,94,.06);border:1px solid rgba(34,197,94,.15);color:var(--green)}.insight-info{background:rgba(99,102,241,.06);border:1px solid rgba(99,102,241,.15);color:var(--indigo)}.insight-crit{background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.15);color:var(--red)}
+.insight{padding:8px 12px;border-radius:6px;margin-bottom:6px;font-size:11px;display:flex;align-items:center;gap:6px}.insight-warn{background:rgba(212,132,90,.06);border:1px solid rgba(212,132,90,.15);color:var(--orange)}.insight-good{background:rgba(122,138,104,.06);border:1px solid rgba(122,138,104,.15);color:var(--green)}.insight-info{background:rgba(107,110,82,.06);border:1px solid rgba(107,110,82,.15);color:var(--indigo)}.insight-crit{background:rgba(168,79,62,.06);border:1px solid rgba(168,79,62,.15);color:var(--red)}
 .insight-icon{font-size:14px;flex-shrink:0}
 /* Sparkline (CSS only mini bar chart) */
 .spark{display:flex;align-items:flex-end;gap:1px;height:24px}.spark-bar{flex:1;min-width:2px;border-radius:1px;background:var(--gold);opacity:.6;transition:all .15s}.spark-bar:hover{opacity:1}
@@ -64,24 +63,24 @@ body{background:var(--bg);color:var(--text);font-family:'DM Sans',sans-serif;pad
 .sig{flex:1;min-width:250px;padding:14px;border-radius:8px;background:var(--card);border:1px solid var(--border)}
 .sig-hdr{display:flex;align-items:center;gap:8px;margin-bottom:6px}
 .sig-dot{width:12px;height:12px;border-radius:50%}
-.sig-dot-green{background:#22c55e;box-shadow:0 0 8px rgba(34,197,94,.4)}
-.sig-dot-yellow{background:#eab308;box-shadow:0 0 8px rgba(234,179,8,.4)}
-.sig-dot-red{background:#ef4444;box-shadow:0 0 8px rgba(239,68,68,.4)}
-.sig-dot-gray{background:#5a5a68}
+.sig-dot-green{background:#7A8A68;box-shadow:0 0 8px rgba(122,138,104,.4)}
+.sig-dot-yellow{background:#C9A87A;box-shadow:0 0 8px rgba(201,168,122,.4)}
+.sig-dot-red{background:#A84F3E;box-shadow:0 0 8px rgba(168,79,62,.4)}
+.sig-dot-gray{background:#8A8C74}
 .sig-title{font-size:12px;font-weight:700;color:var(--text)}
 .sig-action{font-size:10px;color:var(--muted);margin-top:4px;line-height:1.4}
 .sig-metrics{display:flex;gap:12px;margin-top:8px;flex-wrap:wrap}
-.sig-metric{font-size:9px;color:var(--muted);font-family:'JetBrains Mono'}
+.sig-metric{font-size:9px;color:var(--muted);font-family:ui-monospace,'SF Mono',monospace}
 .sig-metric span{color:var(--text);font-weight:700}
 /* Cohort table */
-.cohort-tbl{width:100%;border-collapse:collapse;font-size:10px}.cohort-tbl th{text-align:center;padding:6px 8px;color:var(--muted);font-weight:700;border-bottom:1px solid var(--border);font-size:8px;text-transform:uppercase}.cohort-tbl td{padding:5px 8px;text-align:center;border-bottom:1px solid rgba(255,255,255,.03);font-family:'JetBrains Mono';font-size:10px}.cohort-tbl td:first-child{text-align:left}
+.cohort-tbl{width:100%;border-collapse:collapse;font-size:10px}.cohort-tbl th{text-align:center;padding:6px 8px;color:var(--muted);font-weight:700;border-bottom:1px solid var(--border);font-size:8px;text-transform:uppercase}.cohort-tbl td{padding:5px 8px;text-align:center;border-bottom:1px solid rgba(245,237,228,.03);font-family:ui-monospace,'SF Mono',monospace;font-size:10px}.cohort-tbl td:first-child{text-align:left}
 @media(max-width:900px){.kg{grid-template-columns:repeat(2,1fr)}.g2,.g3{grid-template-columns:1fr}.ug{grid-template-columns:1fr}.dr-dates{display:none}}
 </style>
 </head>
 <body>
 <div class="c">
-  <div class="hdr"><div><h1>🙏 prAmen</h1><p class="sub" id="ts">Loading...</p></div>
-  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div class="live"><span class="dot"></span>LIVE</div><span id="asc-status" class="asc-badge asc-no">Apple: ...</span><button class="rbtn" onclick="loadAll()">↻ Refresh</button>
+  <div class="hdr"><div><h1>prAmen</h1><p class="sub" id="ts">Loading...</p></div>
+  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div class="live"><span class="dot"></span>LIVE</div><span id="asc-status" class="asc-badge asc-no">Apple: ...</span><button class="rbtn" onclick="loadAll()">Refresh</button>
   <div class="tabs"><button class="tab active" onclick="go('overview',this)">Overview</button><button class="tab" onclick="go('funnel',this)">Funnel</button><button class="tab" onclick="go('users',this)">Users</button><button class="tab" onclick="go('events',this)">Events</button><button class="tab" onclick="go('revenue',this)">Revenue</button><button class="tab" onclick="go('web',this)">Web</button><button class="tab" onclick="go('circles',this)">Circles</button><button class="tab" onclick="go('growth',this)">Growth</button><button class="tab" onclick="go('organic',this)">Organic</button></div></div></div>
   <!-- Date Range Bar -->
   <div class="dr-bar">
@@ -103,8 +102,8 @@ var B=location.origin,K=new URLSearchParams(location.search).get("key")||"",
     GR=null,OG=null;
 
 // Event colors & labels
-var C={app_opened:"#6366f1",prayer_logged:"#f59e0b",paywall_viewed:"#ef4444",paywall_plan_selected:"#ec4899",onboarding_completed:"#22c55e",circle_created:"#06b6d4",circle_left:"#64748b",prayer_request_created:"#8b5cf6",share_tapped:"#14b8a6",scripture_viewed:"#a78bfa",circle_invite_accepted:"#06b6d4",circle_member_joined:"#22d3ee",encouragement_sent:"#14b8a6",user_signed_up:"#22c55e",account_deleted:"#ef4444",email_opt_in:"#34d399",streak_milestone:"#f59e0b",subscription_started:"#22c55e",subscription_cancelled:"#ef4444",subscription_renewed:"#14b8a6",subscription_expired:"#ef4444",lifetime_purchased:"#C9A44A",billing_issue_detected:"#f97316"};
-var L={app_opened:"App Open",prayer_logged:"Prayer",paywall_viewed:"Paywall",paywall_plan_selected:"Plan Tap",onboarding_completed:"Onboarding",circle_created:"Circle +",circle_left:"Circle Left",prayer_request_created:"Request",share_tapped:"Share",scripture_viewed:"Scripture",circle_invite_accepted:"Invite ✓",circle_member_joined:"Member +",encouragement_sent:"Encourage",user_signed_up:"Signup",account_deleted:"Delete",email_opt_in:"Email Opt-in",streak_milestone:"Streak 🔥",subscription_started:"💰 Subscribed",subscription_cancelled:"❌ Cancelled",subscription_renewed:"🔄 Renewed",subscription_expired:"Expired",lifetime_purchased:"💎 Lifetime",billing_issue_detected:"⚠️ Billing Issue"};
+var C={app_opened:"#6B6E52",prayer_logged:"#D4845A",paywall_viewed:"#A84F3E",paywall_plan_selected:"#B89E82",onboarding_completed:"#7A8A68",circle_created:"#88A8BC",circle_left:"#8A8C74",prayer_request_created:"#7A4F32",share_tapped:"#7F835F",scripture_viewed:"#9A6848",circle_invite_accepted:"#88A8BC",circle_member_joined:"#88A8BC",encouragement_sent:"#7F835F",user_signed_up:"#7A8A68",account_deleted:"#A84F3E",email_opt_in:"#7A8A68",streak_milestone:"#D4845A",subscription_started:"#7A8A68",subscription_cancelled:"#A84F3E",subscription_renewed:"#7F835F",subscription_expired:"#A84F3E",lifetime_purchased:"#9A6848",billing_issue_detected:"#D4845A"};
+var L={app_opened:"App Open",prayer_logged:"Prayer",paywall_viewed:"Paywall",paywall_plan_selected:"Plan Tap",onboarding_completed:"Onboarding",circle_created:"Circle +",circle_left:"Circle Left",prayer_request_created:"Request",share_tapped:"Share",scripture_viewed:"Scripture",circle_invite_accepted:"Invite",circle_member_joined:"Member +",encouragement_sent:"Encourage",user_signed_up:"Signup",account_deleted:"Delete",email_opt_in:"Email Opt-in",streak_milestone:"Streak",subscription_started:"Subscribed",subscription_cancelled:"Cancelled",subscription_renewed:"Renewed",subscription_expired:"Expired",lifetime_purchased:"Lifetime",billing_issue_detected:"Billing Issue"};
 
 // ─── Date helpers ──────────────────────────────────────────────
 function daysAgo(n){var d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-n);return d}
@@ -136,8 +135,8 @@ function calcDelta(current,previous){
 function deltaHtml(d){
   if(d===null||d===undefined||!COMPARE)return'';
   if(d===0)return'<div class="delta delta-flat">—</div>';
-  if(d>0)return'<div class="delta delta-up">↑'+d+'%</div>';
-  return'<div class="delta delta-down">↓'+Math.abs(d)+'%</div>';
+  if(d>0)return'<div class="delta delta-up">+'+d+'%</div>';
+  return'<div class="delta delta-down">'+d+'%</div>';
 }
 
 // ─── Navigation ───────────────────────────────────────────────
@@ -156,8 +155,9 @@ function loadAll(){
     fetch(B+"/api/dashboard/organic?key="+K).then(function(r){return r.json()}).catch(function(){return null})
   ]).then(function(r){
     D=r[0];PH=r[1]&&!r[1].error?r[1]:null;AP=r[2];RC=r[3]&&!r[3].error?r[3]:null;GR=r[4];OG=r[5];
-    document.getElementById("ts").textContent=new Date().toLocaleString()+" • "+(PH?PH.total_events+" events • "+PH.total_users+" users":"PH: connecting...")+(RC?" • MRR: $"+(RC.summary?.net_mrr||0).toFixed(2):"");
-    var ab=document.getElementById("asc-status");if(AP&&AP.connected){ab.className="asc-badge asc-ok";ab.textContent="Apple: ✓"}else{ab.className="asc-badge asc-no";ab.textContent="Apple: ✗"}
+    var rc=RC?.summary||{};
+    document.getElementById("ts").textContent=new Date().toLocaleString()+" · "+(PH?PH.total_events+" events · "+PH.total_users+" users":"PH: connecting...")+(rc.net_mrr?" · MRR: $"+rc.net_mrr.toFixed(2):"");
+    var ab=document.getElementById("asc-status");if(AP&&AP.connected){ab.className="asc-badge asc-ok";ab.textContent="Apple: OK"}else{ab.className="asc-badge asc-no";ab.textContent="Apple: --"}
     updateDateLabel();render();
   }).catch(function(e){document.getElementById("main").innerHTML='<div class="err">'+e.message+'</div>'});
 }
@@ -211,28 +211,23 @@ function pct(a,b){return b>0?Math.round(a/b*100):0}
 // ─── Insights generator ──────────────────────────────────────
 function generateInsights(m,pm){
   var ins=[];
-  // Paywall conversion
   if(m.pwUsers>0&&m.ptUsers>0){
     var conv=pct(m.ptUsers,m.pwUsers);
-    if(conv<5)ins.push({type:'crit',icon:'🚨',text:'Paywall conversion at '+conv+'% ('+m.ptUsers+' unique tappers / '+m.pwUsers+' viewers). Fix pricing display and CTA.'});
-    else if(conv<15)ins.push({type:'warn',icon:'⚠️',text:'Paywall conversion at '+conv+'%. Room to improve — test leading with Prayer Circles.'});
+    if(conv<5)ins.push({type:'crit',icon:'!!',text:'Paywall conversion at '+conv+'% ('+m.ptUsers+' unique tappers / '+m.pwUsers+' viewers). Fix pricing display and CTA.'});
+    else if(conv<15)ins.push({type:'warn',icon:'--',text:'Paywall conversion at '+conv+'%. Room to improve. Test leading with Prayer Circles.'});
   }
-  // Plan tap to purchase
   if(m.pTaps>10){
     var rc=RC?.summary||{};
     var purchases=rc.active_subscriptions||0;
-    if(purchases===0)ins.push({type:'crit',icon:'💳',text:m.pTaps+' plan taps but 0 purchases tracked. Paywall is broken or RC IDs not linked.'});
+    if(purchases===0)ins.push({type:'crit',icon:'!!',text:m.pTaps+' plan taps but 0 purchases tracked. Paywall is broken or RC IDs not linked.'});
   }
-  // Circle engagement
-  if(m.circles===0&&m.users>5)ins.push({type:'warn',icon:'👥',text:'No new circles created in this period. Push Circle feature in content and onboarding.'});
-  if(m.encouragements>10)ins.push({type:'good',icon:'💬',text:m.encouragements+' encouragements sent — Circle engagement is healthy.'});
-  // Growth
+  if(m.circles===0&&m.users>5)ins.push({type:'warn',icon:'--',text:'No new circles created in this period. Push Circle feature in content and onboarding.'});
+  if(m.encouragements>10)ins.push({type:'good',icon:'OK',text:m.encouragements+' encouragements sent. Circle engagement is healthy.'});
   if(COMPARE&&pm){
-    if(pm.users>0){var userGrowth=pct(m.users-pm.users,pm.users);if(userGrowth>20)ins.push({type:'good',icon:'📈',text:'User base grew '+userGrowth+'% vs previous period.'});if(userGrowth<-10)ins.push({type:'warn',icon:'📉',text:'User base declined '+Math.abs(userGrowth)+'% vs previous period.'});}
-    if(pm.prayers>0){var prayerGrowth=pct(m.prayers-pm.prayers,pm.prayers);if(prayerGrowth>20)ins.push({type:'good',icon:'🙏',text:'Prayers logged up '+prayerGrowth+'% — engagement increasing.'});}
+    if(pm.users>0){var userGrowth=pct(m.users-pm.users,pm.users);if(userGrowth>20)ins.push({type:'good',icon:'UP',text:'User base grew '+userGrowth+'% vs previous period.'});if(userGrowth<-10)ins.push({type:'warn',icon:'DN',text:'User base declined '+Math.abs(userGrowth)+'% vs previous period.'});}
+    if(pm.prayers>0){var prayerGrowth=pct(m.prayers-pm.prayers,pm.prayers);if(prayerGrowth>20)ins.push({type:'good',icon:'UP',text:'Prayers logged up '+prayerGrowth+'%. Engagement increasing.'});}
   }
-  // DAU
-  if(m.avgDau>0&&m.avgDau<3)ins.push({type:'warn',icon:'📊',text:'Avg DAU is '+m.avgDau+'. Focus on push notifications and streak reminders.'});
+  if(m.avgDau>0&&m.avgDau<3)ins.push({type:'warn',icon:'--',text:'Avg DAU is '+m.avgDau+'. Focus on push notifications and streak reminders.'});
   return ins;
 }
 
@@ -241,18 +236,17 @@ function generateInsights(m,pm){
 // ═══════════════════════════════════════════════════════════════
 function rOv(){
   var p=getPeriodEvents(),m=computeMetrics(p.cur),pm=COMPARE?computeMetrics(p.prev):null;
-  var k=D.kpis,s=D.subscription_breakdown||{},rc=RC?.summary||{};
-  var mrrDisplay=rc.net_mrr||k.mrr_net||0;
+  var k=D.kpis,rc=RC?.summary||{};
+  // Use RevenueCat data for MRR (source of truth)
+  var mrrDisplay=rc.net_mrr||rc.mrr_estimated||k.mrr_net||0;
   var insights=generateInsights(m,pm);
 
-  // Apple data from screenshot/known values or API
+  // Apple data from API only — no hardcoded fallbacks
   var appleImpressions=AP?.daily_metrics?.reduce(function(s,r){return s+(r.impressions||0)},0)||0;
   var appleDownloads=AP?.daily_metrics?.reduce(function(s,r){return s+(r.app_units||0)},0)||0;
-  var appleConv=AP?.daily_metrics?.length>0&&appleImpressions>0?((appleDownloads/appleImpressions)*100).toFixed(1)+'%':'—';
 
   var html='';
-  // Insights
-  if(insights.length)html+='<div style="margin-bottom:12px">'+insights.map(function(i){return'<div class="insight insight-'+i.type+'"><span class="insight-icon">'+i.icon+'</span>'+i.text+'</div>'}).join('')+'</div>';
+  if(insights.length)html+='<div style="margin-bottom:12px">'+insights.map(function(i){return'<div class="insight insight-'+i.type+'"><span class="insight-icon" style="font-weight:700;font-size:10px;font-family:ui-monospace,monospace">'+i.icon+'</span>'+i.text+'</div>'}).join('')+'</div>';
 
   html+='<div class="kg">'+
     kpi("MRR (Net)","$"+mrrDisplay.toFixed(2),"var(--gold)",COMPARE&&pm?calcDelta(mrrDisplay,mrrDisplay):null)+
@@ -267,29 +261,35 @@ function rOv(){
     kpi("Web (30d)",k.landing_visitors_7d,"var(--teal)",null)+
   '</div>';
 
-  // ─── APPLE APP STORE (prominent) ──────────────────────────────
+  // ─── APPLE APP STORE ──────────────────────────────────────────
   var appleProceeds=AP?.daily_metrics?.reduce(function(s,r){return s+(r.proceeds||0)},0)||0;
   var applePpv=AP?.daily_metrics?.reduce(function(s,r){return s+(r.product_page_views||0)},0)||0;
-  // Use API data if available, otherwise show known data from App Store Connect
   var hasAppleApi=AP?.daily_metrics?.length>0&&appleImpressions>0;
-  var dispImp=hasAppleApi?appleImpressions:211;
-  var dispPpv=hasAppleApi?applePpv:116;
-  var dispDl=hasAppleApi?appleDownloads:27;
-  var dispProc=hasAppleApi?appleProceeds:21;
-  var dispConv=dispPpv>0?((dispDl/dispPpv)*100).toFixed(1):'43.4';
-  var dispD2P=3.45;
-  var appleSource=hasAppleApi?'Apple Analytics API':'App Store Connect (90d)';
+  // No hardcoded fallbacks — show real data or "—"
+  var dispImp=hasAppleApi?appleImpressions:'—';
+  var dispPpv=hasAppleApi?applePpv:'—';
+  var dispDl=hasAppleApi?appleDownloads:'—';
+  var dispProc=hasAppleApi?'$'+appleProceeds.toFixed(0):'—';
+  var dispConv=hasAppleApi&&applePpv>0?((appleDownloads/applePpv)*100).toFixed(1)+'%':'—';
+  // D1→Paid: calculate from actual data if available
+  var dispD2P='—';
+  if(hasAppleApi&&appleDownloads>0){
+    // Estimate from revenue events: subscriptions started within period / downloads
+    var subEvents=0;if(PH&&PH.recent_events){PH.recent_events.forEach(function(e){if(e.event==='subscription_started'||e.event==='lifetime_purchased')subEvents++})}
+    if(subEvents>0)dispD2P=(subEvents/appleDownloads*100).toFixed(1)+'%';
+  }
+  var appleSource=hasAppleApi?'Apple Analytics API':'Waiting for Apple data';
 
-  html+='<div class="cd" style="border-color:rgba(201,164,74,.2)"><h3>📱 App Store Performance <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;font-size:8px">· '+appleSource+'</span></h3>';
+  html+='<div class="cd" style="border-color:rgba(154,104,72,.2)"><h3>App Store Performance <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;font-size:8px"> · '+appleSource+'</span></h3>';
   html+='<div class="kg" style="margin-bottom:8px;grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
-    kpi("Impressions",dispImp.toLocaleString(),"var(--indigo)")+
-    kpi("Page Views",dispPpv.toLocaleString(),"var(--blue)")+
+    kpi("Impressions",typeof dispImp==='number'?dispImp.toLocaleString():dispImp,"var(--indigo)")+
+    kpi("Page Views",typeof dispPpv==='number'?dispPpv.toLocaleString():dispPpv,"var(--blue)")+
     kpi("Downloads",dispDl,"var(--green)")+
-    kpi("Store Conv.",dispConv+"%","var(--pink)")+
-    kpi("Proceeds","$"+dispProc,"var(--gold)")+
-    kpi("D1 → Paid",dispD2P+"%","var(--orange)")+
+    kpi("Store Conv.",dispConv,"var(--pink)")+
+    kpi("Proceeds",dispProc,"var(--gold)")+
+    kpi("D1 to Paid",dispD2P,"var(--orange)")+
   '</div>';
-  if(!hasAppleApi)html+='<div style="font-size:9px;color:var(--muted);padding:2px 0">Apple Analytics Reports API is processing. Numbers above are from App Store Connect. Data will auto-populate once report instances are ready.</div>';
+  if(!hasAppleApi)html+='<div style="font-size:9px;color:var(--muted);padding:2px 0">Apple Analytics Reports API is processing. Data will auto-populate once report instances are ready.</div>';
   html+='</div>';
 
   // DAU sparkline
@@ -309,8 +309,13 @@ function rOv(){
   var planSorted=Object.entries(m.plans).sort(function(a,b){return b[1]-a[1]});
   html+=planSorted.length?planSorted.map(function(x){return row(x[0],x[1],x[0]==="yearly"?"var(--green)":"var(--indigo)")}).join(''):'—';
 
-  html+='</div><div class="cd"><h3>Subscription Status</h3>'+Object.entries(s).map(function(e){return row(e[0]||"none",e[1],e[0]==="active"?"var(--green)":"var(--muted)")}).join('');
-  html+='<h3 style="margin-top:14px">Circles</h3>'+row("Active",D.circles.total,"var(--blue)")+row("Members",D.circles.total_members,"var(--indigo)")+row("Encouragements",D.circles.total_encouragements,"var(--teal)");
+  // Use RevenueCat for subscription status (source of truth), fall back to DB
+  html+='</div><div class="cd"><h3>Subscription Status (RevenueCat)</h3>';
+  html+=row("Active Subs",rc.active_subscriptions||0,"var(--green)");
+  html+=row("Active Trials",rc.active_trials||0,"var(--blue)");
+  html+=row("MRR (Gross)","$"+(rc.mrr_estimated||0).toFixed(2),"var(--gold)");
+  html+=row("MRR (Net)","$"+(rc.net_mrr||0).toFixed(2),"var(--gold)");
+  html+='<h3 style="margin-top:14px">Circles</h3>'+row("Active",D.circles.total,"var(--blue)")+row("Members",D.circles.total_members,"var(--indigo)")+row("Encouragements",D.circles.total_encouragements||0,"var(--teal)");
   html+='</div></div>';
   return html;
 }
@@ -328,7 +333,7 @@ function rFn(){
     {l:"Paywall View",c:fn.paywall.size,cl:"var(--red)",k:"paywall"},
     {l:"Plan Tapped",c:fn.plan_tap.size,cl:"var(--pink)",k:"plan_tap"},
     {l:"Signed Up",c:fn.signup.size,cl:"var(--indigo)",k:"signup"},
-    {l:"💰 Subscribed",c:fn.subscribed.size,cl:"var(--gold)",k:"subscribed"},
+    {l:"Subscribed",c:fn.subscribed.size,cl:"var(--gold)",k:"subscribed"},
     {l:"First Prayer",c:fn.prayer.size,cl:"var(--orange)",k:"prayer"},
     {l:"Scripture",c:fn.scripture.size,cl:"var(--purple)",k:"scripture"},
     {l:"Circle Created",c:fn.circle.size,cl:"var(--teal)",k:"circle"}
@@ -336,8 +341,7 @@ function rFn(){
   var mx=steps[0].c||1;
 
   var html='';
-  // Cancelled / Churned alert
-  if(fn.cancelled.size>0)html+='<div class="insight insight-crit"><span class="insight-icon">❌</span>'+fn.cancelled.size+' user'+(fn.cancelled.size>1?'s':'')+' cancelled subscription in this period</div>';
+  if(fn.cancelled.size>0)html+='<div class="insight insight-crit"><span class="insight-icon" style="font-weight:700;font-size:10px;font-family:ui-monospace,monospace">!!</span>'+fn.cancelled.size+' user'+(fn.cancelled.size>1?'s':'')+' cancelled subscription in this period</div>';
 
   html+='<div class="cd"><h3>Activation Funnel ('+RANGE+'d)'+
     (COMPARE?' <span style="color:var(--blue);font-size:8px">vs previous '+RANGE+'d</span>':'')+'</h3>';
@@ -348,37 +352,34 @@ function rFn(){
     var prevVal=COMPARE&&pm?pm.funnel[s.k].size:null;
     var delt=prevVal!==null?calcDelta(s.c,prevVal):null;
     var stepHtml='';
-    if(i>0&&stepRate!==null)stepHtml+='<div class="f-step-rate">↓ '+stepRate+'% step conversion'+(dr>0?' (−'+dr+'% drop)':'')+'</div>';
-    stepHtml+='<div class="fs"><div class="fh"><div><span class="fn">'+(i+1)+'</span><span class="fl">'+s.l+'</span></div><div>'+(delt!==null?'<span style="font-size:8px;color:'+(delt>=0?'var(--green)':'var(--red)')+';margin-right:4px">'+(delt>=0?'↑':'↓')+Math.abs(delt)+'%</span>':'')+(dr>0?'<span class="fd">-'+dr+'%</span>':'')+'<span class="fc">'+s.c+'</span></div></div><div class="fba"><div class="ff" style="width:'+p2+'%;min-width:'+(s.c>0?12:0)+'px;background:'+s.cl+'"></div><span class="fp" style="color:'+(p2>35?'var(--bg)':'var(--muted)')+'">'+Math.round(p2)+'%</span></div></div>';
+    if(i>0&&stepRate!==null)stepHtml+='<div class="f-step-rate">'+stepRate+'% step conversion'+(dr>0?' (-'+dr+'% drop)':'')+'</div>';
+    stepHtml+='<div class="fs"><div class="fh"><div><span class="fn">'+(i+1)+'</span><span class="fl">'+s.l+'</span></div><div>'+(delt!==null?'<span style="font-size:8px;color:'+(delt>=0?'var(--green)':'var(--red)')+';margin-right:4px">'+(delt>=0?'+':'')+ delt+'%</span>':'')+(dr>0?'<span class="fd">-'+dr+'%</span>':'')+'<span class="fc">'+s.c+'</span></div></div><div class="fba"><div class="ff" style="width:'+p2+'%;min-width:'+(s.c>0?12:0)+'px;background:'+s.cl+'"></div><span class="fp" style="color:'+(p2>35?'var(--bg)':'var(--muted)')+'">'+Math.round(p2)+'%</span></div></div>';
     return stepHtml;
   }).join('');
   html+='</div>';
 
-  // Key conversion rates
   html+='<div class="g2"><div class="cd"><h3>Key Conversion Rates</h3>';
   var rates=[
-    {l:"Open → Onboarding",v:pct(fn.onboarding.size,fn.first_open.size)},
-    {l:"Onboarding → Paywall",v:pct(fn.paywall.size,fn.onboarding.size)},
-    {l:"Paywall → Plan Tap",v:pct(fn.plan_tap.size,fn.paywall.size)},
-    {l:"Plan Tap → Signup",v:pct(fn.signup.size,fn.plan_tap.size)},
-    {l:"Signup → Subscribed",v:pct(fn.subscribed.size,fn.signup.size)},
-    {l:"Signup → Prayer",v:pct(fn.prayer.size,fn.signup.size)},
-    {l:"Signup → Circle",v:pct(fn.circle.size,fn.signup.size)},
-    {l:"Open → Subscribed (overall)",v:pct(fn.subscribed.size,fn.first_open.size)},
-    {l:"Open → Signup (overall)",v:pct(fn.signup.size,fn.first_open.size)},
-    {l:"Open → Circle (overall)",v:pct(fn.circle.size,fn.first_open.size)},
+    {l:"Open > Onboarding",v:pct(fn.onboarding.size,fn.first_open.size)},
+    {l:"Onboarding > Paywall",v:pct(fn.paywall.size,fn.onboarding.size)},
+    {l:"Paywall > Plan Tap",v:pct(fn.plan_tap.size,fn.paywall.size)},
+    {l:"Plan Tap > Signup",v:pct(fn.signup.size,fn.plan_tap.size)},
+    {l:"Signup > Subscribed",v:pct(fn.subscribed.size,fn.signup.size)},
+    {l:"Signup > Prayer",v:pct(fn.prayer.size,fn.signup.size)},
+    {l:"Signup > Circle",v:pct(fn.circle.size,fn.signup.size)},
+    {l:"Open > Subscribed (overall)",v:pct(fn.subscribed.size,fn.first_open.size)},
+    {l:"Open > Signup (overall)",v:pct(fn.signup.size,fn.first_open.size)},
+    {l:"Open > Circle (overall)",v:pct(fn.circle.size,fn.first_open.size)},
   ];
   html+=rates.map(function(r){var c=r.v>=50?"var(--green)":r.v>=20?"var(--orange)":"var(--red)";return row(r.l,r.v+'%',c)}).join('');
   html+='</div>';
 
-  // DAU + high intent
   html+='<div class="cd"><h3>DAU Trend</h3>'+(m.dau.length?m.dau.slice(0,RANGE).map(function(d){return row(d.date,d.dau,"var(--indigo)")}).join(''):'—');
   html+='</div></div>';
 
-  // Highest intent users
   if(PH.users){
     var intent=PH.users.filter(function(u){return u.plan_taps>0}).sort(function(a,b){return b.plan_taps-a.plan_taps});
-    if(intent.length){html+='<div class="cd"><h3>Highest Intent Users ('+intent.length+' with plan taps)</h3>'+intent.slice(0,15).map(function(u){return'<div class="tr"><span class="n"><span class="mono" style="color:var(--gold);cursor:pointer" onclick="filterUser(\''+u.full_id+'\')">'+u.id+'</span>'+(u.city?' <span style="font-size:8px;color:var(--muted)">📍'+u.city+'</span>':'')+'</span><span class="ct" style="color:var(--pink)">'+u.plan_taps+' taps</span></div>'}).join('')+'</div>';}
+    if(intent.length){html+='<div class="cd"><h3>Highest Intent Users ('+intent.length+' with plan taps)</h3>'+intent.slice(0,15).map(function(u){return'<div class="tr"><span class="n"><span class="mono" style="color:var(--gold);cursor:pointer" onclick="filterUser(\''+u.full_id+'\')">'+u.id+'</span>'+(u.city?' <span style="font-size:8px;color:var(--muted)">'+u.city+'</span>':'')+'</span><span class="ct" style="color:var(--pink)">'+u.plan_taps+' taps</span></div>'}).join('')+'</div>';}
   }
   return html;
 }
@@ -398,11 +399,11 @@ function rUs(){if(!PH)return'<div class="err">PostHog not connected</div>';var u
   var selSeg=selUser?userSeg(selUser):null;
   var selScore=selUser?engScore(selUser):0;
   var selDays=selUser?Math.floor((new Date(selUser.last_seen).getTime()-new Date(selUser.first_seen).getTime())/(24*60*60*1000))+1:0;
-  return'<div class="kg" style="grid-template-columns:repeat(5,1fr)">'+kpi("Power Users ⚡",segs.POWER,"var(--green)")+kpi("Active",segs.ACTIVE,"var(--indigo)")+kpi("New 🆕",segs.NEW,"var(--blue)")+kpi("At Risk ⚠️",segs["AT RISK"],"var(--orange)")+kpi("Dormant",segs.DORMANT,"var(--red)")+'</div>'+
-  '<div class="ug"><div class="cd" style="max-height:580px;overflow-y:auto"><h3>Users ('+users.length+') • Avg '+avgEv+' events</h3>'+users.map(function(u){var sg=userSeg(u);var sc=engScore(u);var h={pr:u.event_types.prayer_logged||0,ci:u.event_types.circle_created||0,pw:u.plan_taps,sc2:u.event_types.scripture_viewed||0,en:u.event_types.encouragement_sent||0};return'<div class="ui'+(SU===u.full_id?' ac':'')+'" onclick="SU=SU===\''+u.full_id+'\'?null:\''+u.full_id+'\';render()"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="ud" style="background:'+sg.clr+'"></span><span class="uid" style="color:var(--gold)">'+u.id+'</span> <span class="seg '+sg.c+'">'+sg.l+'</span></div><span style="font-size:8px;color:var(--muted)">'+timeAgo(u.last_seen)+'</span></div><div class="um"><span>'+u.event_count+'ev</span>'+(h.pr?'<span>🙏'+h.pr+'</span>':'')+(h.ci?'<span>👥'+h.ci+'</span>':'')+(u.max_streak?'<span>🔥'+u.max_streak+'</span>':'')+(h.pw?'<span>💳'+h.pw+'</span>':'')+(h.en?'<span>💬'+h.en+'</span>':'')+(h.sc2?'<span>📖'+h.sc2+'</span>':'')+(u.city?'<span>📍'+u.city+'</span>':'')+'</div><div class="ub"><div class="ubf" style="width:'+sc+'%;background:'+sg.clr+'"></div></div></div>'}).join('')+'</div>'+
+  return'<div class="kg" style="grid-template-columns:repeat(5,1fr)">'+kpi("Power Users",segs.POWER,"var(--green)")+kpi("Active",segs.ACTIVE,"var(--indigo)")+kpi("New",segs.NEW,"var(--blue)")+kpi("At Risk",segs["AT RISK"],"var(--orange)")+kpi("Dormant",segs.DORMANT,"var(--red)")+'</div>'+
+  '<div class="ug"><div class="cd" style="max-height:580px;overflow-y:auto"><h3>Users ('+users.length+') · Avg '+avgEv+' events</h3>'+users.map(function(u){var sg=userSeg(u);var sc=engScore(u);var h={pr:u.event_types.prayer_logged||0,ci:u.event_types.circle_created||0,pw:u.plan_taps,sc2:u.event_types.scripture_viewed||0,en:u.event_types.encouragement_sent||0};return'<div class="ui'+(SU===u.full_id?' ac':'')+'" onclick="SU=SU===\''+u.full_id+'\'?null:\''+u.full_id+'\';render()"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="ud" style="background:'+sg.clr+'"></span><span class="uid" style="color:var(--gold)">'+u.id+'</span> <span class="seg '+sg.c+'">'+sg.l+'</span></div><span style="font-size:8px;color:var(--muted)">'+timeAgo(u.last_seen)+'</span></div><div class="um"><span>'+u.event_count+'ev</span>'+(h.pr?'<span>pr:'+h.pr+'</span>':'')+(h.ci?'<span>ci:'+h.ci+'</span>':'')+(u.max_streak?'<span>str:'+u.max_streak+'</span>':'')+(h.pw?'<span>pay:'+h.pw+'</span>':'')+(h.en?'<span>enc:'+h.en+'</span>':'')+(h.sc2?'<span>scr:'+h.sc2+'</span>':'')+(u.city?'<span>'+u.city+'</span>':'')+'</div><div class="ub"><div class="ubf" style="width:'+sc+'%;background:'+sg.clr+'"></div></div></div>'}).join('')+'</div>'+
   '<div class="cd"><h3>'+(SU?'':'Recent Events')+'</h3>'+
-  (selUser?'<div class="usr-hdr"><span class="usr-name">'+selUser.id+'</span><span class="seg '+selSeg.c+'">'+selSeg.l+'</span><span class="usr-meta">'+selUser.city+(selUser.country?' '+selUser.country:'')+'</span><button class="rbtn" onclick="SU=null;render()">✕</button></div><div class="usr-stats"><div class="usr-stat"><div class="sv" style="color:var(--gold)">'+selScore+'</div><div class="sl">Score</div></div><div class="usr-stat"><div class="sv" style="color:var(--indigo)">'+selUser.event_count+'</div><div class="sl">Events</div></div><div class="usr-stat"><div class="sv" style="color:var(--green)">'+selDays+'d</div><div class="sl">Span</div></div><div class="usr-stat"><div class="sv" style="color:var(--orange)">🔥'+selUser.max_streak+'</div><div class="sl">Streak</div></div><div class="usr-stat"><div class="sv" style="color:var(--pink)">'+selUser.plan_taps+'</div><div class="sl">Plan Taps</div></div><div class="usr-stat"><div class="sv" style="color:var(--teal)">'+(selUser.event_types.prayer_logged||0)+'</div><div class="sl">Prayers</div></div></div>':'')+
-  '<div class="el">'+filtered.map(function(e,i){var t=new Date(e.timestamp);var gap="";if(SU&&i>0){var prev=new Date(filtered[i-1].timestamp).getTime();var diff=prev-t.getTime();if(diff>30*60*1000)gap='<div class="tgap">── '+gapLabel(diff)+' ──</div>'}return gap+'<div class="ei"><div class="ed" style="background:'+(C[e.event]||'var(--muted)')+'"></div><div style="flex:1"><div style="display:flex;justify-content:space-between"><span class="en" style="color:'+(C[e.event]||'var(--text)')+'">'+(L[e.event]||e.event)+'</span><span class="et">'+t.toLocaleDateString()+' '+t.toLocaleTimeString()+'</span></div><div class="tg">'+((!SU)?'<span class="uid" style="color:var(--muted);cursor:pointer" onclick="filterUser(\''+e.full_user_id+'\')">'+e.user+'</span>':'')+(e.properties.type?'<span style="color:var(--muted)">'+e.properties.type+'</span>':'')+(e.properties.plan?'<span style="color:var(--pink)">'+e.properties.plan+'</span>':'')+(e.properties.streak?'<span style="color:var(--green)">🔥'+e.properties.streak+'</span>':'')+(e.properties.city?'<span style="color:var(--muted)">📍'+e.properties.city+'</span>':'')+'</div></div></div>'}).join('')+'</div></div></div>'}
+  (selUser?'<div class="usr-hdr"><span class="usr-name">'+selUser.id+'</span><span class="seg '+selSeg.c+'">'+selSeg.l+'</span><span class="usr-meta">'+selUser.city+(selUser.country?' '+selUser.country:'')+'</span><button class="rbtn" onclick="SU=null;render()">X</button></div><div class="usr-stats"><div class="usr-stat"><div class="sv" style="color:var(--gold)">'+selScore+'</div><div class="sl">Score</div></div><div class="usr-stat"><div class="sv" style="color:var(--indigo)">'+selUser.event_count+'</div><div class="sl">Events</div></div><div class="usr-stat"><div class="sv" style="color:var(--green)">'+selDays+'d</div><div class="sl">Span</div></div><div class="usr-stat"><div class="sv" style="color:var(--orange)">'+selUser.max_streak+'</div><div class="sl">Streak</div></div><div class="usr-stat"><div class="sv" style="color:var(--pink)">'+selUser.plan_taps+'</div><div class="sl">Plan Taps</div></div><div class="usr-stat"><div class="sv" style="color:var(--teal)">'+(selUser.event_types.prayer_logged||0)+'</div><div class="sl">Prayers</div></div></div>':'')+
+  '<div class="el">'+filtered.map(function(e,i){var t=new Date(e.timestamp);var gap="";if(SU&&i>0){var prev=new Date(filtered[i-1].timestamp).getTime();var diff=prev-t.getTime();if(diff>30*60*1000)gap='<div class="tgap">-- '+gapLabel(diff)+' --</div>'}return gap+'<div class="ei"><div class="ed" style="background:'+(C[e.event]||'var(--muted)')+'"></div><div style="flex:1"><div style="display:flex;justify-content:space-between"><span class="en" style="color:'+(C[e.event]||'var(--text)')+'">'+(L[e.event]||e.event)+'</span><span class="et">'+t.toLocaleDateString()+' '+t.toLocaleTimeString()+'</span></div><div class="tg">'+((!SU)?'<span class="uid" style="color:var(--muted);cursor:pointer" onclick="filterUser(\''+e.full_user_id+'\')">'+e.user+'</span>':'')+(e.properties.type?'<span style="color:var(--muted)">'+e.properties.type+'</span>':'')+(e.properties.plan?'<span style="color:var(--pink)">'+e.properties.plan+'</span>':'')+(e.properties.streak?'<span style="color:var(--green)">str:'+e.properties.streak+'</span>':'')+(e.properties.city?'<span style="color:var(--muted)">'+e.properties.city+'</span>':'')+'</div></div></div>'}).join('')+'</div></div></div>'}
 
 // ═══════════════════════════════════════════════════════════════
 // ─── EVENTS TAB (with search & filter) ─────────────────────────
@@ -413,10 +414,8 @@ function setEvtType(t,el){EVT_TYPE=EVT_TYPE===t?'all':t;render()}
 function rEv(){
   if(!PH)return'<div class="err">PostHog not connected</div>';
   var p=getPeriodEvents(),evs=p.cur.filter(function(e){return e.event!=="$identify"});
-  // Get unique event types for filters
   var types={};evs.forEach(function(e){types[e.event]=(types[e.event]||0)+1});
   var typeSorted=Object.entries(types).sort(function(a,b){return b[1]-a[1]});
-  // Apply search & type filter
   var filtered=evs;
   if(EVT_SEARCH)filtered=filtered.filter(function(e){
     var ev=(L[e.event]||e.event).toLowerCase();
@@ -427,18 +426,14 @@ function rEv(){
   if(EVT_TYPE!=='all')filtered=filtered.filter(function(e){return e.event===EVT_TYPE});
 
   var html='<div class="cd"><h3>Event Stream ('+filtered.length+' of '+evs.length+' in '+RANGE+'d)</h3>';
-  // Search bar
   html+='<div class="search-bar"><input class="search-input" type="text" placeholder="Search events, users, properties..." value="'+EVT_SEARCH+'" oninput="setEvtSearch(this.value)"><button class="filter-chip'+(EVT_TYPE==='all'?' on':'')+'" onclick="EVT_TYPE=\'all\';render()">All</button>';
   html+=typeSorted.slice(0,8).map(function(t){return'<button class="filter-chip'+(EVT_TYPE===t[0]?' on':'')+'" onclick="setEvtType(\''+t[0]+'\')" style="'+(EVT_TYPE===t[0]?'border-color:'+(C[t[0]]||'var(--gold)')+';color:'+(C[t[0]]||'var(--gold)'):'')+'">'+( L[t[0]]||t[0])+' <span class="mono" style="font-size:8px">'+t[1]+'</span></button>'}).join('');
   html+='</div>';
-  // Event list
-  html+='<div class="el" style="max-height:600px">'+filtered.slice(0,300).map(function(e){var t=new Date(e.timestamp);return'<div class="ei"><div class="ed" style="background:'+(C[e.event]||'var(--muted)')+'"></div><div style="flex:1"><div style="display:flex;justify-content:space-between"><span class="en" style="color:'+(C[e.event]||'var(--text)')+'">'+(L[e.event]||e.event)+'</span><span class="et">'+t.toLocaleDateString()+' '+t.toLocaleTimeString()+'</span></div><div class="tg"><span class="uid" style="color:var(--muted);cursor:pointer" onclick="filterUser(\''+e.full_user_id+'\')">'+e.user+'</span>'+(e.properties.type?'<span style="color:var(--muted)">'+e.properties.type+'</span>':'')+(e.properties.plan?'<span style="color:var(--pink)">'+e.properties.plan+'</span>':'')+(e.properties.streak?'<span style="color:var(--green)">🔥'+e.properties.streak+'</span>':'')+(e.properties.city?'<span style="color:var(--muted)">📍'+e.properties.city+'</span>':'')+(e.properties.circle_name?'<span style="color:var(--blue)">'+e.properties.circle_name+'</span>':'')+'</div></div></div>'}).join('');
+  html+='<div class="el" style="max-height:600px">'+filtered.slice(0,300).map(function(e){var t=new Date(e.timestamp);return'<div class="ei"><div class="ed" style="background:'+(C[e.event]||'var(--muted)')+'"></div><div style="flex:1"><div style="display:flex;justify-content:space-between"><span class="en" style="color:'+(C[e.event]||'var(--text)')+'">'+(L[e.event]||e.event)+'</span><span class="et">'+t.toLocaleDateString()+' '+t.toLocaleTimeString()+'</span></div><div class="tg"><span class="uid" style="color:var(--muted);cursor:pointer" onclick="filterUser(\''+e.full_user_id+'\')">'+e.user+'</span>'+(e.properties.type?'<span style="color:var(--muted)">'+e.properties.type+'</span>':'')+(e.properties.plan?'<span style="color:var(--pink)">'+e.properties.plan+'</span>':'')+(e.properties.streak?'<span style="color:var(--green)">str:'+e.properties.streak+'</span>':'')+(e.properties.city?'<span style="color:var(--muted)">'+e.properties.city+'</span>':'')+(e.properties.circle_name?'<span style="color:var(--blue)">'+e.properties.circle_name+'</span>':'')+'</div></div></div>'}).join('');
   if(filtered.length>300)html+='<div style="text-align:center;padding:10px;color:var(--muted);font-size:10px">Showing 300 of '+filtered.length+'</div>';
   html+='</div></div>';
 
-  // Event type breakdown card
   html+='<div class="cd"><h3>Event Types ('+RANGE+'d)</h3><table class="tbl"><tr><th>Event</th><th>Count</th><th>% of Total</th><th>Unique Users</th></tr>';
-  // Calculate unique users per event type
   var typeUsers={};evs.forEach(function(e){if(!typeUsers[e.event])typeUsers[e.event]=new Set();typeUsers[e.event].add(e.full_user_id)});
   html+=typeSorted.map(function(t){return'<tr><td style="color:'+(C[t[0]]||'var(--text)')+'">'+(L[t[0]]||t[0])+'</td><td class="mono">'+t[1]+'</td><td class="mono">'+Math.round(t[1]/evs.length*100)+'%</td><td class="mono">'+(typeUsers[t[0]]?typeUsers[t[0]].size:0)+'</td></tr>'}).join('');
   html+='</table></div>';
@@ -452,7 +447,7 @@ function rRv(){
   var k=D.kpis,d=D.revenue.daily||[],ev=D.revenue.recent_events||[],rc=RC?.summary||{},subs=RC?.subscribers||[];
   var gross=rc.total_revenue_estimated||k.revenue_gross_30d||0;var net=gross*(1-0.15);
   return'<div class="kg">'+kpi("Revenue (Gross)","$"+gross.toFixed(2),"var(--orange)")+kpi("Revenue (Net)","$"+net.toFixed(2),"var(--gold)")+kpi("MRR (Net)","$"+(rc.net_mrr||0).toFixed(2),"var(--gold)")+kpi("Active Subs",rc.active_subscriptions||0,"var(--green)")+kpi("Active Trials",rc.active_trials||0,"var(--blue)")+kpi("Apple Cut","15%","var(--muted)")+'</div>'+
-  (subs.length?'<div class="cd"><h3>Active Subscribers (from RevenueCat)</h3><table class="tbl"><tr><th>User</th><th>Product</th><th>Status</th><th>Purchased</th><th>Expires</th><th>Period</th></tr>'+subs.map(function(s){return s.subscriptions.map(function(sub){var active=sub.is_active;return'<tr><td class="mono" style="color:var(--gold)">'+(s.name||s.user_id.substring(0,12))+'</td><td class="mono">'+sub.product.replace("pramen_","")+'</td><td style="color:'+(active?"var(--green)":"var(--red)")+'">'+(active?(sub.period_type==="trial"?"Trial":"Active"):"Expired")+'</td><td class="mono">'+new Date(sub.purchase_date).toLocaleDateString()+'</td><td class="mono">'+new Date(sub.expires_date).toLocaleDateString()+'</td><td>'+sub.period_type+'</td></tr>'}).join('')}).join('')+'</table></div>':'<div class="note">RevenueCat subscriber data loading... The Rork fix (Purchases.shared.logIn) needs to deploy to link RC IDs to backend users.</div>')+
+  (subs.length?'<div class="cd"><h3>Active Subscribers (from RevenueCat)</h3><table class="tbl"><tr><th>User</th><th>Product</th><th>Status</th><th>Purchased</th><th>Expires</th><th>Period</th></tr>'+subs.map(function(s){return s.subscriptions.map(function(sub){var active=sub.is_active;return'<tr><td class="mono" style="color:var(--gold)">'+(s.name||s.user_id.substring(0,12))+'</td><td class="mono">'+sub.product.replace("pramen_","")+'</td><td style="color:'+(active?"var(--green)":"var(--red)")+'">'+(active?(sub.period_type==="trial"?"Trial":"Active"):"Expired")+'</td><td class="mono">'+new Date(sub.purchase_date).toLocaleDateString()+'</td><td class="mono">'+new Date(sub.expires_date).toLocaleDateString()+'</td><td>'+sub.period_type+'</td></tr>'}).join('')}).join('')+'</table></div>':'<div class="note">RevenueCat subscriber data loading...</div>')+
   (d.length?'<div class="cd"><h3>Daily Revenue (Webhook Log)</h3><table class="tbl"><tr><th>Date</th><th>New</th><th>Renew</th><th>Cancel</th><th>Gross</th><th>Net</th></tr>'+d.map(function(r){return'<tr><td class="mono">'+r.date.split('T')[0]+'</td><td style="color:var(--green)">'+r.new_subscribers+'</td><td>'+r.renewals+'</td><td style="color:var(--red)">'+r.cancellations+'</td><td class="mono">$'+(r.revenue_gross||0).toFixed(2)+'</td><td class="mono" style="color:var(--gold)">$'+(r.revenue_net||0).toFixed(2)+'</td></tr>'}).join('')+'</table></div>':'')+
   (ev.length?'<div class="cd"><h3>Transaction Log</h3><table class="tbl"><tr><th>Time</th><th>Event</th><th>Plan</th><th>Price</th><th>User</th></tr>'+ev.map(function(e){return'<tr><td class="mono">'+new Date(e.created_at).toLocaleString()+'</td><td>'+e.event_type+'</td><td>'+(e.plan||'—')+'</td><td class="mono" style="color:var(--gold)">$'+(e.price||0).toFixed(2)+'</td><td class="mono" style="color:var(--muted)">'+(e.user_id||'').substring(0,8)+'</td></tr>'}).join('')+'</table></div>':'')+'</div>'}
 
@@ -462,27 +457,20 @@ function rRv(){
 function rWb(){
   var d=D.web.daily||[],asd=AP?.daily_metrics||[],an=AP?.analytics||{};
   var totalDl=asd.reduce(function(s,r){return s+(r.app_units||0)},0);var totalImp=asd.reduce(function(s,r){return s+(r.impressions||0)},0);var totalPpv=asd.reduce(function(s,r){return s+(r.product_page_views||0)},0);var ascConv=totalPpv>0?((totalDl/totalPpv)*100).toFixed(1)+"%":"—";
-  // Landing stats
   var tv=d.reduce(function(s,r){return s+(r.visitors||0)},0);var tc=d.reduce(function(s,r){return s+(r.app_store_clicks||0)},0);var lConv=tv>0?((tc/tv)*100).toFixed(1)+'%':'0%';
   return'<div class="kg">'+kpi("Visitors (30d)",tv,"var(--teal)")+kpi("App Store Clicks",tc,"var(--gold)")+kpi("Landing Conv.",lConv,"var(--green)")+kpi("Impressions",totalImp||"—","var(--indigo)")+kpi("Page Views",totalPpv||"—","var(--blue)")+kpi("Downloads",totalDl||"—","var(--green)")+kpi("Store Conv.",ascConv,"var(--pink)")+'</div>'+
-  '<div class="cd"><h3>Daily Landing Page (Plausible — 30d)</h3>'+(d.length?'<table class="tbl"><tr><th>Date</th><th>Visitors</th><th>Views</th><th>Bounce</th><th>Duration</th><th>Clicks</th><th>Conv.</th></tr>'+d.map(function(r){var cv=r.visitors>0?((r.app_store_clicks/r.visitors)*100).toFixed(1)+"%":"—";return'<tr><td class="mono">'+r.date.split('T')[0]+'</td><td class="mono">'+r.visitors+'</td><td>'+r.pageviews+'</td><td>'+(r.bounce_rate||0).toFixed(0)+'%</td><td>'+(r.visit_duration_avg||0).toFixed(0)+'s</td><td style="color:var(--gold)">'+r.app_store_clicks+'</td><td style="color:var(--green)">'+cv+'</td></tr>'}).join('')+'</table>':'<div class="note">Plausible data loads hourly.</div>')+'</div>'+
-  // Apple section
+  '<div class="cd"><h3>Daily Landing Page (Plausible, 30d)</h3>'+(d.length?'<table class="tbl"><tr><th>Date</th><th>Visitors</th><th>Views</th><th>Bounce</th><th>Duration</th><th>Clicks</th><th>Conv.</th></tr>'+d.map(function(r){var cv=r.visitors>0?((r.app_store_clicks/r.visitors)*100).toFixed(1)+"%":"—";return'<tr><td class="mono">'+r.date.split('T')[0]+'</td><td class="mono">'+r.visitors+'</td><td>'+r.pageviews+'</td><td>'+(r.bounce_rate||0).toFixed(0)+'%</td><td>'+(r.visit_duration_avg||0).toFixed(0)+'s</td><td style="color:var(--gold)">'+r.app_store_clicks+'</td><td style="color:var(--green)">'+cv+'</td></tr>'}).join('')+'</table>':'<div class="note">Plausible data loads hourly.</div>')+'</div>'+
   (asd.length?'<div class="cd"><h3>Daily App Store (Apple Analytics)</h3><table class="tbl"><tr><th>Date</th><th>Impressions</th><th>Page Views</th><th>Downloads</th><th>Conv. Rate</th><th>Proceeds</th></tr>'+asd.map(function(r){return'<tr><td class="mono">'+r.date.split('T')[0]+'</td><td class="mono">'+r.impressions+'</td><td class="mono">'+r.product_page_views+'</td><td style="color:var(--green)" class="mono">'+r.app_units+'</td><td class="mono">'+(r.conversion_rate*100).toFixed(1)+'%</td><td class="mono" style="color:var(--gold)">$'+(r.proceeds||0).toFixed(2)+'</td></tr>'}).join('')+'</table></div>':
   '<div class="cd"><h3>Apple App Store Analytics</h3>'+
-  '<div class="note" style="margin-bottom:8px">'+(an.status==="ok"?"Data parsed. Refresh to see.":an.status==="generating"?"Apple is generating reports. Data will appear within 24 hours.":"Reports requested — Apple is processing. Check back soon.")+
+  '<div class="note" style="margin-bottom:8px">'+(an.status==="ok"?"Data parsed. Refresh to see.":an.status==="generating"?"Apple is generating reports. Data will appear within 24 hours.":"Reports requested. Apple is processing. Check back soon.")+
   (an.reports_available?' <br>Reports found: '+an.reports_available.join(", "):"")+
   '</div>'+
-  '<div style="padding:8px;font-size:10px;color:var(--muted)"><strong style="color:var(--text)">From App Store Connect (manual reference):</strong><br>'+
-  '• 27 first-time downloads, 9 redownloads<br>'+
-  '• 211 impressions → 116 page views → 43.4% conversion rate<br>'+
-  '• $21 proceeds, 4 in-app purchases, 3.45% Day 1 download-to-paid<br>'+
-  '• 4 active plans, 1 paid plan<br>'+
-  '<span style="color:var(--gold)">These numbers will auto-populate once Apple finishes generating report instances.</span></div></div>')+'</div>'}
+  '<div style="padding:8px;font-size:10px;color:var(--muted)">Numbers will auto-populate once Apple finishes generating report instances.</div></div>')+'</div>'}
 
 // ═══════════════════════════════════════════════════════════════
 // ─── CIRCLES TAB ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════
-function rCr(){var cl=D.circles.circles||[];return'<div class="kg">'+kpi("Circles",D.circles.total,"var(--blue)")+kpi("Members",D.circles.total_members,"var(--indigo)")+kpi("Encouragements",D.circles.total_encouragements,"var(--teal)")+kpi("Requests",D.circles.total_prayer_requests,"var(--purple)")+'</div><div class="cd"><h3>All Prayer Circles</h3>'+(cl.length?'<table class="tbl"><tr><th>Name</th><th>Code</th><th>Members</th><th>Enc.</th><th>Req.</th><th>Created</th></tr>'+cl.map(function(c2){return'<tr><td><strong style="color:var(--text)">'+c2.name+'</strong></td><td class="mono" style="color:var(--gold)">'+c2.code+'</td><td class="mono">'+c2.members+'</td><td class="mono">'+c2.encouragements+'</td><td class="mono">'+c2.prayerRequests+'</td><td class="mono" style="color:var(--muted)">'+new Date(c2.createdAt).toLocaleDateString()+'</td></tr>'}).join('')+'</table>':'<div class="note">No circles.</div>')+'</div>'}
+function rCr(){var cl=D.circles.circles||[];return'<div class="kg">'+kpi("Circles",D.circles.total,"var(--blue)")+kpi("Members",D.circles.total_members,"var(--indigo)")+kpi("Encouragements",D.circles.total_encouragements||0,"var(--teal)")+kpi("Requests",D.circles.total_prayer_requests,"var(--purple)")+'</div><div class="cd"><h3>All Prayer Circles</h3>'+(cl.length?'<table class="tbl"><tr><th>Name</th><th>Code</th><th>Members</th><th>Enc.</th><th>Req.</th><th>Created</th></tr>'+cl.map(function(c2){return'<tr><td><strong style="color:var(--text)">'+c2.name+'</strong></td><td class="mono" style="color:var(--gold)">'+c2.code+'</td><td class="mono">'+c2.members+'</td><td class="mono">'+(c2.encouragements||0)+'</td><td class="mono">'+c2.prayerRequests+'</td><td class="mono" style="color:var(--muted)">'+new Date(c2.createdAt).toLocaleDateString()+'</td></tr>'}).join('')+'</table>':'<div class="note">No circles.</div>')+'</div>'}
 
 // ═══════════════════════════════════════════════════════════════
 // ─── GROWTH TAB ────────────────────────────────────────────────
@@ -498,7 +486,6 @@ function rGr(){
 
   var html='';
 
-  // Decision signals (traffic lights)
   html+='<div class="signal">';
   var sigs=[
     {title:'Unit Economics',data:s.unit_economics||{},metrics:['CPA: $'+(u.cpa!==null?u.cpa.toFixed(2):'—'),'LTV: $'+(u.ltv!==null?u.ltv.toFixed(2):'—'),'ROAS: '+(u.roas!==null?u.roas.toFixed(2)+'x':'—')]},
@@ -513,7 +500,6 @@ function rGr(){
   });
   html+='</div>';
 
-  // Acquisition KPIs
   html+='<div class="cd"><h3>Acquisition (30d)</h3>';
   html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">'+
     kpi("Total Ad Spend","$"+a.total_ad_spend_30d.toFixed(0),"var(--red)")+
@@ -531,7 +517,6 @@ function rGr(){
   }
   html+='</div>';
 
-  // Unit Economics
   html+='<div class="g2"><div class="cd"><h3>Unit Economics</h3>';
   html+=row("CPA (Cost per Paying Sub)",u.cpa!==null?"$"+u.cpa.toFixed(2):"—","var(--red)");
   html+=row("LTV (Lifetime Value)",u.ltv!==null?"$"+u.ltv.toFixed(2):"—","var(--green)");
@@ -543,7 +528,6 @@ function rGr(){
   html+=row("Revenue (30d)","$"+(u.revenue_30d||0).toFixed(2),"var(--gold)");
   html+='</div>';
 
-  // Viral Metrics
   html+='<div class="cd"><h3>Viral Loop</h3>';
   html+=row("Prayer Circles",v.circles||0,"var(--blue)");
   html+=row("Total Circle Members",v.total_circle_members||0,"var(--indigo)");
@@ -555,7 +539,6 @@ function rGr(){
   html+=row("Viral Coefficient (K)",(v.viral_k||0).toFixed(2),v.viral_k>=0.5?"var(--green)":v.viral_k>=0.2?"var(--yellow)":"var(--red)");
   html+='</div></div>';
 
-  // Cohort Retention
   if(cr.length){
     html+='<div class="cd"><h3>Cohort Retention</h3>';
     html+='<table class="cohort-tbl"><tr><th style="text-align:left">Cohort Week</th><th>Users</th><th>D1</th><th>D7</th><th>D14</th><th>D30</th></tr>';
@@ -567,7 +550,6 @@ function rGr(){
     html+='</table></div>';
   }
 
-  // Streak Distribution
   if(sd.length){
     html+='<div class="cd"><h3>Streak Distribution</h3>';
     var maxStreak=Math.max.apply(null,sd.map(function(s){return s.count}));
@@ -592,10 +574,9 @@ function rOg(){
 
   var html='';
 
-  // YouTube channel stats
   if(yt.channel){
     var ch=yt.channel;
-    html+='<div class="cd" style="border-color:rgba(239,68,68,.2)"><h3>YouTube · @fatherjohnprays</h3>';
+    html+='<div class="cd" style="border-color:rgba(168,79,62,.2)"><h3>YouTube · @fatherjohnprays</h3>';
     html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
       kpi("Subscribers",parseInt(ch.subscriberCount||0).toLocaleString(),"var(--red)")+
       kpi("Total Views",parseInt(ch.viewCount||0).toLocaleString(),"var(--blue)")+
@@ -603,7 +584,6 @@ function rOg(){
     '</div></div>';
   }
 
-  // Recent videos
   if(yt.recent_videos&&yt.recent_videos.length){
     html+='<div class="cd"><h3>Recent Videos</h3>';
     html+='<table class="tbl"><tr><th>Title</th><th>Views</th><th>Likes</th><th>Comments</th><th>Published</th></tr>';
@@ -613,7 +593,6 @@ function rOg(){
     html+='</table></div>';
   }
 
-  // Stored organic metrics by channel
   if(stored.length){
     var channels={};
     stored.forEach(function(r){if(!channels[r.channel])channels[r.channel]=[];channels[r.channel].push(r)});

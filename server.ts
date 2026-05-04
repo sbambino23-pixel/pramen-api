@@ -628,7 +628,7 @@ app.use("*", async (c, next) => {
 });
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.9.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.9.5", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -1974,7 +1974,19 @@ app.get("/api/dashboard", async (c) => {
     const sb: Record<string,number> = {}; for (const r of ss.rows) sb[r.subscription_status || "none"] = parseInt(r.count);
     const tg = rv.rows.reduce((s: number, r: any) => s + (r.revenue_gross||0), 0); const tn = rv.rows.reduce((s: number, r: any) => s + (r.revenue_net||0), 0);
     const tv = wd.rows.reduce((s: number, r: any) => s + (r.visitors||0), 0); const tc = wd.rows.reduce((s: number, r: any) => s + (r.app_store_clicks||0), 0);
-    return c.json({ generated_at: new Date().toISOString(), kpis: { total_users: parseInt(uc.rows[0]?.count||"0"), active_subscribers: (sb["active"]||0)+(sb["lifetime"]||0), mrr_net: tn, revenue_gross_30d: tg, revenue_net_30d: tn, active_circles: circles.size, total_circle_members: tm, landing_visitors_7d: tv, landing_app_store_clicks_7d: tc, landing_conversion: tv > 0 ? ((tc/tv)*100).toFixed(1)+"%" : "0%" }, subscription_breakdown: sb, revenue: { daily: rv.rows, recent_events: re.rows, total_subscribers_30d: rv.rows.reduce((s: number, r: any) => s+(r.new_subscribers||0), 0), total_cancellations_30d: rv.rows.reduce((s: number, r: any) => s+(r.cancellations||0), 0) }, web: { daily: wd.rows }, app_store: { daily: ad.rows }, circles: { total: circles.size, total_members: tm, total_prayer_requests: tp, circles: Array.from(circles.values()).map(ci => ({ name: ci.name, code: ci.code, members: ci.members.length, prayerRequests: ci.prayerRequests.length, createdAt: ci.createdAt })) } });
+    // v5.9.5 — encouragement counts for dashboard accuracy
+    const encTotal = parseInt((await pool.query("SELECT COUNT(*) as c FROM encouragements").catch(() => ({ rows: [{c:0}] }))).rows[0]?.c || 0);
+    // Per-circle encouragement counts
+    const circleData = await Promise.all(Array.from(circles.values()).map(async (ci) => {
+      const memberIds = ci.members.map(m => m.userId);
+      let encCount = 0;
+      if (memberIds.length > 0) {
+        const encRes = await pool.query(`SELECT COUNT(*) as c FROM encouragements WHERE sender_user_id = ANY($1) OR recipient_user_id = ANY($1)`, [memberIds]).catch(() => ({ rows: [{c:0}] }));
+        encCount = parseInt(encRes.rows[0]?.c || 0);
+      }
+      return { name: ci.name, code: ci.code, members: ci.members.length, encouragements: encCount, prayerRequests: ci.prayerRequests.length, createdAt: ci.createdAt };
+    }));
+    return c.json({ generated_at: new Date().toISOString(), kpis: { total_users: parseInt(uc.rows[0]?.count||"0"), active_subscribers: (sb["active"]||0)+(sb["lifetime"]||0), mrr_net: tn, revenue_gross_30d: tg, revenue_net_30d: tn, active_circles: circles.size, total_circle_members: tm, landing_visitors_7d: tv, landing_app_store_clicks_7d: tc, landing_conversion: tv > 0 ? ((tc/tv)*100).toFixed(1)+"%" : "0%" }, subscription_breakdown: sb, revenue: { daily: rv.rows, recent_events: re.rows, total_subscribers_30d: rv.rows.reduce((s: number, r: any) => s+(r.new_subscribers||0), 0), total_cancellations_30d: rv.rows.reduce((s: number, r: any) => s+(r.cancellations||0), 0) }, web: { daily: wd.rows }, app_store: { daily: ad.rows }, circles: { total: circles.size, total_members: tm, total_prayer_requests: tp, total_encouragements: encTotal, circles: circleData } });
   } catch (e: any) { return c.json({ error: "Dashboard failed", detail: e.message }, 500); }
 });
 
@@ -2000,7 +2012,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.8.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.9.5 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Meta CAPI: ${META_CAPI_ACCESS_TOKEN ? "✓" : "✗"} pixel=${META_PIXEL_ID || "-"}`);
