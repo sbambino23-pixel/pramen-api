@@ -628,7 +628,7 @@ app.use("*", async (c, next) => {
 });
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.9.6", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.9.7", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -1804,14 +1804,27 @@ app.get("/api/dashboard/revenuecat", async (c) => {
         if (!rcRes.ok) continue;
         const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue;
         const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {};
-        const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > new Date());
-        const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > new Date());
+        // v5.9.7 — match RC's MRR definition: only count subs that will renew (not cancelled/unsubscribed)
+        const now = new Date();
+        const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > now);
+        const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > now);
         let userRevenue = 0;
         for (const [pid, s2] of Object.entries(subscriptions) as any[]) { if (s2.store === "app_store" || s2.store === "play_store") { if (pid.includes("yearly")) userRevenue += 29.99; else if (pid.includes("monthly")) userRevenue += 3.99; else if (pid.includes("lifetime")) userRevenue += 149.99; } }
-        if (hasActive) activeCount++;
+        // Active subs = entitlement active AND not cancelled (will renew)
+        const willRenew = Object.values(subscriptions).some((s: any) => new Date(s.expires_date) > now && s.period_type !== "trial" && !s.unsubscribe_detected_at && !s.billing_issues_detected_at);
+        const isLifetime = Object.keys(subscriptions).some((pid) => pid.includes("lifetime"));
+        if (willRenew || isLifetime) activeCount++;
+        else if (hasActive && !hasTrial) { /* has access but cancelled — don't count as active sub */ }
         if (hasTrial) trialCount++;
         totalRevenue += userRevenue;
-        for (const [pid, s2] of Object.entries(subscriptions) as any[]) { const expires = new Date(s2.expires_date); if (expires > new Date() && s2.period_type !== "trial") { if (pid.includes("yearly")) mrr += 29.99 / 12; else if (pid.includes("monthly")) mrr += 3.99; } }
+        // MRR: only count subs that will actually renew (no unsubscribe_detected_at, no billing issues)
+        for (const [pid, s2] of Object.entries(subscriptions) as any[]) {
+          const expires = new Date(s2.expires_date);
+          if (expires > now && s2.period_type !== "trial" && !s2.unsubscribe_detected_at && !s2.billing_issues_detected_at) {
+            if (pid.includes("yearly")) mrr += 29.99 / 12;
+            else if (pid.includes("monthly")) mrr += 3.99;
+          }
+        }
         subscribers.push({ user_id: candidate.uid, name: candidate.name || null, email: candidate.email || null, db_status: candidate.db_status, has_active: hasActive, has_trial: hasTrial, revenue: userRevenue, entitlements: Object.keys(entitlements), subscriptions: Object.entries(subscriptions).map(([pid2, s3]: [string, any]) => ({ product: pid2, store: s3.store, purchase_date: s3.purchase_date, expires_date: s3.expires_date, period_type: s3.period_type, is_active: new Date(s3.expires_date) > new Date(), auto_resume_date: s3.auto_resume_date, unsubscribe_detected_at: s3.unsubscribe_detected_at })), first_seen: sub.first_seen });
       } catch { continue; }
     }
@@ -2063,7 +2076,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.9.6 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.9.7 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Meta CAPI: ${META_CAPI_ACCESS_TOKEN ? "✓" : "✗"} pixel=${META_PIXEL_ID || "-"}`);
