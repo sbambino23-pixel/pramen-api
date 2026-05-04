@@ -633,6 +633,12 @@ app.use("*", async (c, next) => {
 });
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
+// TikTok domain verification
+app.get("/tiktokvaEaRnqCoAhlOUYQ7qdLl6Hgh8JExbRL.txt", (c) => { c.header("Content-Type", "text/plain"); return c.text("tiktok-developers-site-verification=vaEaRnqCoAhlOUYQ7qdLl6Hgh8JExbRL"); });
+
+// TikTok OAuth callback
+app.get("/auth/tiktok/callback", (c) => { const code = c.req.query("code") || ""; return c.json({ status: "ok", code, message: "TikTok auth callback received. Save this code." }); });
+
 app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.10.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
