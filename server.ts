@@ -600,7 +600,7 @@ async function pullAppleSalesReport(): Promise<void> {
   const token = generateASCToken(); if (!token) return;
   try {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0].replace(/-/g, "");
-    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday + "&filter[vendorNumber]=89917651", { headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" } });
+    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday + "&filter[vendorNumber]=93967404", { headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" } });
     if (vendorRes.ok) {
       const buf = Buffer.from(await vendorRes.arrayBuffer());
       let text: string; try { text = gunzipSync(buf).toString("utf-8"); } catch { text = buf.toString("utf-8"); }
@@ -1870,7 +1870,7 @@ app.post("/api/dashboard/appstore/pull", async (c) => {
       const dateStr = d.toISOString().split("T")[0].replace(/-/g, "");
       const fmtDate = d.toISOString().split("T")[0];
       try {
-        const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr + "&filter[vendorNumber]=89917651", {
+        const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr + "&filter[vendorNumber]=93967404", {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" }
         });
         if (res.ok) {
