@@ -606,10 +606,10 @@ async function pullAppleSalesReport(): Promise<void> {
       let text: string; try { text = gunzipSync(buf).toString("utf-8"); } catch { text = buf.toString("utf-8"); }
       console.log("[Apple Sales] Got report, length:", text.length);
       const lines = text.split("\n").filter(l => l.trim());
-      if (lines.length > 1) { let totalUnits = 0; let totalProceeds = 0; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); totalUnits += parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; }
+      if (lines.length > 1) { let firstTimeDownloads = 0; let totalProceeds = 0; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); const pt = (cols[6]||"").trim(); const u = parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; if (pt==="1F"||pt==="F1"||pt==="FI1"||pt==="1") firstTimeDownloads += u; }
         const dateStr = yesterday;
-        await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=$2,proceeds=$3,updated_at=NOW()`, [dateStr, totalUnits, totalProceeds]);
-        console.log(`[Apple Sales] ${dateStr}: ${totalUnits} units, $${totalProceeds} proceeds`); }
+        await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=$2,proceeds=$3,updated_at=NOW()`, [dateStr, firstTimeDownloads, totalProceeds]);
+        console.log(`[Apple Sales] ${dateStr}: ${firstTimeDownloads} first-time downloads, $${totalProceeds} proceeds`); }
     } else { const errText = await vendorRes.text().catch(() => ""); console.log("[Apple Sales] Report not available:", vendorRes.status, errText.substring(0, 200)); }
   } catch (err: any) { console.error("[Apple Sales]", err.message); }
 }
@@ -1861,38 +1861,52 @@ app.post("/api/dashboard/appstore/pull", async (c) => {
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
   const token = generateASCToken(); if (!token) return c.json({ error: "Apple API not configured" }, 500);
   const results: any = { sales: null, analytics: null };
-  // Pull sales reports for last 7 days (Apple returns gzip-compressed TSV)
+  // Pull sales reports for last 30 days (Apple returns gzip-compressed TSV)
+  // Apple Sales TSV cols: 0=Provider 1=ProviderCountry 2=SKU 3=Developer 4=Title 5=Version 6=ProductTypeIdentifier 7=Units 8=DeveloperProceeds 9=Currency
+  // ProductTypeIdentifier: 1F=paid first-time, FI1=free first-time, IA1/IA9/IAY=IAP, 7/7F/7T=update, F7=free update
   try {
     let salesStored = 0;
     const salesDebug: any[] = [];
-    for (let daysBack = 1; daysBack <= 7; daysBack++) {
+    for (let daysBack = 1; daysBack <= 30; daysBack++) {
       const d = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
-      const dateStr = d.toISOString().split("T")[0].replace(/-/g, "");
       const fmtDate = d.toISOString().split("T")[0];
       try {
         const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[vendorNumber]=93967404&filter[reportDate]=" + fmtDate, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" }
         });
         if (res.ok) {
-          // Apple returns gzip-compressed TSV — decompress it
           const buf = Buffer.from(await res.arrayBuffer());
           let text: string;
           try { text = gunzipSync(buf).toString("utf-8"); } catch { text = buf.toString("utf-8"); }
           const lines = text.split("\n").filter((l: string) => l.trim());
           if (lines.length > 1) {
-            let totalUnits = 0; let totalProceeds = 0;
-            for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); totalUnits += parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; }
-            await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=GREATEST(daily_app_store_metrics.app_units,$2),proceeds=GREATEST(daily_app_store_metrics.proceeds,$3),updated_at=NOW()`, [fmtDate, totalUnits, totalProceeds]);
+            let firstTimeDownloads = 0; let redownloads = 0; let updates = 0; let iapUnits = 0; let totalProceeds = 0;
+            const rowDetails: any[] = [];
+            for (let i = 1; i < lines.length; i++) {
+              const cols = lines[i].split("\t");
+              const productType = (cols[6] || "").trim();
+              const units = parseInt(cols[7] || "0") || 0;
+              const proceeds = parseFloat(cols[8] || "0") || 0;
+              totalProceeds += proceeds;
+              // Classify by product type
+              if (productType === "1F" || productType === "F1" || productType === "FI1" || productType === "1") { firstTimeDownloads += units; }
+              else if (productType === "7" || productType === "7F" || productType === "7T" || productType === "F7") { updates += units; }
+              else if (productType.startsWith("IA")) { iapUnits += units; }
+              else { redownloads += units; }
+              rowDetails.push({ type: productType, units, proceeds, sku: (cols[2]||"").trim() });
+            }
+            const appDownloads = firstTimeDownloads; // Match ASC's "First-Time Downloads"
+            await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,impressions,product_page_views,conversion_rate,updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=$2,proceeds=$3,updated_at=NOW()`, [fmtDate, appDownloads, totalProceeds, 0, 0, 0]);
             salesStored++;
-            salesDebug.push({ date: fmtDate, units: totalUnits, proceeds: totalProceeds, lines: lines.length });
-          } else { salesDebug.push({ date: fmtDate, status: "empty", raw_length: text.length }); }
+            salesDebug.push({ date: fmtDate, first_time: firstTimeDownloads, redownloads, updates, iap: iapUnits, proceeds: totalProceeds, rows: rowDetails });
+          } else { salesDebug.push({ date: fmtDate, status: "empty" }); }
         } else {
           const errBody = await res.text().catch(() => "");
-          salesDebug.push({ date: fmtDate, status: res.status, error: errBody.substring(0, 500) });
+          salesDebug.push({ date: fmtDate, status: res.status, error: errBody.substring(0, 300) });
         }
       } catch (e2: any) { salesDebug.push({ date: fmtDate, error: e2.message }); }
     }
-    results.sales = { days_checked: 7, days_stored: salesStored, debug: salesDebug };
+    results.sales = { days_checked: 30, days_stored: salesStored, debug: salesDebug.slice(0, 10) };
   } catch (e: any) { results.sales = { error: e.message }; }
   // Pull analytics
   try { results.analytics = await pullAppleAnalytics(); } catch (e: any) { results.analytics = { error: e.message }; }
