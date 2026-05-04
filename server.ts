@@ -1913,23 +1913,26 @@ async function pullAppleAnalytics(): Promise<any> {
           const lines = rawText.trim().split("\n");
           if (lines.length < 2) continue;
           const headers = lines[0].split("\t").map((h: string) => h.trim().toLowerCase().replace(/\s+/g, "_"));
-          // Check if this report has app store metrics columns
-          const hasAppMetrics = headers.some((h: string) => h.includes("impression") || h.includes("download") || h.includes("page_view") || h.includes("product_page"));
-          if (!hasAppMetrics) continue;
+          // Check if this report has app store metrics columns (be permissive — log headers for debugging)
+          const appStoreReportNames = ["app downloads", "discovery and engagement", "installation and deletion", "purchases"];
+          const isAppStoreReport = appStoreReportNames.some((n: string) => reportName.includes(n));
+          if (!isAppStoreReport) continue;
           const rows: any[] = [];
           for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); const row: any = {}; headers.forEach((h: string, j: number) => { row[h] = cols[j]?.trim() || ""; }); rows.push(row); }
+          // Parse rows — try all possible column name variants Apple might use
           for (const row of rows) {
-            const date = row.date || row.report_date || row.day || row.calendar_date; if (!date) continue;
-            const impressions = parseInt(row.impressions||row.total_impressions||row.store_impressions||"0")||0;
-            const pageViews = parseInt(row.product_page_views||row.page_views||row.product_page_view_count||"0")||0;
-            const downloads = parseInt(row.total_downloads||row.first_time_downloads||row.app_units||"0")||0;
+            const date = row.date || row.report_date || row.day || row.calendar_date || row.event_date; if (!date) continue;
+            // Apple uses various column names across reports — try all variants
+            const impressions = parseInt(row.impressions||row.total_impressions||row.impressions_total||row.impressions_total_unique||row.store_impressions||"0")||0;
+            const pageViews = parseInt(row.product_page_views||row.page_views||row.product_page_view_count||row.product_page_views_total||row.product_page_views_unique||"0")||0;
+            const downloads = parseInt(row.total_downloads||row.first_time_downloads||row.app_units||row.units||row.total_units||row.downloads||"0")||0;
             const convRate = pageViews>0?downloads/pageViews:(impressions>0?downloads/impressions:0);
             if (impressions||downloads||pageViews) {
-              await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,updated_at) VALUES ($1,$2,$3,GREATEST($4,(SELECT COALESCE(app_units,0) FROM daily_app_store_metrics WHERE date=$1)),$5,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=GREATEST(daily_app_store_metrics.impressions,$2),product_page_views=GREATEST(daily_app_store_metrics.product_page_views,$3),app_units=GREATEST(daily_app_store_metrics.app_units,$4),conversion_rate=$5,updated_at=NOW()`, [date, impressions, pageViews, downloads, convRate]);
+              await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,updated_at) VALUES ($1,$2,$3,$4,$5,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=GREATEST(daily_app_store_metrics.impressions,$2),product_page_views=GREATEST(daily_app_store_metrics.product_page_views,$3),app_units=GREATEST(daily_app_store_metrics.app_units,$4),conversion_rate=CASE WHEN $5>0 THEN $5 ELSE daily_app_store_metrics.conversion_rate END,updated_at=NOW()`, [date, impressions, pageViews, downloads, convRate]);
               stored++;
             }
           }
-          if (stored > 0) return { connected: true, status: "ok", report: report.attributes?.name, reports_available: [...new Set(allReportNames)], reports_with_instances: reportsWithInstances, days_stored: stored, headers, sample: rows.slice(0, 2) };
+          if (stored > 0) return { connected: true, status: "ok", report: report.attributes?.name, reports_available: [...new Set(allReportNames)], reports_with_instances: reportsWithInstances, days_stored: stored, headers, sample: rows.slice(0, 3) };
         }
       }
     }
