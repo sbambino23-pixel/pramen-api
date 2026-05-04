@@ -599,15 +599,15 @@ async function backfillPlausible(): Promise<void> {
 async function pullAppleSalesReport(): Promise<void> {
   const token = generateASCToken(); if (!token) return;
   try {
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0].replace(/-/g, "");
-    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday + "&filter[vendorNumber]=93967404", { headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" } });
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[vendorNumber]=93967404&filter[reportDate]=" + yesterday, { headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" } });
     if (vendorRes.ok) {
       const buf = Buffer.from(await vendorRes.arrayBuffer());
       let text: string; try { text = gunzipSync(buf).toString("utf-8"); } catch { text = buf.toString("utf-8"); }
       console.log("[Apple Sales] Got report, length:", text.length);
       const lines = text.split("\n").filter(l => l.trim());
       if (lines.length > 1) { let totalUnits = 0; let totalProceeds = 0; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); totalUnits += parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; }
-        const dateStr = yesterday.substring(0,4) + "-" + yesterday.substring(4,6) + "-" + yesterday.substring(6,8);
+        const dateStr = yesterday;
         await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=$2,proceeds=$3,updated_at=NOW()`, [dateStr, totalUnits, totalProceeds]);
         console.log(`[Apple Sales] ${dateStr}: ${totalUnits} units, $${totalProceeds} proceeds`); }
     } else { const errText = await vendorRes.text().catch(() => ""); console.log("[Apple Sales] Report not available:", vendorRes.status, errText.substring(0, 200)); }
@@ -1870,15 +1870,9 @@ app.post("/api/dashboard/appstore/pull", async (c) => {
       const dateStr = d.toISOString().split("T")[0].replace(/-/g, "");
       const fmtDate = d.toISOString().split("T")[0];
       try {
-        // Try without vendorNumber first, then with it
-        let res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr, {
+        const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[vendorNumber]=93967404&filter[reportDate]=" + fmtDate, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" }
         });
-        if (!res.ok) {
-          res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr + "&filter[vendorNumber]=93967404", {
-            headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" }
-          });
-        }
         if (res.ok) {
           // Apple returns gzip-compressed TSV — decompress it
           const buf = Buffer.from(await res.arrayBuffer());
