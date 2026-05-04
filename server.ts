@@ -1922,16 +1922,30 @@ async function pullAppleAnalytics(): Promise<any> {
           if (!isAppStoreReport) continue;
           const rows: any[] = [];
           for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); const row: any = {}; headers.forEach((h: string, j: number) => { row[h] = cols[j]?.trim() || ""; }); rows.push(row); }
-          // Parse rows — try all possible column name variants Apple might use
+          // Aggregate rows by date — Apple gives per-row breakdowns (by territory, device, etc.)
+          // We need to sum Counts per date, filtered by Download Type for downloads reports
+          const dailyAgg: Record<string, { impressions: number; pageViews: number; downloads: number }> = {};
+          const isDownloadReport = reportName.includes("download");
+          const isDiscoveryReport = reportName.includes("discovery");
           for (const row of rows) {
-            const date = row.date || row.report_date || row.day || row.calendar_date || row.event_date; if (!date) continue;
-            // Apple uses various column names across reports — try all variants
-            const impressions = parseInt(row.impressions||row.total_impressions||row.impressions_total||row.impressions_total_unique||row.store_impressions||"0")||0;
-            const pageViews = parseInt(row.product_page_views||row.page_views||row.product_page_view_count||row.product_page_views_total||row.product_page_views_unique||"0")||0;
-            const downloads = parseInt(row.total_downloads||row.first_time_downloads||row.app_units||row.units||row.total_units||row.downloads||"0")||0;
-            const convRate = pageViews>0?downloads/pageViews:(impressions>0?downloads/impressions:0);
-            if (impressions||downloads||pageViews) {
-              await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,updated_at) VALUES ($1,$2,$3,$4,$5,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=GREATEST(daily_app_store_metrics.impressions,$2),product_page_views=GREATEST(daily_app_store_metrics.product_page_views,$3),app_units=GREATEST(daily_app_store_metrics.app_units,$4),conversion_rate=CASE WHEN $5>0 THEN $5 ELSE daily_app_store_metrics.conversion_rate END,updated_at=NOW()`, [date, impressions, pageViews, downloads, convRate]);
+            const date = row.date; if (!date) continue;
+            if (!dailyAgg[date]) dailyAgg[date] = { impressions: 0, pageViews: 0, downloads: 0 };
+            const counts = parseInt(row.counts || "0") || 0;
+            if (isDownloadReport) {
+              const dlType = (row.download_type || "").toLowerCase();
+              if (dlType.includes("first-time") || dlType.includes("first_time")) { dailyAgg[date].downloads += counts; }
+            }
+            if (isDiscoveryReport) {
+              // Discovery report has "Counts" for impressions/page views depending on "Page Type"
+              const pageType = (row.page_type || "").toLowerCase();
+              if (pageType.includes("product page")) { dailyAgg[date].pageViews += counts; }
+              else { dailyAgg[date].impressions += counts; }
+            }
+          }
+          for (const [date, agg] of Object.entries(dailyAgg)) {
+            if (agg.impressions || agg.downloads || agg.pageViews) {
+              const convRate = agg.pageViews > 0 ? agg.downloads / agg.pageViews : 0;
+              await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,updated_at) VALUES ($1,$2,$3,$4,$5,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=CASE WHEN $2>0 THEN GREATEST(daily_app_store_metrics.impressions,$2) ELSE daily_app_store_metrics.impressions END,product_page_views=CASE WHEN $3>0 THEN GREATEST(daily_app_store_metrics.product_page_views,$3) ELSE daily_app_store_metrics.product_page_views END,app_units=CASE WHEN $4>0 THEN GREATEST(daily_app_store_metrics.app_units,$4) ELSE daily_app_store_metrics.app_units END,conversion_rate=CASE WHEN $5>0 THEN $5 ELSE daily_app_store_metrics.conversion_rate END,updated_at=NOW()`, [date, agg.impressions, agg.pageViews, agg.downloads, convRate]);
               stored++;
             }
           }
