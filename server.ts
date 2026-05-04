@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
 import { randomUUID, createHash, createSign } from "crypto";
+import { gunzipSync } from "zlib";
 import { readFileSync } from "fs";
 import http2 from "http2";
 import pg from "pg";
@@ -599,9 +600,11 @@ async function pullAppleSalesReport(): Promise<void> {
   const token = generateASCToken(); if (!token) return;
   try {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0].replace(/-/g, "");
-    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday, { headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip, application/json" } });
+    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday + "&filter[vendorNumber]=89917651", { headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" } });
     if (vendorRes.ok) {
-      const text = await vendorRes.text(); console.log("[Apple Sales] Got report, length:", text.length);
+      const buf = Buffer.from(await vendorRes.arrayBuffer());
+      let text: string; try { text = gunzipSync(buf).toString("utf-8"); } catch { text = buf.toString("utf-8"); }
+      console.log("[Apple Sales] Got report, length:", text.length);
       const lines = text.split("\n").filter(l => l.trim());
       if (lines.length > 1) { let totalUnits = 0; let totalProceeds = 0; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); totalUnits += parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; }
         const dateStr = yesterday.substring(0,4) + "-" + yesterday.substring(4,6) + "-" + yesterday.substring(6,8);
@@ -1858,30 +1861,38 @@ app.post("/api/dashboard/appstore/pull", async (c) => {
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
   const token = generateASCToken(); if (!token) return c.json({ error: "Apple API not configured" }, 500);
   const results: any = { sales: null, analytics: null };
-  // Pull sales reports for last 7 days
+  // Pull sales reports for last 7 days (Apple returns gzip-compressed TSV)
   try {
     let salesStored = 0;
+    const salesDebug: any[] = [];
     for (let daysBack = 1; daysBack <= 7; daysBack++) {
       const d = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
       const dateStr = d.toISOString().split("T")[0].replace(/-/g, "");
       const fmtDate = d.toISOString().split("T")[0];
       try {
-        const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip, application/json" }
+        const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr + "&filter[vendorNumber]=89917651", {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" }
         });
         if (res.ok) {
-          const text = await res.text();
+          // Apple returns gzip-compressed TSV — decompress it
+          const buf = Buffer.from(await res.arrayBuffer());
+          let text: string;
+          try { text = gunzipSync(buf).toString("utf-8"); } catch { text = buf.toString("utf-8"); }
           const lines = text.split("\n").filter((l: string) => l.trim());
           if (lines.length > 1) {
             let totalUnits = 0; let totalProceeds = 0;
             for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); totalUnits += parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; }
             await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=GREATEST(daily_app_store_metrics.app_units,$2),proceeds=GREATEST(daily_app_store_metrics.proceeds,$3),updated_at=NOW()`, [fmtDate, totalUnits, totalProceeds]);
             salesStored++;
-          }
+            salesDebug.push({ date: fmtDate, units: totalUnits, proceeds: totalProceeds, lines: lines.length });
+          } else { salesDebug.push({ date: fmtDate, status: "empty", raw_length: text.length }); }
+        } else {
+          const errBody = await res.text().catch(() => "");
+          salesDebug.push({ date: fmtDate, status: res.status, error: errBody.substring(0, 200) });
         }
-      } catch {}
+      } catch (e2: any) { salesDebug.push({ date: fmtDate, error: e2.message }); }
     }
-    results.sales = { days_checked: 7, days_stored: salesStored };
+    results.sales = { days_checked: 7, days_stored: salesStored, debug: salesDebug };
   } catch (e: any) { results.sales = { error: e.message }; }
   // Pull analytics
   try { results.analytics = await pullAppleAnalytics(); } catch (e: any) { results.analytics = { error: e.message }; }
