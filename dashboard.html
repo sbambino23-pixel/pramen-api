@@ -15,6 +15,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 .dr-sep{width:1px;height:18px;background:var(--border);margin:0 4px}
 .dr-label{font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin-right:2px}
 .dr-dates{font-size:10px;color:var(--muted);font-family:ui-monospace,'SF Mono',monospace;margin-left:auto}
+.dr-date-input{background:rgba(94,60,36,.04);border:1px solid var(--border);border-radius:5px;padding:3px 6px;color:var(--text);font-size:9px;font-family:ui-monospace,'SF Mono',monospace;outline:none;width:110px}.dr-date-input:focus{border-color:var(--gold)}
 .cmp-toggle{display:flex;align-items:center;gap:5px;cursor:pointer;padding:4px 10px;border-radius:5px;border:1px solid var(--border);font-size:10px;color:var(--muted);font-weight:600;transition:all .15s}.cmp-toggle:hover{border-color:var(--gold);color:var(--text)}.cmp-toggle.on{border-color:var(--blue);color:var(--blue);background:rgba(90,138,158,.08)}.cmp-dot{width:6px;height:6px;border-radius:50%;background:var(--muted);transition:all .15s}.cmp-toggle.on .cmp-dot{background:var(--blue)}
 /* Tabs */
 .tabs{display:flex;gap:3px;flex-wrap:wrap}.tab{padding:5px 10px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--muted);cursor:pointer;font-size:10px;font-weight:600;font-family:system-ui,-apple-system,sans-serif}.tab:hover{color:var(--text);background:var(--card)}.tab.active{border-color:var(--gold);background:rgba(154,104,72,.1);color:var(--gold)}
@@ -89,6 +90,12 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
     <button class="dr-btn active" onclick="setRange(14,this)">14d</button>
     <button class="dr-btn" onclick="setRange(30,this)">30d</button>
     <button class="dr-btn" onclick="setRange(90,this)">90d</button>
+    <button class="dr-btn" onclick="setRange(365,this)">1y</button>
+    <button class="dr-btn" onclick="setRange(9999,this)">All</button>
+    <div class="dr-sep"></div>
+    <input type="date" class="dr-date-input" id="dr-from" onchange="setCustomRange()" title="Start date">
+    <span style="color:var(--muted);font-size:9px">to</span>
+    <input type="date" class="dr-date-input" id="dr-to" onchange="setCustomRange()" title="End date">
     <div class="dr-sep"></div>
     <div class="cmp-toggle" id="cmp-btn" onclick="toggleCompare()"><div class="cmp-dot"></div>Compare</div>
     <span class="dr-dates" id="dr-dates"></span>
@@ -98,7 +105,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 <script>
 var B=location.origin,K=new URLSearchParams(location.search).get("key")||"",
     D=null,PH=null,AP=null,RC=null,TAB="overview",SU=null,
-    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",
+    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",CUSTOM_FROM=null,CUSTOM_TO=null,
     GR=null,OG=null;
 
 // Event colors & labels
@@ -110,20 +117,26 @@ function daysAgo(n){var d=new Date();d.setHours(0,0,0,0);d.setDate(d.getDate()-n
 function inRange(ts,from,to){var t=new Date(ts);return t>=from&&t<=to}
 function fmtDate(d){return d.toISOString().split('T')[0]}
 function fmtShort(d){return(d.getMonth()+1)+'/'+d.getDate()}
+function getRangeFrom(){return CUSTOM_FROM||daysAgo(RANGE)}
+function getRangeTo(){return CUSTOM_TO||new Date()}
 function updateDateLabel(){
-  var now=new Date(),from=daysAgo(RANGE),to=now;
+  var from=getRangeFrom(),to=getRangeTo();
   var txt=fmtShort(from)+' – '+fmtShort(to);
-  if(COMPARE){var pFrom=daysAgo(RANGE*2),pTo=daysAgo(RANGE);txt+='  vs  '+fmtShort(pFrom)+' – '+fmtShort(pTo)}
+  if(RANGE>=9999&&!CUSTOM_FROM)txt='All time';
+  if(COMPARE){var pDays=Math.ceil((to-from)/(24*60*60*1000));var pFrom=daysAgo(pDays*2),pTo=daysAgo(pDays);txt+='  vs  '+fmtShort(pFrom)+' – '+fmtShort(pTo)}
   document.getElementById('dr-dates').textContent=txt;
 }
 
-function setRange(n,el){RANGE=n;document.querySelectorAll('.dr-btn').forEach(function(b){b.classList.remove('active')});if(el)el.classList.add('active');updateDateLabel();render()}
+function setRange(n,el){RANGE=n;CUSTOM_FROM=null;CUSTOM_TO=null;document.getElementById('dr-from').value='';document.getElementById('dr-to').value='';document.querySelectorAll('.dr-btn').forEach(function(b){b.classList.remove('active')});if(el)el.classList.add('active');updateDateLabel();if(n>90)loadAll();else render()}
+function setCustomRange(){var f=document.getElementById('dr-from').value,t=document.getElementById('dr-to').value;if(f&&t){CUSTOM_FROM=new Date(f+'T00:00:00');CUSTOM_TO=new Date(t+'T23:59:59');RANGE=Math.ceil((CUSTOM_TO-CUSTOM_FROM)/(24*60*60*1000));document.querySelectorAll('.dr-btn').forEach(function(b){b.classList.remove('active')});updateDateLabel();if(RANGE>90)loadAll();else render()}}
 function toggleCompare(){COMPARE=!COMPARE;var btn=document.getElementById('cmp-btn');btn.classList.toggle('on',COMPARE);updateDateLabel();render()}
 
 // ─── Filter events by date range ──────────────────────────────
 function filterByRange(events,rangeDays,offset){
   offset=offset||0;
-  var from=daysAgo(rangeDays+offset),to=offset?daysAgo(offset):new Date();
+  var from,to;
+  if(!offset&&CUSTOM_FROM){from=CUSTOM_FROM;to=CUSTOM_TO||new Date()}
+  else{from=daysAgo(rangeDays+offset);to=offset?daysAgo(offset):new Date()}
   return events.filter(function(e){return inRange(e.timestamp,from,to)});
 }
 
@@ -145,7 +158,7 @@ function filterUser(uid){SU=uid;TAB="users";document.querySelectorAll('.tab').fo
 
 // ─── Load all data ────────────────────────────────────────────
 function loadAll(){
-  var maxDays=Math.max(RANGE*2+7,90);
+  var maxDays=RANGE>=9999?3650:Math.max(RANGE*2+7,90);
   Promise.all([
     fetch(B+"/api/dashboard?key="+K).then(function(r){return r.json()}),
     fetch(B+"/api/dashboard/events?key="+K+"&days="+maxDays+"&limit=1000").then(function(r){return r.json()}).catch(function(){return null}),
@@ -241,9 +254,11 @@ function rOv(){
   var mrrDisplay=rc.net_mrr||rc.mrr_estimated||k.mrr_net||0;
   var insights=generateInsights(m,pm);
 
-  // Apple data from API only — no hardcoded fallbacks
-  var appleImpressions=AP?.daily_metrics?.reduce(function(s,r){return s+(r.impressions||0)},0)||0;
-  var appleDownloads=AP?.daily_metrics?.reduce(function(s,r){return s+(r.app_units||0)},0)||0;
+  // Apple data filtered by selected date range
+  var rangeFrom=getRangeFrom(),rangeTo=getRangeTo();
+  var appleFiltered=(AP?.daily_metrics||[]).filter(function(r){var d=new Date(r.date);return d>=rangeFrom&&d<=rangeTo});
+  var appleImpressions=appleFiltered.reduce(function(s,r){return s+(r.impressions||0)},0)||0;
+  var appleDownloads=appleFiltered.reduce(function(s,r){return s+(r.app_units||0)},0)||0;
 
   var html='';
   if(insights.length)html+='<div style="margin-bottom:12px">'+insights.map(function(i){return'<div class="insight insight-'+i.type+'"><span class="insight-icon" style="font-weight:700;font-size:10px;font-family:ui-monospace,monospace">'+i.icon+'</span>'+i.text+'</div>'}).join('')+'</div>';
@@ -262,9 +277,9 @@ function rOv(){
   '</div>';
 
   // ─── APPLE APP STORE ──────────────────────────────────────────
-  var appleProceeds=AP?.daily_metrics?.reduce(function(s,r){return s+(r.proceeds||0)},0)||0;
-  var applePpv=AP?.daily_metrics?.reduce(function(s,r){return s+(r.product_page_views||0)},0)||0;
-  var hasAppleApi=AP?.daily_metrics?.length>0;
+  var appleProceeds=appleFiltered.reduce(function(s,r){return s+(r.proceeds||0)},0)||0;
+  var applePpv=appleFiltered.reduce(function(s,r){return s+(r.product_page_views||0)},0)||0;
+  var hasAppleApi=appleFiltered.length>0;
   // Show whatever data we have — impressions/page views may not be available from Sales Reports
   var dispImp=appleImpressions>0?appleImpressions:'—';
   var dispPpv=applePpv>0?applePpv:'—';
