@@ -599,7 +599,7 @@ async function pullAppleSalesReport(): Promise<void> {
   const token = generateASCToken(); if (!token) return;
   try {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split("T")[0].replace(/-/g, "");
-    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday, { headers: { Authorization: `Bearer ${token}`, Accept: "application/a]gzip, application/json" } });
+    const vendorRes = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + yesterday, { headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip, application/json" } });
     if (vendorRes.ok) {
       const text = await vendorRes.text(); console.log("[Apple Sales] Got report, length:", text.length);
       const lines = text.split("\n").filter(l => l.trim());
@@ -628,7 +628,7 @@ app.use("*", async (c, next) => {
 });
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.9.9", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.10.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -1852,6 +1852,44 @@ app.post("/api/dashboard/appstore/seed", async (c) => { const secret = c.req.que
 
 app.get("/api/dashboard/appstore", async (c) => { const secret = c.req.query("key") || c.req.header("X-Dashboard-Key"); if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401); const token = generateASCToken(); if (!token) return c.json({ connected: false, error: "Apple API not configured" }); try { const appRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}`, { headers: { Authorization: `Bearer ${token}` } }); if (!appRes.ok) return c.json({ connected: false, error: "Apple API " + appRes.status }); const appData = (await appRes.json()) as any; const analytics = await pullAppleAnalytics(); const stored = await pool.query(`SELECT * FROM daily_app_store_metrics ORDER BY date DESC LIMIT 30`).catch(() => ({ rows: [] })); return c.json({ connected: true, app: { name: appData.data?.attributes?.name, bundleId: appData.data?.attributes?.bundleId }, analytics: analytics, daily_metrics: stored.rows, timestamp: new Date().toISOString() }); } catch (e: any) { return c.json({ connected: false, error: e.message }); } });
 
+// v5.10.0 — force pull Apple sales + analytics data on demand
+app.post("/api/dashboard/appstore/pull", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  const token = generateASCToken(); if (!token) return c.json({ error: "Apple API not configured" }, 500);
+  const results: any = { sales: null, analytics: null };
+  // Pull sales reports for last 7 days
+  try {
+    let salesStored = 0;
+    for (let daysBack = 1; daysBack <= 7; daysBack++) {
+      const d = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+      const dateStr = d.toISOString().split("T")[0].replace(/-/g, "");
+      const fmtDate = d.toISOString().split("T")[0];
+      try {
+        const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr, {
+          headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip, application/json" }
+        });
+        if (res.ok) {
+          const text = await res.text();
+          const lines = text.split("\n").filter((l: string) => l.trim());
+          if (lines.length > 1) {
+            let totalUnits = 0; let totalProceeds = 0;
+            for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); totalUnits += parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; }
+            await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=GREATEST(daily_app_store_metrics.app_units,$2),proceeds=GREATEST(daily_app_store_metrics.proceeds,$3),updated_at=NOW()`, [fmtDate, totalUnits, totalProceeds]);
+            salesStored++;
+          }
+        }
+      } catch {}
+    }
+    results.sales = { days_checked: 7, days_stored: salesStored };
+  } catch (e: any) { results.sales = { error: e.message }; }
+  // Pull analytics
+  try { results.analytics = await pullAppleAnalytics(); } catch (e: any) { results.analytics = { error: e.message }; }
+  // Return current stored metrics
+  const stored = await pool.query(`SELECT * FROM daily_app_store_metrics ORDER BY date DESC LIMIT 30`).catch(() => ({ rows: [] }));
+  return c.json({ status: "ok", results, daily_metrics: stored.rows });
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // ─── GROWTH / DECISION DASHBOARD ────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
@@ -2077,7 +2115,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.9.9 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.10.0 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Meta CAPI: ${META_CAPI_ACCESS_TOKEN ? "✓" : "✗"} pixel=${META_PIXEL_ID || "-"}`);
