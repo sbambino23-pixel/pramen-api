@@ -278,7 +278,7 @@ function rOv(){
     var subEvents=0;if(PH&&PH.recent_events){PH.recent_events.forEach(function(e){if(e.event==='subscription_started'||e.event==='lifetime_purchased')subEvents++})}
     if(subEvents>0)dispD2P=(subEvents/appleDownloads*100).toFixed(1)+'%';
   }
-  var appleSource=hasAppleApi?'Apple Sales Reports'+(appleImpressions>0?' + Analytics':''):'Waiting for Apple data';
+  var appleSource=hasAppleApi?(appleImpressions>0?'Apple Analytics':'Apple Sales Reports + Analytics'):'Waiting for Apple data';
 
   html+='<div class="cd" style="border-color:rgba(154,104,72,.25)"><h3>App Store Performance <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;font-size:8px"> · '+appleSource+'</span></h3>';
   html+='<div class="kg" style="margin-bottom:8px;grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+

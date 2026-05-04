@@ -1949,10 +1949,11 @@ async function pullAppleAnalytics(): Promise<any> {
               stored++;
             }
           }
-          if (stored > 0) return { connected: true, status: "ok", report: report.attributes?.name, reports_available: [...new Set(allReportNames)], reports_with_instances: reportsWithInstances, days_stored: stored, headers, sample: rows.slice(0, 3) };
+          // Don't return early — continue processing other reports (Downloads + Discovery + Purchases)
         }
       }
     }
+    if (stored > 0) return { connected: true, status: "ok", reports_available: [...new Set(allReportNames)], reports_with_instances: reportsWithInstances, days_stored: stored };
     // If we got here, we found instances but couldn't parse app metrics from them
     // Try to return sample headers+data from the first app store report for debugging
     let debugSample: any = null;
