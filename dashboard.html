@@ -264,21 +264,21 @@ function rOv(){
   // ─── APPLE APP STORE ──────────────────────────────────────────
   var appleProceeds=AP?.daily_metrics?.reduce(function(s,r){return s+(r.proceeds||0)},0)||0;
   var applePpv=AP?.daily_metrics?.reduce(function(s,r){return s+(r.product_page_views||0)},0)||0;
-  var hasAppleApi=AP?.daily_metrics?.length>0&&appleImpressions>0;
-  // No hardcoded fallbacks — show real data or "—"
-  var dispImp=hasAppleApi?appleImpressions:'—';
-  var dispPpv=hasAppleApi?applePpv:'—';
-  var dispDl=hasAppleApi?appleDownloads:'—';
-  var dispProc=hasAppleApi?'$'+appleProceeds.toFixed(0):'—';
-  var dispConv=hasAppleApi&&applePpv>0?((appleDownloads/applePpv)*100).toFixed(1)+'%':'—';
+  var hasAppleApi=AP?.daily_metrics?.length>0;
+  // Show whatever data we have — impressions/page views may not be available from Sales Reports
+  var dispImp=appleImpressions>0?appleImpressions:'—';
+  var dispPpv=applePpv>0?applePpv:'—';
+  var dispDl=hasAppleApi&&appleDownloads>0?appleDownloads:(hasAppleApi?0:'—');
+  var dispProc=hasAppleApi?'$'+appleProceeds.toFixed(2):'—';
+  var dispConv=applePpv>0&&appleDownloads>0?((appleDownloads/applePpv)*100).toFixed(1)+'%':'—';
   // D1→Paid: calculate from actual data if available
   var dispD2P='—';
-  if(hasAppleApi&&appleDownloads>0){
+  if(appleDownloads>0){
     // Estimate from revenue events: subscriptions started within period / downloads
     var subEvents=0;if(PH&&PH.recent_events){PH.recent_events.forEach(function(e){if(e.event==='subscription_started'||e.event==='lifetime_purchased')subEvents++})}
     if(subEvents>0)dispD2P=(subEvents/appleDownloads*100).toFixed(1)+'%';
   }
-  var appleSource=hasAppleApi?'Apple Analytics API':'Waiting for Apple data';
+  var appleSource=hasAppleApi?'Apple Sales Reports'+(appleImpressions>0?' + Analytics':''):'Waiting for Apple data';
 
   html+='<div class="cd" style="border-color:rgba(154,104,72,.25)"><h3>App Store Performance <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;font-size:8px"> · '+appleSource+'</span></h3>';
   html+='<div class="kg" style="margin-bottom:8px;grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
