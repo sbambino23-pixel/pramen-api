@@ -628,7 +628,7 @@ app.use("*", async (c, next) => {
 });
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.9.5", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.9.6", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -1764,15 +1764,66 @@ app.get("/api/dashboard/events", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 // ─── REVENUECAT API ─────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
+// v5.9.6 — RC overview API for accurate MRR + expanded user search
 app.get("/api/dashboard/revenuecat", async (c) => {
   const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
   if (!REVENUECAT_SECRET_KEY) return c.json({ error: "REVENUECAT_SECRET_KEY not set" }, 500);
   try {
-    const usersResult = await pool.query("SELECT id, device_user_id, subscription_status, name, email FROM users ORDER BY created_at DESC LIMIT 100");
+    // Try RC v2 overview API for accurate aggregate metrics
+    let rcOverview: any = null;
+    try {
+      const ovRes = await fetch("https://api.revenuecat.com/v2/projects/d76b6d3d/metrics/overview", {
+        headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }
+      });
+      if (ovRes.ok) rcOverview = await ovRes.json();
+    } catch {}
+
+    // Get ALL users from DB (no LIMIT) + user IDs from revenue_events that might not be in users table
+    const usersResult = await pool.query("SELECT id, device_user_id, subscription_status, name, email FROM users ORDER BY created_at DESC");
+    const revEventUsers = await pool.query("SELECT DISTINCT user_id FROM revenue_events WHERE event_type IN ('subscription_started','lifetime_purchased','subscription_renewed')").catch(() => ({ rows: [] }));
+
+    // Build deduplicated set of all IDs to check
+    const checkedIds = new Set<string>();
+    const allCandidates: { uid: string; name: string | null; email: string | null; db_status: string | null }[] = [];
+    for (const user of usersResult.rows) {
+      const ids = [user.id, user.device_user_id].filter(Boolean);
+      for (const uid of ids) {
+        if (!checkedIds.has(uid)) { checkedIds.add(uid); allCandidates.push({ uid, name: user.name, email: user.email, db_status: user.subscription_status }); }
+      }
+    }
+    // Add revenue event user IDs not already in the set
+    for (const row of revEventUsers.rows) {
+      if (row.user_id && !checkedIds.has(row.user_id)) { checkedIds.add(row.user_id); allCandidates.push({ uid: row.user_id, name: null, email: null, db_status: null }); }
+    }
+
     const subscribers: any[] = []; let totalRevenue = 0; let activeCount = 0; let trialCount = 0; let mrr = 0;
-    for (const user of usersResult.rows) { const ids = [user.id, user.device_user_id].filter(Boolean); for (const uid of ids) { try { const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(uid)}`, { headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } }); if (!rcRes.ok) continue; const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue; const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {}; const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > new Date()); const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > new Date()); let userRevenue = 0; for (const [pid, s2] of Object.entries(subscriptions) as any[]) { if (s2.store === "app_store" || s2.store === "play_store") { if (pid.includes("yearly")) userRevenue += 29.99; else if (pid.includes("monthly")) userRevenue += 3.99; else if (pid.includes("lifetime")) userRevenue += 149.99; } } if (hasActive) activeCount++; if (hasTrial) trialCount++; totalRevenue += userRevenue; for (const [pid, s2] of Object.entries(subscriptions) as any[]) { const expires = new Date(s2.expires_date); if (expires > new Date() && s2.period_type !== "trial") { if (pid.includes("yearly")) mrr += 29.99 / 12; else if (pid.includes("monthly")) mrr += 3.99; } } subscribers.push({ user_id: uid, name: user.name || null, email: user.email || null, db_status: user.subscription_status, has_active: hasActive, has_trial: hasTrial, revenue: userRevenue, entitlements: Object.keys(entitlements), subscriptions: Object.entries(subscriptions).map(([pid2, s3]: [string, any]) => ({ product: pid2, store: s3.store, purchase_date: s3.purchase_date, expires_date: s3.expires_date, period_type: s3.period_type, is_active: new Date(s3.expires_date) > new Date(), auto_resume_date: s3.auto_resume_date, unsubscribe_detected_at: s3.unsubscribe_detected_at })), first_seen: sub.first_seen }); break; } catch { continue; } } }
-    return c.json({ generated_at: new Date().toISOString(), summary: { active_subscriptions: activeCount, active_trials: trialCount, total_revenue_estimated: totalRevenue, mrr_estimated: Math.round(mrr * 100) / 100, net_mrr: Math.round(mrr * (1 - APPLE_CUT) * 100) / 100, total_users_checked: usersResult.rows.length, subscribers_found: subscribers.filter(s => s.has_active || s.has_trial).length }, subscribers: subscribers.filter(s => s.subscriptions.length > 0 || s.has_active || s.has_trial), all_users: subscribers });
+    for (const candidate of allCandidates) {
+      try {
+        const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(candidate.uid)}`, { headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } });
+        if (!rcRes.ok) continue;
+        const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue;
+        const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {};
+        const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > new Date());
+        const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > new Date());
+        let userRevenue = 0;
+        for (const [pid, s2] of Object.entries(subscriptions) as any[]) { if (s2.store === "app_store" || s2.store === "play_store") { if (pid.includes("yearly")) userRevenue += 29.99; else if (pid.includes("monthly")) userRevenue += 3.99; else if (pid.includes("lifetime")) userRevenue += 149.99; } }
+        if (hasActive) activeCount++;
+        if (hasTrial) trialCount++;
+        totalRevenue += userRevenue;
+        for (const [pid, s2] of Object.entries(subscriptions) as any[]) { const expires = new Date(s2.expires_date); if (expires > new Date() && s2.period_type !== "trial") { if (pid.includes("yearly")) mrr += 29.99 / 12; else if (pid.includes("monthly")) mrr += 3.99; } }
+        subscribers.push({ user_id: candidate.uid, name: candidate.name || null, email: candidate.email || null, db_status: candidate.db_status, has_active: hasActive, has_trial: hasTrial, revenue: userRevenue, entitlements: Object.keys(entitlements), subscriptions: Object.entries(subscriptions).map(([pid2, s3]: [string, any]) => ({ product: pid2, store: s3.store, purchase_date: s3.purchase_date, expires_date: s3.expires_date, period_type: s3.period_type, is_active: new Date(s3.expires_date) > new Date(), auto_resume_date: s3.auto_resume_date, unsubscribe_detected_at: s3.unsubscribe_detected_at })), first_seen: sub.first_seen });
+      } catch { continue; }
+    }
+
+    // Use RC v2 overview if available (most accurate), otherwise use our computed values
+    const ovMetrics = rcOverview?.metrics || rcOverview;
+    const summaryActive = ovMetrics?.active_subscriptions ?? activeCount;
+    const summaryTrials = ovMetrics?.active_trials ?? trialCount;
+    const summaryMrr = ovMetrics?.mrr ? ovMetrics.mrr / 100 : Math.round(mrr * 100) / 100; // RC v2 returns cents
+    const summaryNetMrr = ovMetrics?.mrr ? Math.round(ovMetrics.mrr / 100 * (1 - APPLE_CUT) * 100) / 100 : Math.round(mrr * (1 - APPLE_CUT) * 100) / 100;
+
+    return c.json({ generated_at: new Date().toISOString(), rc_overview: rcOverview ? "v2" : "v1_computed", summary: { active_subscriptions: summaryActive, active_trials: summaryTrials, total_revenue_estimated: totalRevenue, mrr_estimated: summaryMrr, net_mrr: summaryNetMrr, total_users_checked: allCandidates.length, subscribers_found: subscribers.filter(s => s.has_active || s.has_trial).length }, subscribers: subscribers.filter(s => s.subscriptions.length > 0 || s.has_active || s.has_trial), all_users: subscribers });
   } catch (err: any) { return c.json({ error: "RevenueCat query failed", detail: err.message }, 500); }
 });
 
@@ -2012,7 +2063,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.9.5 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.9.6 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Meta CAPI: ${META_CAPI_ACCESS_TOKEN ? "✓" : "✗"} pixel=${META_PIXEL_ID || "-"}`);
