@@ -606,7 +606,7 @@ async function pullAppleSalesReport(): Promise<void> {
       let text: string; try { text = gunzipSync(buf).toString("utf-8"); } catch { text = buf.toString("utf-8"); }
       console.log("[Apple Sales] Got report, length:", text.length);
       const lines = text.split("\n").filter(l => l.trim());
-      if (lines.length > 1) { let firstTimeDownloads = 0; let totalProceeds = 0; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); const pt = (cols[6]||"").trim(); const u = parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; if (pt==="1F"||pt==="F1"||pt==="FI1"||pt==="1") firstTimeDownloads += u; }
+      if (lines.length > 1) { let firstTimeDownloads = 0; let totalProceeds = 0; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); const pt = (cols[6]||"").trim(); const u = parseInt(cols[7] || "0") || 0; totalProceeds += parseFloat(cols[8] || "0") || 0; if (pt==="1F"||pt==="F1"||pt==="FI1"||pt==="1"||pt==="3F"||pt==="3"||pt==="3T") firstTimeDownloads += u; }
         const dateStr = yesterday;
         await pool.query(`INSERT INTO daily_app_store_metrics (date,app_units,proceeds,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (date) DO UPDATE SET app_units=$2,proceeds=$3,updated_at=NOW()`, [dateStr, firstTimeDownloads, totalProceeds]);
         console.log(`[Apple Sales] ${dateStr}: ${firstTimeDownloads} first-time downloads, $${totalProceeds} proceeds`); }
@@ -1889,7 +1889,7 @@ app.post("/api/dashboard/appstore/pull", async (c) => {
               const proceeds = parseFloat(cols[8] || "0") || 0;
               totalProceeds += proceeds;
               // Classify by product type
-              if (productType === "1F" || productType === "F1" || productType === "FI1" || productType === "1") { firstTimeDownloads += units; }
+              if (productType === "1F" || productType === "F1" || productType === "FI1" || productType === "1" || productType === "3F" || productType === "3" || productType === "3T") { firstTimeDownloads += units; }
               else if (productType === "7" || productType === "7F" || productType === "7T" || productType === "F7") { updates += units; }
               else if (productType.startsWith("IA")) { iapUnits += units; }
               else { redownloads += units; }
