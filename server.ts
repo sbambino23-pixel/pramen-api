@@ -1909,7 +1909,10 @@ async function pullAppleAnalytics(): Promise<any> {
           if (!segUrl) continue;
           const dataRes = await fetch(segUrl);
           if (!dataRes.ok) continue;
-          const rawText = await dataRes.text();
+          // Apple segment data may be gzip-compressed
+          const dataBuf = Buffer.from(await dataRes.arrayBuffer());
+          let rawText: string;
+          try { rawText = gunzipSync(dataBuf).toString("utf-8"); } catch { rawText = dataBuf.toString("utf-8"); }
           const lines = rawText.trim().split("\n");
           if (lines.length < 2) continue;
           const headers = lines[0].split("\t").map((h: string) => h.trim().toLowerCase().replace(/\s+/g, "_"));
@@ -1936,7 +1939,35 @@ async function pullAppleAnalytics(): Promise<any> {
         }
       }
     }
-    return { connected: true, status: reportsWithInstances.length > 0 ? "instances_found_no_app_metrics" : "pending", reports_available: [...new Set(allReportNames)], reports_with_instances: reportsWithInstances, total_reports: allReportNames.length };
+    // If we got here, we found instances but couldn't parse app metrics from them
+    // Try to return sample headers+data from the first app store report for debugging
+    let debugSample: any = null;
+    for (const requestId of requestIds) {
+      const reportsRes2 = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/${requestId}/reports`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!reportsRes2.ok) continue;
+      const reportsData2 = (await reportsRes2.json()) as any;
+      for (const report of (reportsData2.data || [])) {
+        const rn = (report.attributes?.name || "").toLowerCase();
+        if (!rn.includes("app downloads") && !rn.includes("discovery")) continue;
+        const ir = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReports/${report.id}/instances?limit=1`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!ir.ok) continue;
+        const id2 = (await ir.json()) as any;
+        const inst = id2.data?.[0]; if (!inst) continue;
+        const sr = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReportInstances/${inst.id}/segments?fields[analyticsReportSegments]=url,checksum,sizeInBytes`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!sr.ok) continue;
+        const sd2 = (await sr.json()) as any;
+        const seg = sd2.data?.[0]; if (!seg?.attributes?.url) continue;
+        const dr = await fetch(seg.attributes.url);
+        if (!dr.ok) continue;
+        const dbuf = Buffer.from(await dr.arrayBuffer());
+        let dtxt: string; try { dtxt = gunzipSync(dbuf).toString("utf-8"); } catch { dtxt = dbuf.toString("utf-8"); }
+        const dlines = dtxt.trim().split("\n");
+        debugSample = { report: report.attributes?.name, headers: dlines[0]?.split("\t"), rows: dlines.length - 1, sample_rows: dlines.slice(1, 4).map((l: string) => l.split("\t")), raw_first_100: dtxt.substring(0, 500) };
+        break;
+      }
+      if (debugSample) break;
+    }
+    return { connected: true, status: reportsWithInstances.length > 0 ? "instances_found_no_app_metrics" : "pending", reports_available: [...new Set(allReportNames)], reports_with_instances: reportsWithInstances, total_reports: allReportNames.length, debug_sample: debugSample };
   } catch (err: any) { console.error("[Apple] Analytics error:", err.message); return { connected: false, error: err.message }; }
 }
 
