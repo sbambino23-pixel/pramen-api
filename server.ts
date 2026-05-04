@@ -1870,9 +1870,15 @@ app.post("/api/dashboard/appstore/pull", async (c) => {
       const dateStr = d.toISOString().split("T")[0].replace(/-/g, "");
       const fmtDate = d.toISOString().split("T")[0];
       try {
-        const res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr + "&filter[vendorNumber]=93967404", {
+        // Try without vendorNumber first, then with it
+        let res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr, {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" }
         });
+        if (!res.ok) {
+          res = await fetch("https://api.appstoreconnect.apple.com/v1/salesReports?filter[reportType]=SALES&filter[reportSubType]=SUMMARY&filter[frequency]=DAILY&filter[reportDate]=" + dateStr + "&filter[vendorNumber]=93967404", {
+            headers: { Authorization: `Bearer ${token}`, Accept: "application/a-gzip" }
+          });
+        }
         if (res.ok) {
           // Apple returns gzip-compressed TSV — decompress it
           const buf = Buffer.from(await res.arrayBuffer());
@@ -1888,7 +1894,7 @@ app.post("/api/dashboard/appstore/pull", async (c) => {
           } else { salesDebug.push({ date: fmtDate, status: "empty", raw_length: text.length }); }
         } else {
           const errBody = await res.text().catch(() => "");
-          salesDebug.push({ date: fmtDate, status: res.status, error: errBody.substring(0, 200) });
+          salesDebug.push({ date: fmtDate, status: res.status, error: errBody.substring(0, 500) });
         }
       } catch (e2: any) { salesDebug.push({ date: fmtDate, error: e2.message }); }
     }
