@@ -660,8 +660,26 @@ function rOg(){
     });
   }
 
-  if(!yt.channel_id&&!yt.subscriber_count&&!stored.length){
-    html+='<div class="note">No organic data yet. YouTube auto-pulls on each page load. TikTok and Instagram will appear once API access is configured.</div>';
+  // Instagram section
+  var ig=OG.instagram||{};
+  if(ig.account_id||ig.username){
+    html+='<div class="cd" style="border-color:rgba(154,104,72,.25)"><h3>prAmen · Instagram · @'+ig.username+'</h3>';
+    html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
+      kpi("Followers",parseInt(ig.followers||0).toLocaleString(),"var(--orange)")+
+      kpi("Posts",parseInt(ig.media_count||0),"var(--purple)")+
+    '</div></div>';
+  }
+  if(ig.recent_posts&&ig.recent_posts.length){
+    html+='<div class="cd"><h3>prAmen · Recent Instagram Posts</h3>';
+    html+='<table class="tbl"><tr><th>Caption</th><th>Type</th><th>Likes</th><th>Comments</th><th>Posted</th></tr>';
+    ig.recent_posts.forEach(function(p){
+      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+p.caption+'</td><td class="mono" style="color:var(--muted)">'+p.media_type+'</td><td class="mono" style="color:var(--orange)">'+(parseInt(p.likes||0)).toLocaleString()+'</td><td class="mono">'+(parseInt(p.comments||0)).toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(p.timestamp).toLocaleDateString()+'</td></tr>';
+    });
+    html+='</table></div>';
+  }
+
+  if(!yt.channel_id&&!yt.subscriber_count&&!ig.account_id&&!stored.length){
+    html+='<div class="note">No organic data yet. YouTube auto-pulls on each page load. TikTok will appear once API access is configured.</div>';
   }
 
   return html;

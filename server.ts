@@ -51,6 +51,8 @@ const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || "pramen-media";
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL || "";
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "AIzaSyD0WUdkjl_HBAoaojLM073AK0CuFgb5rro";
 const YT_CHANNEL_HANDLE = "fatherjohnprays";
+const INSTAGRAM_ACCESS_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";
+const INSTAGRAM_ACCOUNT_ID = process.env.INSTAGRAM_ACCOUNT_ID || "26555458837479438";
 
 // ─── R2 Storage ──────────────────────────────────────────────────────
 const s3 = R2_ACCOUNT_ID ? new S3Client({ region: "auto", endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`, credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY } }) : null;
@@ -2215,11 +2217,29 @@ app.get("/api/dashboard/organic", async (c) => {
       } catch (err: any) { console.error("[YouTube]", err.message); }
     }
 
+    // Instagram auto-pull
+    let instagramStats: any = null;
+    if (INSTAGRAM_ACCESS_TOKEN) {
+      try {
+        const igRes = await fetch(`https://graph.instagram.com/v22.0/${INSTAGRAM_ACCOUNT_ID}?fields=id,username,name,media_count,followers_count&access_token=${INSTAGRAM_ACCESS_TOKEN}`);
+        if (igRes.ok) {
+          const igData = (await igRes.json()) as any;
+          instagramStats = { account_id: igData.id, username: igData.username, name: igData.name, followers: igData.followers_count || 0, media_count: igData.media_count || 0 };
+          // Fetch recent media
+          const mediaRes = await fetch(`https://graph.instagram.com/v22.0/${INSTAGRAM_ACCOUNT_ID}/media?fields=id,caption,timestamp,media_type,like_count,comments_count,media_url,permalink&limit=30&access_token=${INSTAGRAM_ACCESS_TOKEN}`);
+          if (mediaRes.ok) {
+            const mediaData = (await mediaRes.json()) as any;
+            instagramStats.recent_posts = (mediaData.data || []).map((p: any) => ({ id: p.id, caption: (p.caption || "").substring(0, 100), timestamp: p.timestamp, media_type: p.media_type, likes: p.like_count || 0, comments: p.comments_count || 0, permalink: p.permalink }));
+          }
+        } else { console.error("[Instagram] API error:", igRes.status); }
+      } catch (igErr: any) { console.error("[Instagram]", igErr.message); }
+    }
+
     const totals: Record<string, any> = {};
     for (const [ch, rows] of Object.entries(byChannel)) {
       totals[ch] = { views: rows.reduce((s: number, r: any) => s + (r.views||0), 0), subscribers_gained: rows.reduce((s: number, r: any) => s + (r.subscribers_gained||0), 0), likes: rows.reduce((s: number, r: any) => s + (r.likes||0), 0), comments: rows.reduce((s: number, r: any) => s + (r.comments||0), 0), shares: rows.reduce((s: number, r: any) => s + (r.shares||0), 0), watch_hours: rows.reduce((s: number, r: any) => s + (r.watch_hours||0), 0) };
     }
-    return c.json({ generated_at: new Date().toISOString(), days, by_channel: byChannel, totals, youtube: youtubeStats });
+    return c.json({ generated_at: new Date().toISOString(), days, by_channel: byChannel, totals, youtube: youtubeStats, instagram: instagramStats });
   } catch (err: any) { return c.json({ error: "Organic dashboard failed", detail: err.message }, 500); }
 });
 
