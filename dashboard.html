@@ -502,9 +502,9 @@ function rGr(){
 
   html+='<div class="cd"><h3>Acquisition (30d)</h3>';
   html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">'+
-    kpi("Total Ad Spend","$"+a.total_ad_spend_30d.toFixed(0),"var(--red)")+
-    kpi("Paid Installs",a.total_installs_30d,"var(--green)")+
-    kpi("Blended CPI",a.blended_cpi!==null?"$"+a.blended_cpi.toFixed(2):"—","var(--blue)")+
+    kpi("Total Ad Spend","$"+(a.total_ad_spend_30d||0).toFixed(0),"var(--red)")+
+    kpi("Paid Installs",a.total_installs_30d||0,"var(--green)")+
+    kpi("Blended CPI",a.blended_cpi!==null&&a.blended_cpi!==undefined?"$"+a.blended_cpi.toFixed(2):"—","var(--blue)")+
     kpi("Organic Units",a.organic?.units||0,"var(--teal)")+
     kpi("Store Impressions",a.organic?.impressions||0,"var(--indigo)")+
   '</div>';
@@ -516,6 +516,35 @@ function rGr(){
     html+='</table>';
   }
   html+='</div>';
+
+  // Meta Ads + Apple Search Ads breakdown
+  var metaCh=(a.by_channel||[]).find(function(c){return c.channel==='meta'});
+  var asaCh=(a.by_channel||[]).find(function(c){return c.channel==='asa'||c.channel==='apple'});
+  html+='<div class="g2">';
+  html+='<div class="cd"><h3>Meta Ads</h3>';
+  if(metaCh){
+    html+=row("Spend","$"+metaCh.spend.toFixed(2),"var(--red)");
+    html+=row("Installs",metaCh.installs,"var(--green)");
+    html+=row("CPI",metaCh.cpi!==null?"$"+metaCh.cpi.toFixed(2):"—","var(--blue)");
+  } else {
+    html+='<div style="font-size:10px;color:var(--muted);padding:8px 0">No Meta spend data yet. Seed via POST /api/dashboard/ad-metrics.<br><br>';
+    html+='<strong style="color:var(--text)">Planned campaigns:</strong><br>';
+    html+='AEO Broad: $47/day | AEO Proxy: $20/day<br>';
+    html+='Total: $67/day ($2,000/mo)</div>';
+  }
+  html+='</div>';
+  html+='<div class="cd"><h3>Apple Search Ads</h3>';
+  if(asaCh){
+    html+=row("Spend","$"+asaCh.spend.toFixed(2),"var(--red)");
+    html+=row("Installs",asaCh.installs,"var(--green)");
+    html+=row("CPI",asaCh.cpi!==null?"$"+asaCh.cpi.toFixed(2):"—","var(--blue)");
+  } else {
+    html+='<div style="font-size:10px;color:var(--muted);padding:8px 0">No ASA spend data yet. Seed via POST /api/dashboard/ad-metrics.<br><br>';
+    html+='<strong style="color:var(--text)">Planned campaigns:</strong><br>';
+    html+='Brand: $3/day | Category: $6/day | Competitor: $5/day | Discovery: $2.50/day<br>';
+    html+='Total: $16.50/day ($500/mo)</div>';
+  }
+  html+='</div></div>';
 
   html+='<div class="g2"><div class="cd"><h3>Unit Economics</h3>';
   html+=row("CPA (Cost per Paying Sub)",u.cpa!==null?"$"+u.cpa.toFixed(2):"—","var(--red)");
@@ -574,21 +603,20 @@ function rOg(){
 
   var html='';
 
-  if(yt.channel){
-    var ch=yt.channel;
-    html+='<div class="cd" style="border-color:rgba(168,79,62,.25)"><h3>YouTube · @fatherjohnprays</h3>';
+  if(yt.channel_id||yt.subscriber_count){
+    html+='<div class="cd" style="border-color:rgba(168,79,62,.25)"><h3>Father John · YouTube · @fatherjohnprays</h3>';
     html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
-      kpi("Subscribers",parseInt(ch.subscriberCount||0).toLocaleString(),"var(--red)")+
-      kpi("Total Views",parseInt(ch.viewCount||0).toLocaleString(),"var(--blue)")+
-      kpi("Videos",parseInt(ch.videoCount||0),"var(--purple)")+
+      kpi("Subscribers",parseInt(yt.subscriber_count||0).toLocaleString(),"var(--red)")+
+      kpi("Total Views",parseInt(yt.view_count||0).toLocaleString(),"var(--blue)")+
+      kpi("Videos",parseInt(yt.video_count||0),"var(--purple)")+
     '</div></div>';
   }
 
   if(yt.recent_videos&&yt.recent_videos.length){
-    html+='<div class="cd"><h3>Recent Videos</h3>';
+    html+='<div class="cd"><h3>Father John · Recent Videos</h3>';
     html+='<table class="tbl"><tr><th>Title</th><th>Views</th><th>Likes</th><th>Comments</th><th>Published</th></tr>';
     yt.recent_videos.forEach(function(v){
-      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+v.title+'</td><td class="mono" style="color:var(--blue)">'+(parseInt(v.viewCount||0)).toLocaleString()+'</td><td class="mono" style="color:var(--green)">'+(parseInt(v.likeCount||0)).toLocaleString()+'</td><td class="mono">'+(parseInt(v.commentCount||0)).toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(v.publishedAt).toLocaleDateString()+'</td></tr>';
+      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+v.title+'</td><td class="mono" style="color:var(--blue)">'+(parseInt(v.views||v.viewCount||0)).toLocaleString()+'</td><td class="mono" style="color:var(--green)">'+(parseInt(v.likes||v.likeCount||0)).toLocaleString()+'</td><td class="mono">'+(parseInt(v.comments||v.commentCount||0)).toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(v.published_at||v.publishedAt).toLocaleDateString()+'</td></tr>';
     });
     html+='</table></div>';
   }
@@ -617,7 +645,7 @@ function rOg(){
     });
   }
 
-  if(!yt.channel&&!stored.length){
+  if(!yt.channel_id&&!yt.subscriber_count&&!stored.length){
     html+='<div class="note">No organic data yet. YouTube auto-pulls on each page load. TikTok and Instagram will appear once API access is configured.</div>';
   }
 
