@@ -631,7 +631,7 @@ app.use("*", async (c, next) => {
 });
 app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "Internal error", detail: err.message }, 500); });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.10.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.10.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -1847,9 +1847,95 @@ app.get("/api/dashboard/revenuecat", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 // ─── APPLE APP STORE ────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-async function initAppleAnalytics(): Promise<string | null> { const token = generateASCToken(); if (!token) return null; try { const existingRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}/analyticsReportRequests?filter[accessType]=ONGOING`, { headers: { Authorization: `Bearer ${token}` } }); if (existingRes.ok) { const existing = (await existingRes.json()) as any; if (existing.data?.length > 0) { console.log("[Apple] Existing report request found:", existing.data[0].id); return existing.data[0].id; } } const createRes = await fetch("https://api.appstoreconnect.apple.com/v1/analyticsReportRequests", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ data: { type: "analyticsReportRequests", attributes: { accessType: "ONGOING" }, relationships: { app: { data: { type: "apps", id: PRAMEN_APP_ID } } } } }) }); if (createRes.ok) { const created = (await createRes.json()) as any; console.log("[Apple] Created report request:", created.data?.id); return created.data?.id || null; } else { const err = await createRes.text().catch(() => ""); console.log("[Apple] Create request failed:", createRes.status, err.substring(0,200)); return null; } } catch (err: any) { console.error("[Apple] Init error:", err.message); return null; } }
+// v5.10.1 — create both ONGOING + ONE_TIME_SNAPSHOT requests to maximize chance of getting app analytics reports
+async function initAppleAnalytics(): Promise<string[]> {
+  const token = generateASCToken(); if (!token) return [];
+  const requestIds: string[] = [];
+  try {
+    // Check for existing requests of both types
+    for (const accessType of ["ONGOING", "ONE_TIME_SNAPSHOT"]) {
+      const existingRes = await fetch(`https://api.appstoreconnect.apple.com/v1/apps/${PRAMEN_APP_ID}/analyticsReportRequests?filter[accessType]=${accessType}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (existingRes.ok) {
+        const existing = (await existingRes.json()) as any;
+        if (existing.data?.length > 0) { for (const d of existing.data) requestIds.push(d.id); }
+        else {
+          // Create new request
+          const createRes = await fetch("https://api.appstoreconnect.apple.com/v1/analyticsReportRequests", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ data: { type: "analyticsReportRequests", attributes: { accessType }, relationships: { app: { data: { type: "apps", id: PRAMEN_APP_ID } } } } }) });
+          if (createRes.ok) { const created = (await createRes.json()) as any; if (created.data?.id) requestIds.push(created.data.id); console.log(`[Apple] Created ${accessType} request:`, created.data?.id); }
+        }
+      }
+    }
+    console.log("[Apple] Report request IDs:", requestIds);
+  } catch (err: any) { console.error("[Apple] Init error:", err.message); }
+  return requestIds;
+}
 
-async function pullAppleAnalytics(): Promise<any> { const token = generateASCToken(); if (!token) return null; try { const requestId = await initAppleAnalytics(); if (!requestId) return null; const reportsRes = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/${requestId}/reports`, { headers: { Authorization: `Bearer ${token}` } }); if (!reportsRes.ok) return { connected: true, status: "api_error", code: reportsRes.status }; const reportsData = (await reportsRes.json()) as any; const reports = reportsData.data || []; if (reports.length === 0) return { connected: true, status: "generating" }; const targetKeywords = ["discovery","engagement","download","impression","standard"]; const sortedReports = [...reports].sort((a: any, b: any) => { const aName = (a.attributes?.name||"").toLowerCase(); const bName = (b.attributes?.name||"").toLowerCase(); const aScore = targetKeywords.reduce((s: number, kw: string) => s+(aName.includes(kw)?1:0),0)+(aName.includes("standard")?2:0); const bScore = targetKeywords.reduce((s: number, kw: string) => s+(bName.includes(kw)?1:0),0)+(bName.includes("standard")?2:0); return bScore-aScore; }); let lastResult: any = null; for (const report of sortedReports) { const instancesRes = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReports/${report.id}/instances?limit=7`, { headers: { Authorization: `Bearer ${token}` } }); if (!instancesRes.ok) continue; const instancesData = (await instancesRes.json()) as any; const instances = instancesData.data || []; if (instances.length === 0) { lastResult = { connected: true, status: "pending", reports_available: reports.map((r: any) => r.attributes?.name) }; continue; } for (const instance of instances.slice(0,3)) { const segmentsRes = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReportInstances/${instance.id}/segments?fields[analyticsReportSegments]=url,checksum,sizeInBytes`, { headers: { Authorization: `Bearer ${token}` } }); if (!segmentsRes.ok) continue; const segmentsData = (await segmentsRes.json()) as any; const segments = segmentsData.data || []; if (segments.length === 0) continue; const segUrl = segments[0].attributes?.url; if (!segUrl) continue; const dataRes = await fetch(segUrl); if (!dataRes.ok) continue; const rawText = await dataRes.text(); const lines = rawText.trim().split("\n"); if (lines.length < 2) continue; const headers = lines[0].split("\t").map((h: string) => h.trim().toLowerCase().replace(/\s+/g, "_")); const rows: any[] = []; for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); const row: any = {}; headers.forEach((h: string, j: number) => { row[h] = cols[j]?.trim() || ""; }); rows.push(row); } let stored = 0; for (const row of rows) { const date = row.date || row.report_date || row.day || row.calendar_date; if (!date) continue; const impressions = parseInt(row.impressions||row.total_impressions||row.store_impressions||"0")||0; const pageViews = parseInt(row.product_page_views||row.page_views||row.product_page_view_count||"0")||0; const downloads = parseInt(row.total_downloads||row.first_time_downloads||row.app_units||row.redownloads_and_first_time_downloads||"0")||0; const proceeds = parseFloat(row.proceeds||row.developer_proceeds||"0")||0; const convRate = pageViews>0?downloads/pageViews:(impressions>0?downloads/impressions:0); if (impressions||downloads||pageViews) { await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,proceeds,updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=GREATEST(daily_app_store_metrics.impressions,$2),product_page_views=GREATEST(daily_app_store_metrics.product_page_views,$3),app_units=GREATEST(daily_app_store_metrics.app_units,$4),conversion_rate=$5,proceeds=GREATEST(daily_app_store_metrics.proceeds,$6),updated_at=NOW()`, [date, impressions, pageViews, downloads, convRate, proceeds]); stored++; } } if (stored > 0) return { connected: true, status: "ok", report: report.attributes?.name, reports_available: reports.map((r: any) => r.attributes?.name), rows_parsed: rows.length, days_stored: stored, headers, sample: rows.slice(0,2) }; } } return lastResult || { connected: true, status: "no_data", reports_available: reports.map((r: any) => r.attributes?.name) }; } catch (err: any) { console.error("[Apple] Analytics error:", err.message); return { connected: false, error: err.message }; } }
+// v5.10.1 — check ALL report requests + ALL reports for instances (no keyword filter)
+async function pullAppleAnalytics(): Promise<any> {
+  const token = generateASCToken(); if (!token) return null;
+  try {
+    const requestIds = await initAppleAnalytics();
+    if (requestIds.length === 0) return { connected: false, error: "No report requests" };
+    const allReportNames: string[] = [];
+    const reportsWithInstances: any[] = [];
+    let stored = 0;
+
+    for (const requestId of requestIds) {
+      const reportsRes = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReportRequests/${requestId}/reports`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!reportsRes.ok) continue;
+      const reportsData = (await reportsRes.json()) as any;
+      const reports = reportsData.data || [];
+      for (const report of reports) { allReportNames.push(report.attributes?.name || "unknown"); }
+
+      // Check ALL reports for instances — not just keyword-filtered ones
+      for (const report of reports) {
+        const reportName = (report.attributes?.name || "").toLowerCase();
+        const instancesRes = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReports/${report.id}/instances?limit=3`, { headers: { Authorization: `Bearer ${token}` } });
+        if (!instancesRes.ok) continue;
+        const instancesData = (await instancesRes.json()) as any;
+        const instances = instancesData.data || [];
+        if (instances.length === 0) continue;
+
+        reportsWithInstances.push({ name: report.attributes?.name, instances: instances.length });
+
+        // Try to parse data from reports that might have app store metrics
+        for (const instance of instances.slice(0, 2)) {
+          const segmentsRes = await fetch(`https://api.appstoreconnect.apple.com/v1/analyticsReportInstances/${instance.id}/segments?fields[analyticsReportSegments]=url,checksum,sizeInBytes`, { headers: { Authorization: `Bearer ${token}` } });
+          if (!segmentsRes.ok) continue;
+          const segmentsData = (await segmentsRes.json()) as any;
+          const segments = segmentsData.data || [];
+          if (segments.length === 0) continue;
+          const segUrl = segments[0].attributes?.url;
+          if (!segUrl) continue;
+          const dataRes = await fetch(segUrl);
+          if (!dataRes.ok) continue;
+          const rawText = await dataRes.text();
+          const lines = rawText.trim().split("\n");
+          if (lines.length < 2) continue;
+          const headers = lines[0].split("\t").map((h: string) => h.trim().toLowerCase().replace(/\s+/g, "_"));
+          // Check if this report has app store metrics columns
+          const hasAppMetrics = headers.some((h: string) => h.includes("impression") || h.includes("download") || h.includes("page_view") || h.includes("product_page"));
+          if (!hasAppMetrics) continue;
+          const rows: any[] = [];
+          for (let i = 1; i < lines.length; i++) { const cols = lines[i].split("\t"); const row: any = {}; headers.forEach((h: string, j: number) => { row[h] = cols[j]?.trim() || ""; }); rows.push(row); }
+          for (const row of rows) {
+            const date = row.date || row.report_date || row.day || row.calendar_date; if (!date) continue;
+            const impressions = parseInt(row.impressions||row.total_impressions||row.store_impressions||"0")||0;
+            const pageViews = parseInt(row.product_page_views||row.page_views||row.product_page_view_count||"0")||0;
+            const downloads = parseInt(row.total_downloads||row.first_time_downloads||row.app_units||"0")||0;
+            const convRate = pageViews>0?downloads/pageViews:(impressions>0?downloads/impressions:0);
+            if (impressions||downloads||pageViews) {
+              await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,updated_at) VALUES ($1,$2,$3,GREATEST($4,(SELECT COALESCE(app_units,0) FROM daily_app_store_metrics WHERE date=$1)),$5,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=GREATEST(daily_app_store_metrics.impressions,$2),product_page_views=GREATEST(daily_app_store_metrics.product_page_views,$3),app_units=GREATEST(daily_app_store_metrics.app_units,$4),conversion_rate=$5,updated_at=NOW()`, [date, impressions, pageViews, downloads, convRate]);
+              stored++;
+            }
+          }
+          if (stored > 0) return { connected: true, status: "ok", report: report.attributes?.name, reports_available: [...new Set(allReportNames)], reports_with_instances: reportsWithInstances, days_stored: stored, headers, sample: rows.slice(0, 2) };
+        }
+      }
+    }
+    return { connected: true, status: reportsWithInstances.length > 0 ? "instances_found_no_app_metrics" : "pending", reports_available: [...new Set(allReportNames)], reports_with_instances: reportsWithInstances, total_reports: allReportNames.length };
+  } catch (err: any) { console.error("[Apple] Analytics error:", err.message); return { connected: false, error: err.message }; }
+}
 
 app.post("/api/dashboard/appstore/seed", async (c) => { const secret = c.req.query("key") || c.req.header("X-Dashboard-Key"); if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401); try { const body = await c.req.json(); const { metrics } = body; if (!Array.isArray(metrics)) return c.json({ error: "metrics array required" }, 400); let stored = 0; for (const m of metrics) { if (!m.date) continue; await pool.query(`INSERT INTO daily_app_store_metrics (date,impressions,product_page_views,app_units,conversion_rate,proceeds,updated_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date) DO UPDATE SET impressions=$2,product_page_views=$3,app_units=$4,conversion_rate=$5,proceeds=$6,updated_at=NOW()`, [m.date, m.impressions||0, m.product_page_views||0, m.app_units||0, m.conversion_rate||0, m.proceeds||0]); stored++; } return c.json({ status: "ok", stored }); } catch (e: any) { return c.json({ error: e.message }, 500); } });
 
@@ -2140,7 +2226,7 @@ async function start() {
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.10.0 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.10.1 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Meta CAPI: ${META_CAPI_ACCESS_TOKEN ? "✓" : "✗"} pixel=${META_PIXEL_ID || "-"}`);
