@@ -2188,25 +2188,28 @@ app.get("/api/dashboard/organic", async (c) => {
     let youtubeStats: any = null;
     if (YOUTUBE_API_KEY) {
       try {
-        const chRes = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet&forHandle=${YT_CHANNEL_HANDLE}&key=${YOUTUBE_API_KEY}`);
+        const chRes = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=statistics,snippet,contentDetails&forHandle=${YT_CHANNEL_HANDLE}&key=${YOUTUBE_API_KEY}`);
         if (chRes.ok) {
           const chData = (await chRes.json()) as any;
           const ch = chData.items?.[0];
           if (ch) {
             youtubeStats = { channel_id: ch.id, title: ch.snippet?.title, subscriber_count: parseInt(ch.statistics?.subscriberCount||0), view_count: parseInt(ch.statistics?.viewCount||0), video_count: parseInt(ch.statistics?.videoCount||0) };
-            // Fetch recent videos
-            const searchRes = await fetch(`https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${ch.id}&order=date&type=video&maxResults=10&key=${YOUTUBE_API_KEY}`);
-            if (searchRes.ok) {
-              const searchData = (await searchRes.json()) as any;
-              const videoIds = (searchData.items||[]).map((v: any) => v.id?.videoId).filter(Boolean).join(",");
-              if (videoIds) {
-                const statsRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id=${videoIds}&key=${YOUTUBE_API_KEY}`);
-                if (statsRes.ok) {
-                  const statsData = (await statsRes.json()) as any;
-                  youtubeStats.recent_videos = (statsData.items||[]).map((v: any) => ({ id: v.id, title: v.snippet?.title, published_at: v.snippet?.publishedAt, views: parseInt(v.statistics?.viewCount||0), likes: parseInt(v.statistics?.likeCount||0), comments: parseInt(v.statistics?.commentCount||0) }));
+            // Fetch recent videos — use playlistItems (uploads playlist) instead of search API (cheaper quota)
+            const uploadsPlaylistId = ch.contentDetails?.relatedPlaylists?.uploads || "UU" + ch.id.substring(2);
+            try {
+              const plRes = await fetch(`https://www.googleapis.com/youtube/v3/playlistItems?part=snippet,contentDetails&playlistId=${uploadsPlaylistId}&maxResults=30&key=${YOUTUBE_API_KEY}`);
+              if (plRes.ok) {
+                const plData = (await plRes.json()) as any;
+                const videoIds = (plData.items||[]).map((v: any) => v.contentDetails?.videoId || v.snippet?.resourceId?.videoId).filter(Boolean).join(",");
+                if (videoIds) {
+                  const statsRes = await fetch(`https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet,contentDetails&id=${videoIds}&key=${YOUTUBE_API_KEY}`);
+                  if (statsRes.ok) {
+                    const statsData = (await statsRes.json()) as any;
+                    youtubeStats.recent_videos = (statsData.items||[]).map((v: any) => ({ id: v.id, title: v.snippet?.title, published_at: v.snippet?.publishedAt, views: parseInt(v.statistics?.viewCount||0), likes: parseInt(v.statistics?.likeCount||0), comments: parseInt(v.statistics?.commentCount||0), duration: v.contentDetails?.duration || "" }));
+                  } else { console.error("[YouTube] Video stats failed:", statsRes.status); }
                 }
-              }
-            }
+              } else { console.error("[YouTube] Playlist fetch failed:", plRes.status, await plRes.text().catch(()=>"")); }
+            } catch (ytErr: any) { console.error("[YouTube] Video fetch error:", ytErr.message); }
           }
         }
       } catch (err: any) { console.error("[YouTube]", err.message); }
