@@ -53,6 +53,10 @@ const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "AIzaSyD0WUdkjl_HBAoaojLM
 const YT_CHANNEL_HANDLE = "fatherjohnprays";
 const INSTAGRAM_ACCESS_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";
 const INSTAGRAM_ACCOUNT_ID = process.env.INSTAGRAM_ACCOUNT_ID || "26555458837479438";
+const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY || "awxoypil52spu3bo";
+const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "ZfHCI7BkM0fPntSGCr9kceCWYmeTzuxY";
+const TIKTOK_REDIRECT_URI = "https://web-production-88ed0.up.railway.app/auth/tiktok/callback";
+const TIKTOK_ACCESS_TOKEN = process.env.TIKTOK_ACCESS_TOKEN || "";
 
 // ─── R2 Storage ──────────────────────────────────────────────────────
 const s3 = R2_ACCOUNT_ID ? new S3Client({ region: "auto", endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`, credentials: { accessKeyId: R2_ACCESS_KEY_ID, secretAccessKey: R2_SECRET_ACCESS_KEY } }) : null;
@@ -636,8 +640,57 @@ app.onError((err, c) => { console.error("Error:", err); return c.json({ error: "
 // TikTok domain verification
 app.get("/tiktokvaEaRnqCoAhlOUYQ7qdLl6Hgh8JExbRL.txt", (c) => { c.header("Content-Type", "text/plain"); return c.text("tiktok-developers-site-verification=vaEaRnqCoAhlOUYQ7qdLl6Hgh8JExbRL"); });
 
-// TikTok OAuth callback
-app.get("/auth/tiktok/callback", (c) => { const code = c.req.query("code") || ""; return c.json({ status: "ok", code, message: "TikTok auth callback received. Save this code." }); });
+// TikTok OAuth — Step 1: redirect user to TikTok authorization
+app.get("/auth/tiktok", (c) => {
+  const scopes = "user.info.basic,user.info.profile,user.info.stats,video.list,video.insights";
+  const state = randomUUID().substring(0, 16);
+  const url = `https://www.tiktok.com/v2/auth/authorize/?client_key=${TIKTOK_CLIENT_KEY}&response_type=code&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(TIKTOK_REDIRECT_URI)}&state=${state}`;
+  return c.redirect(url);
+});
+
+// TikTok OAuth — Step 2: receive code, exchange for token
+app.get("/auth/tiktok/callback", async (c) => {
+  const code = c.req.query("code") || "";
+  const error = c.req.query("error") || "";
+  if (error || !code) return c.html(`<h2>TikTok Auth Failed</h2><p>Error: ${error || "No code received"}</p><p><a href="/auth/tiktok">Try again</a></p>`);
+  try {
+    // Exchange code for access token
+    const tokenRes = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_key: TIKTOK_CLIENT_KEY, client_secret: TIKTOK_CLIENT_SECRET, code, grant_type: "authorization_code", redirect_uri: TIKTOK_REDIRECT_URI })
+    });
+    const tokenData = (await tokenRes.json()) as any;
+    if (tokenData.error || !tokenData.access_token) {
+      return c.html(`<h2>Token Exchange Failed</h2><pre>${JSON.stringify(tokenData, null, 2)}</pre><p><a href="/auth/tiktok">Try again</a></p>`);
+    }
+    // Fetch user info to confirm it works
+    const userRes = await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url,follower_count,following_count,likes_count,video_count", {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` }
+    });
+    const userData = (await userRes.json()) as any;
+    return c.html(`
+      <html><body style="font-family:system-ui;max-width:600px;margin:40px auto;padding:20px">
+      <h2>TikTok Connected!</h2>
+      <p><strong>User:</strong> ${userData.data?.user?.display_name || "Unknown"}</p>
+      <p><strong>Followers:</strong> ${userData.data?.user?.follower_count || 0}</p>
+      <p><strong>Videos:</strong> ${userData.data?.user?.video_count || 0}</p>
+      <h3>Save these to Railway env vars:</h3>
+      <p><strong>TIKTOK_ACCESS_TOKEN:</strong></p>
+      <textarea style="width:100%;height:80px;font-size:12px">${tokenData.access_token}</textarea>
+      <p><strong>TIKTOK_REFRESH_TOKEN:</strong></p>
+      <textarea style="width:100%;height:80px;font-size:12px">${tokenData.refresh_token || "none"}</textarea>
+      <p><strong>TIKTOK_OPEN_ID:</strong></p>
+      <textarea style="width:100%;height:40px;font-size:12px">${tokenData.open_id || userData.data?.user?.open_id || ""}</textarea>
+      <p style="color:gray;font-size:12px">Token expires in ${Math.round((tokenData.expires_in || 0) / 3600)} hours. Refresh token expires in ${Math.round((tokenData.refresh_expires_in || 0) / 86400)} days.</p>
+      <h3>Scopes granted:</h3>
+      <pre>${tokenData.scope || "unknown"}</pre>
+      <h3>Raw response:</h3>
+      <pre style="font-size:10px;background:#f5f5f5;padding:10px;overflow:auto">${JSON.stringify(tokenData, null, 2)}</pre>
+      </body></html>
+    `);
+  } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
+}); });
 
 app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.10.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
