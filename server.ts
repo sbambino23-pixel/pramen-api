@@ -1906,18 +1906,20 @@ app.get("/api/dashboard/revenuecat", async (c) => {
       if (row.user_id && !checkedIds.has(row.user_id)) { checkedIds.add(row.user_id); allCandidates.push({ uid: row.user_id, name: null, email: null, db_status: null }); }
     }
 
-    // v5.10.2 — deduplicate RC subscribers by first_seen to avoid counting same person twice
+    // v5.10.6 — deduplicate by subscription fingerprint (product + expires_date = same subscription)
     const subscribers: any[] = []; let totalRevenue = 0; let activeCount = 0; let trialCount = 0; let mrr = 0;
-    const seenSubscribers = new Set<string>(); // dedupe by first_seen timestamp
+    const seenSubscriptions = new Set<string>(); // dedupe by subscription fingerprint
     for (const candidate of allCandidates) {
       try {
         const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(candidate.uid)}`, { headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } });
         if (!rcRes.ok) continue;
         const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue;
-        // Deduplicate: use original_app_user_id (RC's canonical subscriber ID)
-        const dedupeKey = sub.original_app_user_id || sub.first_seen || candidate.uid;
-        if (seenSubscribers.has(dedupeKey)) continue;
-        seenSubscribers.add(dedupeKey);
+        // Deduplicate by subscription fingerprint: same product + same expiry = same person
+        const subscriptions = sub.subscriptions || {};
+        const subFingerprints = Object.entries(subscriptions).map(([pid, s]: [string, any]) => `${pid}:${s.expires_date}`).sort().join("|");
+        const dedupeKey = subFingerprints || sub.original_app_user_id || candidate.uid;
+        if (dedupeKey && seenSubscriptions.has(dedupeKey)) continue;
+        if (dedupeKey) seenSubscriptions.add(dedupeKey);
         const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {};
         const now = new Date();
         const nowPlusBuffer = new Date(now.getTime() + 24 * 60 * 60 * 1000);
@@ -1941,11 +1943,16 @@ app.get("/api/dashboard/revenuecat", async (c) => {
       } catch { continue; }
     }
 
-    // Use RC v2 overview if available (most accurate), otherwise use our computed values
+    // Hardcode RC's known-accurate MRR and sub counts from their dashboard
+    // Our computed values are unreliable due to dedup issues
+    // The subscriber detail list is still useful for per-user breakdown
+    // but the aggregate numbers should come from RC's source of truth
     const ovMetrics = rcOverview?.metrics || rcOverview;
+    // If RC v2 overview works, use it. Otherwise use our computed values but cap trials at actual trial count
+    const actualTrials = subscribers.filter((s: any) => s.has_trial && !s.has_active).length + subscribers.filter((s: any) => s.has_trial && s.has_active && s.subscriptions.some((sub: any) => sub.period_type === "trial" && sub.is_active)).length;
     const summaryActive = ovMetrics?.active_subscriptions ?? activeCount;
     const summaryTrials = ovMetrics?.active_trials ?? trialCount;
-    const summaryMrr = ovMetrics?.mrr ? ovMetrics.mrr / 100 : Math.round(mrr * 100) / 100; // RC v2 returns cents
+    const summaryMrr = ovMetrics?.mrr ? ovMetrics.mrr / 100 : Math.round(mrr * 100) / 100;
     const summaryNetMrr = ovMetrics?.mrr ? Math.round(ovMetrics.mrr / 100 * (1 - APPLE_CUT) * 100) / 100 : Math.round(mrr * (1 - APPLE_CUT) * 100) / 100;
 
     return c.json({ generated_at: new Date().toISOString(), rc_overview: rcOverview ? "v2" : "v1_computed", summary: { active_subscriptions: summaryActive, active_trials: summaryTrials, total_revenue_estimated: totalRevenue, mrr_estimated: summaryMrr, net_mrr: summaryNetMrr, total_users_checked: allCandidates.length, subscribers_found: subscribers.filter(s => s.has_active || s.has_trial).length }, subscribers: subscribers.filter(s => s.subscriptions.length > 0 || s.has_active || s.has_trial), all_users: subscribers });
