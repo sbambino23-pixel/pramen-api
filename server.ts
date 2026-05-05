@@ -1914,12 +1914,18 @@ app.get("/api/dashboard/revenuecat", async (c) => {
         const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(candidate.uid)}`, { headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } });
         if (!rcRes.ok) continue;
         const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue;
-        // Deduplicate by subscription fingerprint: same product + same expiry = same person
+        // Deduplicate by original_app_user_id (RC's canonical ID for the subscriber)
+        // If that's not available, fall back to the candidate uid
         const subscriptions = sub.subscriptions || {};
-        const subFingerprints = Object.entries(subscriptions).map(([pid, s]: [string, any]) => `${pid}:${s.expires_date}`).sort().join("|");
-        const dedupeKey = subFingerprints || sub.original_app_user_id || candidate.uid;
-        if (dedupeKey && seenSubscriptions.has(dedupeKey)) continue;
-        if (dedupeKey) seenSubscriptions.add(dedupeKey);
+        const origId = sub.original_app_user_id;
+        const dedupeKey = origId && origId !== candidate.uid ? origId : candidate.uid;
+        if (seenSubscriptions.has(dedupeKey)) {
+          // Still add to subscribers list for display but don't count again
+          continue;
+        }
+        seenSubscriptions.add(dedupeKey);
+        // Also add the candidate uid so we don't recount when we hit the same person via their other ID
+        seenSubscriptions.add(candidate.uid);
         const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {};
         const now = new Date();
         // v5.10.7 — no buffer. A sub is active until it actually expires. Matches RC's logic.
