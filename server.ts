@@ -642,7 +642,7 @@ app.get("/tiktokvaEaRnqCoAhlOUYQ7qdLl6Hgh8JExbRL.txt", (c) => { c.header("Conten
 
 // TikTok OAuth — Step 1: redirect user to TikTok authorization
 app.get("/auth/tiktok", (c) => {
-  const scopes = "user.info.basic,user.info.profile,user.info.stats,video.list,video.insights";
+  const scopes = "user.info.basic,user.info.profile,user.info.stats,video.list";
   const state = randomUUID().substring(0, 16);
   const url = `https://www.tiktok.com/v2/auth/authorize/?client_key=${TIKTOK_CLIENT_KEY}&response_type=code&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(TIKTOK_REDIRECT_URI)}&state=${state}`;
   return c.redirect(url);
