@@ -1914,18 +1914,18 @@ app.get("/api/dashboard/revenuecat", async (c) => {
         const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(candidate.uid)}`, { headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } });
         if (!rcRes.ok) continue;
         const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue;
-        // Deduplicate by original_app_user_id (RC's canonical ID for the subscriber)
-        // If that's not available, fall back to the candidate uid
+        // Deduplicate: same person appears under user ID + device ID + anonymous RC ID
+        // Use original_app_user_id as primary key. If two candidates share the same
+        // original_app_user_id, they're the same RC subscriber.
         const subscriptions = sub.subscriptions || {};
-        const origId = sub.original_app_user_id;
-        const dedupeKey = origId && origId !== candidate.uid ? origId : candidate.uid;
-        if (seenSubscriptions.has(dedupeKey)) {
-          // Still add to subscribers list for display but don't count again
-          continue;
-        }
-        seenSubscriptions.add(dedupeKey);
-        // Also add the candidate uid so we don't recount when we hit the same person via their other ID
-        seenSubscriptions.add(candidate.uid);
+        const origId = sub.original_app_user_id || "";
+        // Build a composite dedup key from original_app_user_id
+        // RC returns the SAME original_app_user_id for all aliases of a subscriber
+        if (origId && seenSubscriptions.has("orig:" + origId)) continue;
+        if (origId) seenSubscriptions.add("orig:" + origId);
+        // Also prevent recounting via candidate uid
+        if (seenSubscriptions.has("uid:" + candidate.uid)) continue;
+        seenSubscriptions.add("uid:" + candidate.uid);
         const entitlements = sub.entitlements || {};
         const now = new Date();
         // v5.10.7 — no buffer. A sub is active until it actually expires. Matches RC's logic.
