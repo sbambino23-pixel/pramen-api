@@ -1969,9 +1969,11 @@ app.get("/api/dashboard/revenuecat", async (c) => {
     // Estimate unique subscribers: total found minus duplicates caught minus estimated remaining duplicates
     // RC v1 API cannot reliably deduplicate — use a heuristic: ~40% of anonymous RC IDs are duplicates of auth IDs
     const anonCount = subscribers.filter((s: any) => s.user_id.startsWith("$RCAnonymous")).length;
-    const estimatedDuplicates = Math.round(anonCount * 0.8); // most anonymous IDs are duplicates of auth IDs
+    const estimatedDuplicates = Math.round(anonCount * 0.8);
     const adjustedActive = Math.max(activeCount - estimatedDuplicates, 0);
-    const adjustedMrr = Math.round((mrr - estimatedDuplicates * 3.99) * 100) / 100; // assume duplicates are monthly
+    // MRR discount: compute avg MRR per subscriber, then subtract duplicates' share
+    const avgMrrPerSub = activeCount > 0 ? mrr / activeCount : 0;
+    const adjustedMrr = Math.round(Math.max(mrr - estimatedDuplicates * avgMrrPerSub, 0) * 100) / 100;
     const summaryActive = ovMetrics?.active_subscriptions ?? adjustedActive;
     const summaryTrials = ovMetrics?.active_trials ?? trialCount;
     const summaryMrr = ovMetrics?.mrr ? ovMetrics.mrr / 100 : Math.max(adjustedMrr, 0);

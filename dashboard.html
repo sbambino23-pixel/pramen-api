@@ -121,7 +121,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 <script>
 var B=location.origin,K=new URLSearchParams(location.search).get("key")||"",
     D=null,PH=null,AP=null,RC=null,TAB="overview",SU=null,
-    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",CUSTOM_FROM=null,CUSTOM_TO=null,USR_SEARCH="",USR_VIEW="list",
+    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",CUSTOM_FROM=null,CUSTOM_TO=null,USR_SEARCH="",USR_VIEW="list",YT_SORT="views",YT_SORT_DIR="desc",
     GR=null,OG=null;
 
 // Event colors & labels
@@ -818,10 +818,17 @@ function rOg(){
   }
 
   if(yt.recent_videos&&yt.recent_videos.length){
+    // Add engagement rate and sort
+    var vids=yt.recent_videos.map(function(v){
+      var views=parseInt(v.views||v.viewCount||0);var likes=parseInt(v.likes||v.likeCount||0);var comments=parseInt(v.comments||v.commentCount||0);
+      return{title:v.title,views:views,likes:likes,comments:comments,engagement:views>0?((likes+comments)/views*100):0,published:v.published_at||v.publishedAt};
+    });
+    vids.sort(function(a,b){var va=a[YT_SORT]||0,vb=b[YT_SORT]||0;return YT_SORT_DIR==='desc'?vb-va:va-vb});
+    function ytSortHdr(label,field){var arrow=YT_SORT===field?(YT_SORT_DIR==='desc'?' v':' ^'):'';return'<th style="cursor:pointer" onclick="YT_SORT=\''+field+'\';YT_SORT_DIR=YT_SORT_DIR===\'desc\'?\'asc\':\'desc\';render()">'+label+arrow+'</th>'}
     html+='<div class="cd"><h3>Father John · Recent Videos</h3>';
-    html+='<table class="tbl"><tr><th>Title</th><th>Views</th><th>Likes</th><th>Comments</th><th>Published</th></tr>';
-    yt.recent_videos.forEach(function(v){
-      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+v.title+'</td><td class="mono" style="color:var(--blue)">'+(parseInt(v.views||v.viewCount||0)).toLocaleString()+'</td><td class="mono" style="color:var(--green)">'+(parseInt(v.likes||v.likeCount||0)).toLocaleString()+'</td><td class="mono">'+(parseInt(v.comments||v.commentCount||0)).toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(v.published_at||v.publishedAt).toLocaleDateString()+'</td></tr>';
+    html+='<table class="tbl"><tr><th>Title</th>'+ytSortHdr('Views','views')+ytSortHdr('Likes','likes')+ytSortHdr('Comments','comments')+ytSortHdr('Eng. Rate','engagement')+'<th>Published</th></tr>';
+    vids.forEach(function(v){
+      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+v.title+'</td><td class="mono" style="color:var(--blue)">'+v.views.toLocaleString()+'</td><td class="mono" style="color:var(--green)">'+v.likes.toLocaleString()+'</td><td class="mono">'+v.comments.toLocaleString()+'</td><td class="mono" style="color:var(--gold)">'+v.engagement.toFixed(1)+'%</td><td class="mono" style="color:var(--muted)">'+new Date(v.published).toLocaleDateString()+'</td></tr>';
     });
     html+='</table></div>';
   }
