@@ -1863,28 +1863,30 @@ app.get("/api/dashboard/revenuecat", async (c) => {
       if (row.user_id && !checkedIds.has(row.user_id)) { checkedIds.add(row.user_id); allCandidates.push({ uid: row.user_id, name: null, email: null, db_status: null }); }
     }
 
+    // v5.10.2 — deduplicate RC subscribers by first_seen to avoid counting same person twice
     const subscribers: any[] = []; let totalRevenue = 0; let activeCount = 0; let trialCount = 0; let mrr = 0;
+    const seenSubscribers = new Set<string>(); // dedupe by first_seen timestamp
     for (const candidate of allCandidates) {
       try {
         const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(candidate.uid)}`, { headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } });
         if (!rcRes.ok) continue;
         const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue;
+        // Deduplicate: if we've already seen this RC subscriber (same first_seen), skip
+        const dedupeKey = sub.first_seen || candidate.uid;
+        if (seenSubscribers.has(dedupeKey)) continue;
+        seenSubscribers.add(dedupeKey);
         const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {};
-        // v5.9.9 — match RC's MRR exactly: exclude cancelled, expiring-within-24h, billing issues
         const now = new Date();
-        // Sub must expire more than 24h from now to count toward MRR (RC doesn't count subs in their final day)
         const nowPlusBuffer = new Date(now.getTime() + 24 * 60 * 60 * 1000);
         const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > now);
         const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > now);
         let userRevenue = 0;
         for (const [pid, s2] of Object.entries(subscriptions) as any[]) { if (s2.store === "app_store" || s2.store === "play_store") { if (pid.includes("yearly")) userRevenue += 29.99; else if (pid.includes("monthly")) userRevenue += 3.99; else if (pid.includes("lifetime")) userRevenue += 149.99; } }
-        // Active sub = will renew: expires well in future, not trial, not cancelled, no billing issues
         const willRenew = Object.values(subscriptions).some((s: any) => new Date(s.expires_date) > nowPlusBuffer && s.period_type !== "trial" && !s.unsubscribe_detected_at && !s.billing_issues_detected_at);
         const isLifetime = Object.keys(subscriptions).some((pid) => pid.includes("lifetime"));
         if (willRenew || isLifetime) activeCount++;
         if (hasTrial) trialCount++;
         totalRevenue += userRevenue;
-        // MRR: only subs that will actually renew
         for (const [pid, s2] of Object.entries(subscriptions) as any[]) {
           const expires = new Date(s2.expires_date);
           if (expires > nowPlusBuffer && s2.period_type !== "trial" && !s2.unsubscribe_detected_at && !s2.billing_issues_detected_at) {
