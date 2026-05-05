@@ -54,7 +54,7 @@ const YT_CHANNEL_HANDLE = "fatherjohnprays";
 const INSTAGRAM_ACCESS_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";
 const INSTAGRAM_ACCOUNT_ID = process.env.INSTAGRAM_ACCOUNT_ID || "26555458837479438";
 const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY || "sbawviqnjkoz6ihr4n";
-const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "Un5pRilh8Nr0vrgDul2iV0BQ82OSzOlr";
+const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET || "Un5pRilh8Nr0vrgDul2iV0BQ82OSzOIr";
 const TIKTOK_REDIRECT_URI = "https://web-production-88ed0.up.railway.app/auth/tiktok/callback";
 const TIKTOK_ACCESS_TOKEN = process.env.TIKTOK_ACCESS_TOKEN || "";
 
