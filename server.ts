@@ -2430,6 +2430,30 @@ async function start() {
   // Scheduled posts interval removed (FIX #8)
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
+  // v5.10.5 — Auto-pull Meta Ads spend data every 6 hours
+  async function pullMetaAdSpend(): Promise<void> {
+    if (!META_CAPI_ACCESS_TOKEN) return;
+    try {
+      const adAccountId = "1254641126873592";
+      const today = new Date().toISOString().split("T")[0];
+      const yesterday = new Date(Date.now() - 24*60*60*1000).toISOString().split("T")[0];
+      for (const date of [yesterday, today]) {
+        const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=campaign_name,spend,impressions,clicks,actions&time_range={"since":"${date}","until":"${date}"}&level=campaign&access_token=${META_CAPI_ACCESS_TOKEN}`;
+        const res = await fetch(url);
+        if (!res.ok) { console.error("[Meta Ads]", res.status, await res.text().catch(()=>"")); continue; }
+        const data = (await res.json()) as any;
+        for (const row of (data.data || [])) {
+          const installs = (row.actions || []).find((a: any) => a.action_type === "app_installs")?.value || 0;
+          const trials = (row.actions || []).find((a: any) => a.action_type === "app_custom_event.fb_mobile_start_trial" || a.action_type === "omni_app_custom_event.fb_mobile_start_trial")?.value || 0;
+          await pool.query(`INSERT INTO daily_ad_metrics (date,channel,campaign,spend,impressions,clicks,installs,trials,updated_at) VALUES ($1,'meta',$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT (date,channel,campaign) DO UPDATE SET spend=$3,impressions=$4,clicks=$5,installs=$6,trials=$7,updated_at=NOW()`,
+            [date, row.campaign_name || "unknown", parseFloat(row.spend||0), parseInt(row.impressions||0), parseInt(row.clicks||0), parseInt(installs), parseInt(trials)]);
+        }
+        if (data.data?.length) console.log(`[Meta Ads] ${date}: ${data.data.length} campaigns stored`);
+      }
+    } catch (err: any) { console.error("[Meta Ads]", err.message); }
+  }
+  setTimeout(() => { pullMetaAdSpend().catch(() => {}); }, 2 * 60 * 1000);
+  setInterval(() => { pullMetaAdSpend().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API v5.10.1 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
