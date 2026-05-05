@@ -660,6 +660,25 @@ function rOg(){
     });
   }
 
+  // TikTok section
+  var tt=OG.tiktok||{};
+  if(tt.username||tt.followers){
+    html+='<div class="cd" style="border-color:rgba(94,60,36,.25)"><h3>prAmen · TikTok · @'+tt.username+'</h3>';
+    html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
+      kpi("Followers",parseInt(tt.followers||0).toLocaleString(),"var(--text)")+
+      kpi("Likes",parseInt(tt.likes||0).toLocaleString(),"var(--red)")+
+      kpi("Videos",parseInt(tt.video_count||0),"var(--purple)")+
+    '</div></div>';
+  }
+  if(tt.recent_videos&&tt.recent_videos.length){
+    html+='<div class="cd"><h3>prAmen · Recent TikTok Videos</h3>';
+    html+='<table class="tbl"><tr><th>Title</th><th>Views</th><th>Likes</th><th>Comments</th><th>Shares</th><th>Posted</th></tr>';
+    tt.recent_videos.forEach(function(v){
+      html+='<tr><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(v.title||'Untitled')+'</td><td class="mono" style="color:var(--blue)">'+parseInt(v.views||0).toLocaleString()+'</td><td class="mono" style="color:var(--red)">'+parseInt(v.likes||0).toLocaleString()+'</td><td class="mono">'+parseInt(v.comments||0).toLocaleString()+'</td><td class="mono">'+parseInt(v.shares||0).toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(v.created_at).toLocaleDateString()+'</td></tr>';
+    });
+    html+='</table></div>';
+  }
+
   // Instagram section
   var ig=OG.instagram||{};
   if(ig.account_id||ig.username){

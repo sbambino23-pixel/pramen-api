@@ -2278,6 +2278,33 @@ app.get("/api/dashboard/organic", async (c) => {
       } catch (err: any) { console.error("[YouTube]", err.message); }
     }
 
+    // TikTok auto-pull
+    let tiktokStats: any = null;
+    if (TIKTOK_ACCESS_TOKEN) {
+      try {
+        const ttUserRes = await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url,follower_count,following_count,likes_count,video_count", {
+          headers: { Authorization: `Bearer ${TIKTOK_ACCESS_TOKEN}` }
+        });
+        if (ttUserRes.ok) {
+          const ttUserData = (await ttUserRes.json()) as any;
+          const u = ttUserData.data?.user;
+          if (u) {
+            tiktokStats = { username: u.display_name, followers: u.follower_count || 0, following: u.following_count || 0, likes: u.likes_count || 0, video_count: u.video_count || 0 };
+            // Fetch recent videos
+            const ttVidRes = await fetch("https://open.tiktokapis.com/v2/video/list/?fields=id,title,create_time,cover_image_url,share_url,view_count,like_count,comment_count,share_count,duration", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${TIKTOK_ACCESS_TOKEN}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ max_count: 20 })
+            });
+            if (ttVidRes.ok) {
+              const ttVidData = (await ttVidRes.json()) as any;
+              tiktokStats.recent_videos = (ttVidData.data?.videos || []).map((v: any) => ({ id: v.id, title: v.title || "", views: v.view_count || 0, likes: v.like_count || 0, comments: v.comment_count || 0, shares: v.share_count || 0, duration: v.duration || 0, created_at: v.create_time ? new Date(v.create_time * 1000).toISOString() : "", permalink: v.share_url || "" }));
+            }
+          }
+        } else { console.error("[TikTok] User info failed:", ttUserRes.status); }
+      } catch (ttErr: any) { console.error("[TikTok]", ttErr.message); }
+    }
+
     // Instagram auto-pull
     let instagramStats: any = null;
     if (INSTAGRAM_ACCESS_TOKEN) {
@@ -2300,7 +2327,7 @@ app.get("/api/dashboard/organic", async (c) => {
     for (const [ch, rows] of Object.entries(byChannel)) {
       totals[ch] = { views: rows.reduce((s: number, r: any) => s + (r.views||0), 0), subscribers_gained: rows.reduce((s: number, r: any) => s + (r.subscribers_gained||0), 0), likes: rows.reduce((s: number, r: any) => s + (r.likes||0), 0), comments: rows.reduce((s: number, r: any) => s + (r.comments||0), 0), shares: rows.reduce((s: number, r: any) => s + (r.shares||0), 0), watch_hours: rows.reduce((s: number, r: any) => s + (r.watch_hours||0), 0) };
     }
-    return c.json({ generated_at: new Date().toISOString(), days, by_channel: byChannel, totals, youtube: youtubeStats, instagram: instagramStats });
+    return c.json({ generated_at: new Date().toISOString(), days, by_channel: byChannel, totals, youtube: youtubeStats, instagram: instagramStats, tiktok: tiktokStats });
   } catch (err: any) { return c.json({ error: "Organic dashboard failed", detail: err.message }, 500); }
 });
 
