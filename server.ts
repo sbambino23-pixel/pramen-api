@@ -1908,24 +1908,29 @@ app.get("/api/dashboard/revenuecat", async (c) => {
 
     // v5.10.6 — deduplicate by subscription fingerprint (product + expires_date = same subscription)
     const subscribers: any[] = []; let totalRevenue = 0; let activeCount = 0; let trialCount = 0; let mrr = 0;
-    const seenSubscriptions = new Set<string>(); // dedupe by subscription fingerprint
+    const seenSubscriptions = new Map<string, string>(); // dedupe by purchase proximity
     for (const candidate of allCandidates) {
       try {
         const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(candidate.uid)}`, { headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } });
         if (!rcRes.ok) continue;
         const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue;
-        // Deduplicate: same person appears under user ID + device ID + anonymous RC ID
-        // Use original_app_user_id as primary key. If two candidates share the same
-        // original_app_user_id, they're the same RC subscriber.
+        // Deduplicate by subscription purchase proximity
+        // If two user IDs have the same product purchased within 15 minutes, they're the same person
         const subscriptions = sub.subscriptions || {};
-        const origId = sub.original_app_user_id || "";
-        // Build a composite dedup key from original_app_user_id
-        // RC returns the SAME original_app_user_id for all aliases of a subscriber
-        if (origId && seenSubscriptions.has("orig:" + origId)) continue;
-        if (origId) seenSubscriptions.add("orig:" + origId);
-        // Also prevent recounting via candidate uid
-        if (seenSubscriptions.has("uid:" + candidate.uid)) continue;
-        seenSubscriptions.add("uid:" + candidate.uid);
+        let isDuplicate = false;
+        for (const [pid, s2] of Object.entries(subscriptions) as any[]) {
+          if (!s2.purchase_date) continue;
+          const purchaseTs = new Date(s2.purchase_date).getTime();
+          const key = pid; // product ID
+          for (const [existingKey, existingTs] of seenSubscriptions.entries()) {
+            if (existingKey.startsWith(key + ":") && Math.abs(purchaseTs - parseInt(existingKey.split(":")[1])) < 15 * 60 * 1000) {
+              isDuplicate = true; break;
+            }
+          }
+          if (!isDuplicate) seenSubscriptions.set(key + ":" + purchaseTs, candidate.uid);
+          if (isDuplicate) break;
+        }
+        if (isDuplicate) continue;
         const entitlements = sub.entitlements || {};
         const now = new Date();
         // v5.10.7 — no buffer. A sub is active until it actually expires. Matches RC's logic.
