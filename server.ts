@@ -657,10 +657,12 @@ app.get("/auth/tiktok/callback", async (c) => {
     // Exchange code for access token
     const tokenRes = await fetch("https://open.tiktokapis.com/v2/oauth/token/", {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "Cache-Control": "no-cache" },
       body: new URLSearchParams({ client_key: TIKTOK_CLIENT_KEY, client_secret: TIKTOK_CLIENT_SECRET, code, grant_type: "authorization_code", redirect_uri: TIKTOK_REDIRECT_URI })
     });
-    const tokenData = (await tokenRes.json()) as any;
+    const tokenText = await tokenRes.text();
+    let tokenData: any;
+    try { tokenData = JSON.parse(tokenText); } catch { return c.html(`<h2>Token Parse Error</h2><pre>${tokenText}</pre>`); }
     if (tokenData.error || !tokenData.access_token) {
       return c.html(`<h2>Token Exchange Failed</h2><pre>${JSON.stringify(tokenData, null, 2)}</pre><p><a href="/auth/tiktok">Try again</a></p>`);
     }
