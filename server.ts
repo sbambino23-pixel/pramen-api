@@ -1825,32 +1825,34 @@ app.get("/api/dashboard/events", async (c) => {
     }
     // Phase 1: direct ID match from DB
     for (const e of events) { if (idToCanonical[e.full_user_id]) { e.full_user_id = idToCanonical[e.full_user_id]; } }
-    // Phase 2: timestamp-based merge — find events that happen within 5 seconds of each other
-    // Group signup/subscription events by timestamp to detect same-person pairs
-    const signupEvents: { id: string; ts: number; event: string }[] = [];
+    // Phase 2: proximity-based merge — if a known auth user ID and an unknown device ID
+    // have ANY events within 10 seconds of each other, they're the same person
+    const knownAuthIds = new Set(dbUsers.rows.map((r: any) => r.id).filter(Boolean));
+    // Group all event timestamps by user ID
+    const userTimestamps: Record<string, number[]> = {};
     for (const e of events) {
-      if (e.event === "user_signed_up" || e.event === "subscription_started" || e.event === "onboarding_completed" || e.event === "email_opt_in") {
-        signupEvents.push({ id: e.full_user_id, ts: new Date(e.timestamp).getTime(), event: e.event });
-      }
+      if (!userTimestamps[e.full_user_id]) userTimestamps[e.full_user_id] = [];
+      userTimestamps[e.full_user_id].push(new Date(e.timestamp).getTime());
     }
-    // For each pair of different IDs with the same event within 5 seconds, merge them
     const mergeMap: Record<string, string> = {};
-    for (let i = 0; i < signupEvents.length; i++) {
-      for (let j = i + 1; j < signupEvents.length; j++) {
-        const a = signupEvents[i], b = signupEvents[j];
-        if (a.id === b.id) continue;
-        if (a.event !== b.event) continue;
-        if (Math.abs(a.ts - b.ts) < 5000) { // within 5 seconds
-          // Prefer the ID that has a name in DB, or the shorter one (auth ID vs device UUID)
-          const aHasName = !!idToName[a.id];
-          const bHasName = !!idToName[b.id];
-          if (aHasName) { mergeMap[b.id] = a.id; }
-          else if (bHasName) { mergeMap[a.id] = b.id; }
-          else { mergeMap[a.id.length > b.id.length ? a.id : b.id] = a.id.length > b.id.length ? b.id : a.id; }
+    const unknownIds = Object.keys(userTimestamps).filter(id => !knownAuthIds.has(id) && !idToCanonical[id]);
+    const authIds = Object.keys(userTimestamps).filter(id => knownAuthIds.has(id));
+    for (const unknownId of unknownIds) {
+      const unknownTs = userTimestamps[unknownId];
+      for (const authId of authIds) {
+        if (mergeMap[unknownId]) break; // already merged
+        const authTs = userTimestamps[authId];
+        // Check if any events from both IDs are within 10 seconds
+        for (const ut of unknownTs) {
+          let matched = false;
+          for (const at of authTs) {
+            if (Math.abs(ut - at) < 10000) { matched = true; break; }
+          }
+          if (matched) { mergeMap[unknownId] = authId; break; }
         }
       }
     }
-    // Apply timestamp merges
+    // Apply merges
     for (const e of events) { if (mergeMap[e.full_user_id]) { e.full_user_id = mergeMap[e.full_user_id]; } }
     // Update display names
     for (const e of events) { e.user = (idToName[e.full_user_id] || e.full_user_id).substring(0, 16); }
