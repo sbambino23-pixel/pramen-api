@@ -810,10 +810,16 @@ function rOg(){
 
   if(yt.channel_id||yt.subscriber_count){
     html+='<div class="cd" style="border-color:rgba(168,79,62,.25)"><h3>Father John · YouTube · @fatherjohnprays</h3>';
+    var totalLikes=0,totalComments=0,totalViews2=0;
+    if(yt.recent_videos){yt.recent_videos.forEach(function(v){totalLikes+=parseInt(v.likes||v.likeCount||0);totalComments+=parseInt(v.comments||v.commentCount||0);totalViews2+=parseInt(v.views||v.viewCount||0)})}
+    var totalEng=totalViews2>0?((totalLikes+totalComments)/totalViews2*100).toFixed(1):'0';
     html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
       kpi("Subscribers",parseInt(yt.subscriber_count||0).toLocaleString(),"var(--red)")+
       kpi("Total Views",parseInt(yt.view_count||0).toLocaleString(),"var(--blue)")+
       kpi("Videos",parseInt(yt.video_count||0),"var(--purple)")+
+      kpi("Total Likes",totalLikes.toLocaleString(),"var(--green)")+
+      kpi("Total Comments",totalComments.toLocaleString(),"var(--muted)")+
+      kpi("Eng. Rate",totalEng+"%","var(--gold)")+
     '</div></div>';
   }
 
