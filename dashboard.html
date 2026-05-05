@@ -726,13 +726,16 @@ function rGr(){
   html+='<div class="cd"><h3>Meta Ads</h3>';
   if(metaCh){
     html+=row("Spend","$"+metaCh.spend.toFixed(2),"var(--red)");
-    html+=row("Installs",metaCh.installs,"var(--green)");
-    html+=row("CPI",metaCh.cpi!==null?"$"+metaCh.cpi.toFixed(2):"—","var(--blue)");
+    html+=row("Impressions",(metaCh.impressions||0).toLocaleString(),"var(--indigo)");
+    html+=row("Clicks",metaCh.clicks||0,"var(--blue)");
+    html+=row("CTR",metaCh.impressions>0?((metaCh.clicks/metaCh.impressions)*100).toFixed(2)+"%":"—","var(--teal)");
+    html+=row("CPM",metaCh.impressions>0?"$"+(metaCh.spend/metaCh.impressions*1000).toFixed(2):"—","var(--orange)");
+    html+=row("Installs",metaCh.installs||0,"var(--green)");
+    html+=row("Trials",metaCh.trials||0,"var(--gold)");
+    html+=row("CPI",metaCh.installs>0?"$"+(metaCh.spend/metaCh.installs).toFixed(2):"—","var(--blue)");
   } else {
-    html+='<div style="font-size:10px;color:var(--muted);padding:8px 0">No Meta spend data yet. Seed via POST /api/dashboard/ad-metrics.<br><br>';
-    html+='<strong style="color:var(--text)">Planned campaigns:</strong><br>';
-    html+='AEO Broad: $47/day | AEO Proxy: $20/day<br>';
-    html+='Total: $67/day ($2,000/mo)</div>';
+    html+='<div style="font-size:10px;color:var(--muted);padding:8px 0">No Meta spend data yet.<br><br>';
+    html+='<strong style="color:var(--text)">Planned:</strong> AEO Broad $47/day + AEO Proxy $20/day = $67/day</div>';
   }
   html+='</div>';
   html+='<div class="cd"><h3>Apple Search Ads</h3>';

@@ -2438,7 +2438,7 @@ async function start() {
       const today = new Date().toISOString().split("T")[0];
       const yesterday = new Date(Date.now() - 24*60*60*1000).toISOString().split("T")[0];
       for (const date of [yesterday, today]) {
-        const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=campaign_name,spend,impressions,clicks,actions&time_range={"since":"${date}","until":"${date}"}&level=campaign&access_token=${META_CAPI_ACCESS_TOKEN}`;
+        const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=campaign_name,spend,impressions,reach,clicks,cpm,cpc,ctr,actions&time_range={"since":"${date}","until":"${date}"}&level=campaign&access_token=${META_CAPI_ACCESS_TOKEN}`;
         const res = await fetch(url);
         if (!res.ok) { console.error("[Meta Ads]", res.status, await res.text().catch(()=>"")); continue; }
         const data = (await res.json()) as any;
