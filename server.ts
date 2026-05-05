@@ -1922,7 +1922,8 @@ app.get("/api/dashboard/revenuecat", async (c) => {
         if (dedupeKey) seenSubscriptions.add(dedupeKey);
         const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {};
         const now = new Date();
-        const nowPlusBuffer = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+        // v5.10.7 — no buffer. A sub is active until it actually expires. Matches RC's logic.
+        const nowPlusBuffer = now;
         const hasActive = Object.values(entitlements).some((e: any) => new Date(e.expires_date) > now);
         const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > now);
         let userRevenue = 0;
