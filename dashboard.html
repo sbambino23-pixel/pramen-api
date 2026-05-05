@@ -75,6 +75,22 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 .sig-metric span{color:var(--text);font-weight:700}
 /* Cohort table */
 .cohort-tbl{width:100%;border-collapse:collapse;font-size:10px}.cohort-tbl th{text-align:center;padding:6px 8px;color:var(--muted);font-weight:700;border-bottom:1px solid var(--border);font-size:8px;text-transform:uppercase}.cohort-tbl td{padding:5px 8px;text-align:center;border-bottom:1px solid rgba(94,60,36,.06);font-family:ui-monospace,'SF Mono',monospace;font-size:10px}.cohort-tbl td:first-child{text-align:left}
+/* Subscription badges */
+.sub-badge{display:inline-flex;align-items:center;padding:1px 5px;border-radius:3px;font-size:7px;font-weight:700;letter-spacing:.3px;margin-left:3px}
+.sub-trial{background:rgba(90,138,158,.15);color:var(--blue)}.sub-paid{background:rgba(122,138,104,.15);color:var(--green)}.sub-free{background:rgba(94,60,36,.06);color:var(--muted)}
+/* Today marker */
+.today-mark{display:inline-flex;align-items:center;padding:1px 5px;border-radius:3px;font-size:7px;font-weight:700;letter-spacing:.3px;background:rgba(201,168,122,.2);color:var(--yellow);margin-left:3px}
+/* Tooltip for full ID */
+.uid-tip{position:relative;cursor:pointer}.uid-tip:hover::after{content:attr(data-full);position:absolute;left:0;top:-20px;background:var(--text);color:var(--bg);padding:2px 6px;border-radius:3px;font-size:8px;white-space:nowrap;z-index:10;pointer-events:none}
+/* Journey timeline */
+.journey-phase{margin-bottom:10px;padding:8px 10px;border-left:3px solid var(--border);border-radius:0 6px 6px 0;background:rgba(94,60,36,.02)}
+.journey-phase-hdr{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;color:var(--muted)}
+.journey-phase-hdr.onboarding{color:var(--blue)}.journey-phase-hdr.subscription{color:var(--green)}.journey-phase-hdr.engagement{color:var(--gold)}.journey-phase-hdr.social{color:var(--indigo)}
+.journey-evt{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:10px}.journey-evt .je-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.journey-evt .je-name{font-weight:500}.journey-evt .je-time{font-size:8px;color:var(--muted);font-family:ui-monospace,'SF Mono',monospace;margin-left:auto}
+.journey-key{border-left-color:var(--gold) !important;background:rgba(154,104,72,.04) !important}
+.journey-gap{text-align:center;padding:2px 0;color:var(--muted);font-size:8px;font-family:ui-monospace,'SF Mono',monospace;opacity:.5;font-style:italic}
+.view-toggle{display:flex;gap:4px;margin-bottom:8px}.view-btn{padding:3px 8px;border-radius:4px;font-size:9px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:system-ui,-apple-system,sans-serif}.view-btn:hover{border-color:var(--text);color:var(--text)}.view-btn.on{border-color:var(--gold);color:var(--gold);background:rgba(154,104,72,.1)}
 @media(max-width:900px){.kg{grid-template-columns:repeat(2,1fr)}.g2,.g3{grid-template-columns:1fr}.ug{grid-template-columns:1fr}.dr-dates{display:none}}
 </style>
 </head>
@@ -105,7 +121,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 <script>
 var B=location.origin,K=new URLSearchParams(location.search).get("key")||"",
     D=null,PH=null,AP=null,RC=null,TAB="overview",SU=null,
-    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",CUSTOM_FROM=null,CUSTOM_TO=null,
+    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",CUSTOM_FROM=null,CUSTOM_TO=null,USR_SEARCH="",USR_VIEW="list",
     GR=null,OG=null;
 
 // Event colors & labels
@@ -407,18 +423,77 @@ function engScore(u){var s=0;s+=Math.min(u.event_count*2,40);s+=(u.event_types.p
 function userSeg(u){var sc=engScore(u);var daysSinceLast=Math.floor((Date.now()-new Date(u.last_seen).getTime())/(24*60*60*1000));if(sc>=60&&daysSinceLast<3)return{l:"POWER",c:"seg-power",clr:"var(--green)"};if(daysSinceLast>5)return{l:"DORMANT",c:"seg-dormant",clr:"var(--red)"};if(daysSinceLast>2&&sc<30)return{l:"AT RISK",c:"seg-atrisk",clr:"var(--orange)"};var firstDay=Math.floor((Date.now()-new Date(u.first_seen).getTime())/(24*60*60*1000));if(firstDay<2)return{l:"NEW",c:"seg-new",clr:"var(--blue)"};return{l:"ACTIVE",c:"seg-active",clr:"var(--indigo)"}}
 function gapLabel(ms){var h=Math.floor(ms/(60*60*1000));if(h>=24)return Math.floor(h/24)+"d gap";if(h>0)return h+"h gap";var m2=Math.floor(ms/(60*1000));return m2+"m gap"}
 
-function rUs(){if(!PH)return'<div class="err">PostHog not connected</div>';var users=PH.users,filtered=SU?PH.recent_events.filter(function(e){return e.full_user_id===SU}):PH.recent_events.slice(0,60);
+function usrSubStatus(u,events){
+  var uEvents=events.filter(function(e){return e.full_user_id===u.full_id});
+  var subEvt=uEvents.find(function(e){return e.event==='subscription_started'||e.event==='lifetime_purchased'});
+  if(!subEvt)return{label:'FREE',cls:'sub-free'};
+  var price=subEvt.properties&&subEvt.properties.price?parseFloat(subEvt.properties.price):0;
+  if(price===0)return{label:'TRIAL',cls:'sub-trial'};
+  return{label:'PAID',cls:'sub-paid'};
+}
+function isToday(ts){var d=new Date(ts),now=new Date();return d.toDateString()===now.toDateString()}
+function journeyPhase(evtName){
+  if(['user_signed_up','onboarding_completed','app_opened','email_opt_in'].indexOf(evtName)>=0)return'onboarding';
+  if(['subscription_started','subscription_cancelled','subscription_renewed','subscription_expired','lifetime_purchased','paywall_viewed','paywall_plan_selected','billing_issue_detected'].indexOf(evtName)>=0)return'subscription';
+  if(['circle_created','circle_left','circle_invite_accepted','circle_member_joined','encouragement_sent','prayer_request_created','share_tapped'].indexOf(evtName)>=0)return'social';
+  return'engagement';
+}
+function isKeyMoment(evtName){return['user_signed_up','subscription_started','prayer_logged','circle_created','onboarding_completed','lifetime_purchased'].indexOf(evtName)>=0}
+function setUsrSearch(v){USR_SEARCH=v.toLowerCase();render()}
+function setUsrView(v){USR_VIEW=v;render()}
+
+function rUs(){if(!PH)return'<div class="err">PostHog not connected</div>';var users=PH.users,allEvents=PH.recent_events||[];
+  var filtered=SU?allEvents.filter(function(e){return e.full_user_id===SU}):allEvents.slice(0,60);
   var segs={POWER:0,ACTIVE:0,NEW:0,"AT RISK":0,DORMANT:0};users.forEach(function(u){segs[userSeg(u).l]=(segs[userSeg(u).l]||0)+1});
   var avgEv=users.length?Math.round(users.reduce(function(a,u){return a+u.event_count},0)/users.length):0;
   var selUser=SU?users.find(function(u){return u.full_id===SU}):null;
   var selSeg=selUser?userSeg(selUser):null;
   var selScore=selUser?engScore(selUser):0;
   var selDays=selUser?Math.floor((new Date(selUser.last_seen).getTime()-new Date(selUser.first_seen).getTime())/(24*60*60*1000))+1:0;
+
+  // Sort users: today's new users first, then by last_seen
+  var sortedUsers=users.slice().sort(function(a,b){
+    var aToday=isToday(a.first_seen)?1:0;var bToday=isToday(b.first_seen)?1:0;
+    if(bToday!==aToday)return bToday-aToday;
+    return new Date(b.last_seen)-new Date(a.last_seen);
+  });
+
+  // Filter by search
+  var displayUsers=sortedUsers;
+  if(USR_SEARCH){displayUsers=sortedUsers.filter(function(u){
+    var sub=usrSubStatus(u,allEvents);
+    return u.full_id.toLowerCase().indexOf(USR_SEARCH)>=0||u.id.toLowerCase().indexOf(USR_SEARCH)>=0||(u.city||'').toLowerCase().indexOf(USR_SEARCH)>=0||sub.label.toLowerCase().indexOf(USR_SEARCH)>=0||userSeg(u).l.toLowerCase().indexOf(USR_SEARCH)>=0;
+  })}
+
   return'<div class="kg" style="grid-template-columns:repeat(5,1fr)">'+kpi("Power Users",segs.POWER,"var(--green)")+kpi("Active",segs.ACTIVE,"var(--indigo)")+kpi("New",segs.NEW,"var(--blue)")+kpi("At Risk",segs["AT RISK"],"var(--orange)")+kpi("Dormant",segs.DORMANT,"var(--red)")+'</div>'+
-  '<div class="ug"><div class="cd" style="max-height:580px;overflow-y:auto"><h3>Users ('+users.length+') · Avg '+avgEv+' events</h3>'+users.map(function(u){var sg=userSeg(u);var sc=engScore(u);var h={pr:u.event_types.prayer_logged||0,ci:u.event_types.circle_created||0,pw:u.plan_taps,sc2:u.event_types.scripture_viewed||0,en:u.event_types.encouragement_sent||0};return'<div class="ui'+(SU===u.full_id?' ac':'')+'" onclick="SU=SU===\''+u.full_id+'\'?null:\''+u.full_id+'\';render()"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="ud" style="background:'+sg.clr+'"></span><span class="uid" style="color:var(--gold)">'+u.id+'</span> <span class="seg '+sg.c+'">'+sg.l+'</span></div><span style="font-size:8px;color:var(--muted)">'+timeAgo(u.last_seen)+'</span></div><div class="um"><span>'+u.event_count+'ev</span>'+(h.pr?'<span>pr:'+h.pr+'</span>':'')+(h.ci?'<span>ci:'+h.ci+'</span>':'')+(u.max_streak?'<span>str:'+u.max_streak+'</span>':'')+(h.pw?'<span>pay:'+h.pw+'</span>':'')+(h.en?'<span>enc:'+h.en+'</span>':'')+(h.sc2?'<span>scr:'+h.sc2+'</span>':'')+(u.city?'<span>'+u.city+'</span>':'')+'</div><div class="ub"><div class="ubf" style="width:'+sc+'%;background:'+sg.clr+'"></div></div></div>'}).join('')+'</div>'+
+  '<div class="ug"><div class="cd" style="max-height:580px;overflow-y:auto"><h3>Users ('+displayUsers.length+(displayUsers.length!==users.length?' of '+users.length:'')+') · Avg '+avgEv+' events</h3>'+
+  '<div class="search-bar"><input class="search-input" type="text" placeholder="Search by ID, city, or status..." value="'+USR_SEARCH+'" oninput="setUsrSearch(this.value)"></div>'+
+  displayUsers.map(function(u){var sg=userSeg(u);var sc=engScore(u);var sub=usrSubStatus(u,allEvents);var newToday=isToday(u.first_seen);var h={pr:u.event_types.prayer_logged||0,ci:u.event_types.circle_created||0,pw:u.plan_taps,sc2:u.event_types.scripture_viewed||0,en:u.event_types.encouragement_sent||0};return'<div class="ui'+(SU===u.full_id?' ac':'')+'" onclick="SU=SU===\''+u.full_id+'\'?null:\''+u.full_id+'\';render()"><div style="display:flex;justify-content:space-between;align-items:center"><div><span class="ud" style="background:'+sg.clr+'"></span><span class="uid uid-tip" style="color:var(--gold)" data-full="'+u.full_id+'">'+u.id+'</span> <span class="seg '+sg.c+'">'+sg.l+'</span><span class="sub-badge '+sub.cls+'">'+sub.label+'</span>'+(newToday?'<span class="today-mark">TODAY</span>':'')+'</div><span style="font-size:8px;color:var(--muted)">'+timeAgo(u.last_seen)+'</span></div><div class="um"><span>'+u.event_count+'ev</span>'+(h.pr?'<span>pr:'+h.pr+'</span>':'')+(h.ci?'<span>ci:'+h.ci+'</span>':'')+(u.max_streak?'<span>str:'+u.max_streak+'</span>':'')+(h.pw?'<span>pay:'+h.pw+'</span>':'')+(h.en?'<span>enc:'+h.en+'</span>':'')+(h.sc2?'<span>scr:'+h.sc2+'</span>':'')+(u.city?'<span>'+u.city+'</span>':'')+'</div><div class="ub"><div class="ubf" style="width:'+sc+'%;background:'+sg.clr+'"></div></div></div>'}).join('')+'</div>'+
   '<div class="cd"><h3>'+(SU?'':'Recent Events')+'</h3>'+
-  (selUser?'<div class="usr-hdr"><span class="usr-name">'+selUser.id+'</span><span class="seg '+selSeg.c+'">'+selSeg.l+'</span><span class="usr-meta">'+selUser.city+(selUser.country?' '+selUser.country:'')+'</span><button class="rbtn" onclick="SU=null;render()">X</button></div><div class="usr-stats"><div class="usr-stat"><div class="sv" style="color:var(--gold)">'+selScore+'</div><div class="sl">Score</div></div><div class="usr-stat"><div class="sv" style="color:var(--indigo)">'+selUser.event_count+'</div><div class="sl">Events</div></div><div class="usr-stat"><div class="sv" style="color:var(--green)">'+selDays+'d</div><div class="sl">Span</div></div><div class="usr-stat"><div class="sv" style="color:var(--orange)">'+selUser.max_streak+'</div><div class="sl">Streak</div></div><div class="usr-stat"><div class="sv" style="color:var(--pink)">'+selUser.plan_taps+'</div><div class="sl">Plan Taps</div></div><div class="usr-stat"><div class="sv" style="color:var(--teal)">'+(selUser.event_types.prayer_logged||0)+'</div><div class="sl">Prayers</div></div></div>':'')+
-  '<div class="el">'+filtered.map(function(e,i){var t=new Date(e.timestamp);var gap="";if(SU&&i>0){var prev=new Date(filtered[i-1].timestamp).getTime();var diff=prev-t.getTime();if(diff>30*60*1000)gap='<div class="tgap">-- '+gapLabel(diff)+' --</div>'}return gap+'<div class="ei"><div class="ed" style="background:'+(C[e.event]||'var(--muted)')+'"></div><div style="flex:1"><div style="display:flex;justify-content:space-between"><span class="en" style="color:'+(C[e.event]||'var(--text)')+'">'+(L[e.event]||e.event)+'</span><span class="et">'+t.toLocaleDateString()+' '+t.toLocaleTimeString()+'</span></div><div class="tg">'+((!SU)?'<span class="uid" style="color:var(--muted);cursor:pointer" onclick="filterUser(\''+e.full_user_id+'\')">'+e.user+'</span>':'')+(e.properties.type?'<span style="color:var(--muted)">'+e.properties.type+'</span>':'')+(e.properties.plan?'<span style="color:var(--pink)">'+e.properties.plan+'</span>':'')+(e.properties.streak?'<span style="color:var(--green)">str:'+e.properties.streak+'</span>':'')+(e.properties.city?'<span style="color:var(--muted)">'+e.properties.city+'</span>':'')+'</div></div></div>'}).join('')+'</div></div></div>'}
+  (selUser?'<div class="usr-hdr"><span class="usr-name uid-tip" data-full="'+selUser.full_id+'">'+selUser.id+'</span><span class="seg '+selSeg.c+'">'+selSeg.l+'</span><span class="sub-badge '+usrSubStatus(selUser,allEvents).cls+'">'+usrSubStatus(selUser,allEvents).label+'</span><span class="usr-meta">'+selUser.city+(selUser.country?' '+selUser.country:'')+'</span><button class="rbtn" onclick="SU=null;render()">X</button></div><div class="usr-stats"><div class="usr-stat"><div class="sv" style="color:var(--gold)">'+selScore+'</div><div class="sl">Score</div></div><div class="usr-stat"><div class="sv" style="color:var(--indigo)">'+selUser.event_count+'</div><div class="sl">Events</div></div><div class="usr-stat"><div class="sv" style="color:var(--green)">'+selDays+'d</div><div class="sl">Span</div></div><div class="usr-stat"><div class="sv" style="color:var(--orange)">'+selUser.max_streak+'</div><div class="sl">Streak</div></div><div class="usr-stat"><div class="sv" style="color:var(--pink)">'+selUser.plan_taps+'</div><div class="sl">Plan Taps</div></div><div class="usr-stat"><div class="sv" style="color:var(--teal)">'+(selUser.event_types.prayer_logged||0)+'</div><div class="sl">Prayers</div></div></div>'+
+  '<div class="view-toggle"><button class="view-btn'+(USR_VIEW==='list'?' on':'')+'" onclick="setUsrView(\'list\')">Events</button><button class="view-btn'+(USR_VIEW==='journey'?' on':'')+'" onclick="setUsrView(\'journey\')">Journey</button></div>':'')+
+  (selUser&&USR_VIEW==='journey'?renderJourney(filtered):
+  '<div class="el">'+filtered.map(function(e,i){var t=new Date(e.timestamp);var gap="";if(SU&&i>0){var prev=new Date(filtered[i-1].timestamp).getTime();var diff=prev-t.getTime();if(diff>30*60*1000)gap='<div class="tgap">-- '+gapLabel(diff)+' --</div>'}return gap+'<div class="ei"><div class="ed" style="background:'+(C[e.event]||'var(--muted)')+'"></div><div style="flex:1"><div style="display:flex;justify-content:space-between"><span class="en" style="color:'+(C[e.event]||'var(--text)')+'">'+(L[e.event]||e.event)+'</span><span class="et">'+t.toLocaleDateString()+' '+t.toLocaleTimeString()+'</span></div><div class="tg">'+((!SU)?'<span class="uid uid-tip" style="color:var(--muted);cursor:pointer" data-full="'+e.full_user_id+'" onclick="filterUser(\''+e.full_user_id+'\')">'+e.user+'</span>':'')+(e.properties.type?'<span style="color:var(--muted)">'+e.properties.type+'</span>':'')+(e.properties.plan?'<span style="color:var(--pink)">'+e.properties.plan+'</span>':'')+(e.properties.streak?'<span style="color:var(--green)">str:'+e.properties.streak+'</span>':'')+(e.properties.city?'<span style="color:var(--muted)">'+e.properties.city+'</span>':'')+'</div></div></div>'}).join('')+'</div>')+'</div></div>'}
+
+function renderJourney(events){
+  if(!events.length)return'<div style="padding:10px;color:var(--muted);font-size:10px">No events.</div>';
+  var phases={onboarding:[],subscription:[],engagement:[],social:[]};
+  var sorted=events.slice().sort(function(a,b){return new Date(a.timestamp)-new Date(b.timestamp)});
+  sorted.forEach(function(e){var ph=journeyPhase(e.event);phases[ph].push(e)});
+  var phaseLabels={onboarding:'Onboarding',subscription:'Subscription',engagement:'Engagement',social:'Social'};
+  var html='';
+  ['onboarding','subscription','engagement','social'].forEach(function(ph){
+    var evts=phases[ph];if(!evts.length)return;
+    html+='<div class="journey-phase"><div class="journey-phase-hdr '+ph+'">'+phaseLabels[ph]+' ('+evts.length+')</div>';
+    evts.forEach(function(e,i){
+      var t=new Date(e.timestamp);var key=isKeyMoment(e.event);
+      var gap='';if(i>0){var prev=new Date(evts[i-1].timestamp).getTime();var diff=t.getTime()-prev;if(diff>30*60*1000)gap='<div class="journey-gap">'+gapLabel(diff)+'</div>'}
+      html+=gap+'<div class="journey-evt'+(key?' journey-key':'')+'"><div class="je-dot" style="background:'+(C[e.event]||'var(--muted)')+'"></div><span class="je-name" style="color:'+(C[e.event]||'var(--text)')+'">'+(L[e.event]||e.event)+'</span>'+(e.properties.plan?'<span style="font-size:8px;color:var(--pink);margin-left:4px">'+e.properties.plan+'</span>':'')+(e.properties.type?'<span style="font-size:8px;color:var(--muted);margin-left:4px">'+e.properties.type+'</span>':'')+'<span class="je-time">'+t.toLocaleDateString()+' '+t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})+'</span></div>';
+    });
+    html+='</div>';
+  });
+  return html;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // ─── EVENTS TAB (with search & filter) ─────────────────────────
