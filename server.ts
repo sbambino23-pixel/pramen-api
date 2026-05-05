@@ -1926,7 +1926,7 @@ app.get("/api/dashboard/revenuecat", async (c) => {
         seenSubscriptions.add(dedupeKey);
         // Also add the candidate uid so we don't recount when we hit the same person via their other ID
         seenSubscriptions.add(candidate.uid);
-        const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {};
+        const entitlements = sub.entitlements || {};
         const now = new Date();
         // v5.10.7 — no buffer. A sub is active until it actually expires. Matches RC's logic.
         const nowPlusBuffer = now;
