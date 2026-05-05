@@ -694,7 +694,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.10.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.10.9", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2476,7 +2476,7 @@ async function start() {
   setTimeout(() => { pullMetaAdSpend().catch(() => {}); }, 2 * 60 * 1000);
   setInterval(() => { pullMetaAdSpend().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
-    console.log(`\n🙏 prAmen API v5.10.1 on port ${info.port}`);
+    console.log(`\n🙏 prAmen API v5.10.9 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
     console.log(`   Apple: ${ASC_KEY_ID ? "✓" : "✗"} | RC: ${REVENUECAT_SECRET_KEY ? "✓" : "✗"} | APNs: ${APNS_KEY_ID ? "✓" : "✗"}`);
     console.log(`   Meta CAPI: ${META_CAPI_ACCESS_TOKEN ? "✓" : "✗"} pixel=${META_PIXEL_ID || "-"}`);
