@@ -1928,14 +1928,21 @@ app.get("/api/dashboard/revenuecat", async (c) => {
         const hasTrial = Object.values(subscriptions).some((s: any) => s.period_type === "trial" && new Date(s.expires_date) > now);
         let userRevenue = 0;
         for (const [pid, s2] of Object.entries(subscriptions) as any[]) { if (s2.store === "app_store" || s2.store === "play_store") { if (pid.includes("yearly")) userRevenue += 29.99; else if (pid.includes("monthly")) userRevenue += 3.99; else if (pid.includes("lifetime")) userRevenue += 149.99; } }
-        const willRenew = Object.values(subscriptions).some((s: any) => new Date(s.expires_date) > nowPlusBuffer && s.period_type !== "trial" && !s.unsubscribe_detected_at && !s.billing_issues_detected_at);
+        // v5.10.8 — count active subs + trials separately to match RC's definitions
+        // RC counts trial users as "active subscriptions" if they have an auto-renewing plan
+        // and as "trials" only for the trial-specific metric
+        const hasActiveNonTrial = Object.values(subscriptions).some((s: any) => new Date(s.expires_date) > nowPlusBuffer && s.period_type !== "trial" && !s.unsubscribe_detected_at && !s.billing_issues_detected_at);
+        const hasActiveTrial = Object.values(subscriptions).some((s: any) => new Date(s.expires_date) > nowPlusBuffer && s.period_type === "trial" && !s.unsubscribe_detected_at);
         const isLifetime = Object.keys(subscriptions).some((pid) => pid.includes("lifetime"));
-        if (willRenew || isLifetime) activeCount++;
-        if (hasTrial) trialCount++;
+        // Active subs: both non-trial renewers AND trial users (RC counts trials as active subs)
+        if (hasActiveNonTrial || hasActiveTrial || isLifetime) activeCount++;
+        // Trial count: only users currently in trial period
+        if (hasActiveTrial) trialCount++;
         totalRevenue += userRevenue;
+        // MRR: count both active paid AND active trials (trials will convert)
         for (const [pid, s2] of Object.entries(subscriptions) as any[]) {
           const expires = new Date(s2.expires_date);
-          if (expires > nowPlusBuffer && s2.period_type !== "trial" && !s2.unsubscribe_detected_at && !s2.billing_issues_detected_at) {
+          if (expires > nowPlusBuffer && !s2.unsubscribe_detected_at && !s2.billing_issues_detected_at) {
             if (pid.includes("yearly")) mrr += 29.99 / 12;
             else if (pid.includes("monthly")) mrr += 3.99;
           }
