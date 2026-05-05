@@ -1813,9 +1813,8 @@ app.get("/api/dashboard/events", async (c) => {
     const raw = ((await res.json()) as any).results || [];
     const exclude = new Set(["samy_setup", "samy_test"]);
     const events = raw.filter((e: any) => !exclude.has(e.distinct_id)).map((e: any) => ({ event: e.event, timestamp: e.timestamp, user: e.distinct_id?.substring(0, 8) || "?", full_user_id: e.distinct_id, properties: { type: e.properties?.type, plan: e.properties?.plan, price: e.properties?.price, trigger: e.properties?.trigger, duration: e.properties?.duration_seconds, streak: e.properties?.streak_day, is_first_open: e.properties?.is_first_open, circle_code: e.properties?.circle_code, circle_name: e.properties?.circle_name, content_type: e.properties?.content_type, city: e.properties?.$geoip_city_name || e.properties?.$set?.$geoip_city_name, country: e.properties?.$geoip_country_name || e.properties?.$set?.$geoip_country_name } }));
-    // v5.10.3 — merge PostHog users by cross-referencing with DB users table (id + device_user_id = same person)
+    // v5.10.4 — merge PostHog users by DB cross-ref + timestamp-based matching
     const dbUsers = await pool.query("SELECT id, device_user_id, name, email FROM users").catch(() => ({ rows: [] }));
-    // Build lookup: any PostHog distinct_id → canonical user ID + name
     const idToCanonical: Record<string, string> = {};
     const idToName: Record<string, string> = {};
     for (const row of dbUsers.rows) {
@@ -1824,8 +1823,37 @@ app.get("/api/dashboard/events", async (c) => {
       if (row.id) { idToCanonical[row.id] = canonical; if (name) idToName[canonical] = name; }
       if (row.device_user_id) { idToCanonical[row.device_user_id] = canonical; }
     }
-    // Merge events: rewrite full_user_id to canonical ID where possible
-    for (const e of events) { if (idToCanonical[e.full_user_id]) { e.full_user_id = idToCanonical[e.full_user_id]; e.user = (idToName[idToCanonical[e.full_user_id]] || e.full_user_id).substring(0, 16); } }
+    // Phase 1: direct ID match from DB
+    for (const e of events) { if (idToCanonical[e.full_user_id]) { e.full_user_id = idToCanonical[e.full_user_id]; } }
+    // Phase 2: timestamp-based merge — find events that happen within 5 seconds of each other
+    // Group signup/subscription events by timestamp to detect same-person pairs
+    const signupEvents: { id: string; ts: number; event: string }[] = [];
+    for (const e of events) {
+      if (e.event === "user_signed_up" || e.event === "subscription_started" || e.event === "onboarding_completed" || e.event === "email_opt_in") {
+        signupEvents.push({ id: e.full_user_id, ts: new Date(e.timestamp).getTime(), event: e.event });
+      }
+    }
+    // For each pair of different IDs with the same event within 5 seconds, merge them
+    const mergeMap: Record<string, string> = {};
+    for (let i = 0; i < signupEvents.length; i++) {
+      for (let j = i + 1; j < signupEvents.length; j++) {
+        const a = signupEvents[i], b = signupEvents[j];
+        if (a.id === b.id) continue;
+        if (a.event !== b.event) continue;
+        if (Math.abs(a.ts - b.ts) < 5000) { // within 5 seconds
+          // Prefer the ID that has a name in DB, or the shorter one (auth ID vs device UUID)
+          const aHasName = !!idToName[a.id];
+          const bHasName = !!idToName[b.id];
+          if (aHasName) { mergeMap[b.id] = a.id; }
+          else if (bHasName) { mergeMap[a.id] = b.id; }
+          else { mergeMap[a.id.length > b.id.length ? a.id : b.id] = a.id.length > b.id.length ? b.id : a.id; }
+        }
+      }
+    }
+    // Apply timestamp merges
+    for (const e of events) { if (mergeMap[e.full_user_id]) { e.full_user_id = mergeMap[e.full_user_id]; } }
+    // Update display names
+    for (const e of events) { e.user = (idToName[e.full_user_id] || e.full_user_id).substring(0, 16); }
     const uMap: Record<string, any> = {};
     for (const e of events) { if (!uMap[e.full_user_id]) uMap[e.full_user_id] = { id: e.user, full_id: e.full_user_id, name: idToName[e.full_user_id] || "", events: [], counts: {} as Record<string,number>, first_seen: e.timestamp, last_seen: e.timestamp, city: "", country: "", max_streak: 0, plan_taps: 0 }; const u = uMap[e.full_user_id]; u.events.push(e); u.counts[e.event] = (u.counts[e.event]||0)+1; if (e.timestamp < u.first_seen) u.first_seen = e.timestamp; if (e.timestamp > u.last_seen) u.last_seen = e.timestamp; if (e.properties.city) u.city = e.properties.city; if (e.properties.country) u.country = e.properties.country; if (e.properties.streak) { const s = parseInt(e.properties.streak); if (s > u.max_streak) u.max_streak = s; } if (e.event === "paywall_plan_selected") u.plan_taps++; }
     const users = Object.values(uMap).sort((a: any, b: any) => b.events.length - a.events.length);
