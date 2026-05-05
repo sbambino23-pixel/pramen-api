@@ -1871,8 +1871,8 @@ app.get("/api/dashboard/revenuecat", async (c) => {
         const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(candidate.uid)}`, { headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } });
         if (!rcRes.ok) continue;
         const rcData = (await rcRes.json()) as any; const sub = rcData.subscriber; if (!sub) continue;
-        // Deduplicate: if we've already seen this RC subscriber (same first_seen), skip
-        const dedupeKey = sub.first_seen || candidate.uid;
+        // Deduplicate: use original_app_user_id (RC's canonical subscriber ID)
+        const dedupeKey = sub.original_app_user_id || sub.first_seen || candidate.uid;
         if (seenSubscribers.has(dedupeKey)) continue;
         seenSubscribers.add(dedupeKey);
         const entitlements = sub.entitlements || {}; const subscriptions = sub.subscriptions || {};
