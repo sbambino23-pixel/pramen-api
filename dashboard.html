@@ -98,7 +98,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 <div class="c">
   <div class="hdr"><div><h1>prAmen</h1><p class="sub" id="ts">Loading...</p></div>
   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div class="live"><span class="dot"></span>LIVE</div><span id="asc-status" class="asc-badge asc-no">Apple: ...</span><button class="rbtn" onclick="loadAll()">Refresh</button>
-  <div class="tabs"><button class="tab active" onclick="go('overview',this)">Overview</button><button class="tab" onclick="go('funnel',this)">Funnel</button><button class="tab" onclick="go('users',this)">Users</button><button class="tab" onclick="go('events',this)">Events</button><button class="tab" onclick="go('revenue',this)">Revenue</button><button class="tab" onclick="go('web',this)">Web</button><button class="tab" onclick="go('circles',this)">Circles</button><button class="tab" onclick="go('growth',this)">Growth</button><button class="tab" onclick="go('organic',this)">Organic</button></div></div></div>
+  <div class="tabs"><button class="tab active" onclick="go('overview',this)">Overview</button><button class="tab" onclick="go('funnel',this)">Funnel</button><button class="tab" onclick="go('users',this)">Users</button><button class="tab" onclick="go('events',this)">Events</button><button class="tab" onclick="go('revenue',this)">Revenue</button><button class="tab" onclick="go('web',this)">Web</button><button class="tab" onclick="go('circles',this)">Circles</button><button class="tab" onclick="go('growth',this)">Growth</button><button class="tab" onclick="go('organic',this)">Organic</button><button class="tab" onclick="go('admin',this)">Admin</button></div></div></div>
   <!-- Date Range Bar -->
   <div class="dr-bar">
     <span class="dr-label">Range</span>
@@ -230,7 +230,7 @@ function computeMetrics(events){
 }
 
 // ─── Render ──────────────────────────────────────────────────
-function render(){if(!D)return;var el=document.getElementById("main");switch(TAB){case"overview":el.innerHTML=rOv();break;case"funnel":el.innerHTML=rFn();break;case"users":el.innerHTML=rUs();break;case"events":el.innerHTML=rEv();break;case"revenue":el.innerHTML=rRv();break;case"web":el.innerHTML=rWb();break;case"circles":el.innerHTML=rCr();break;case"growth":el.innerHTML=rGr();break;case"organic":el.innerHTML=rOg();break}}
+function render(){if(!D)return;var el=document.getElementById("main");switch(TAB){case"overview":el.innerHTML=rOv();break;case"funnel":el.innerHTML=rFn();break;case"users":el.innerHTML=rUs();break;case"events":el.innerHTML=rEv();break;case"revenue":el.innerHTML=rRv();break;case"web":el.innerHTML=rWb();break;case"circles":el.innerHTML=rCr();break;case"growth":el.innerHTML=rGr();break;case"organic":el.innerHTML=rOg();break;case"admin":el.innerHTML=rAd();break}}
 
 // ─── KPI helper with delta ────────────────────────────────────
 function kpi(l,v,c,delta){return'<div class="k"><div class="l">'+l+'</div><div class="v" style="color:'+c+'">'+v+'</div>'+deltaHtml(delta)+'</div>'}
@@ -905,6 +905,84 @@ function rOg(){
   }
 
   return html;
+}
+
+// ─── Admin Tab ───────────────────────────────────────────────
+var GRANT_LOG = [];
+function rAd(){
+  var h = '<div class="cd"><h3>Grant Free Trial</h3>';
+  h += '<p style="font-size:11px;color:var(--muted);margin-bottom:12px">Grant premium access to influencers, partners, or anyone. Uses RevenueCat promotional entitlements.</p>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">';
+  h += '<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Email</label>';
+  h += '<input type="email" id="grant-email" placeholder="influencer@example.com" class="search-input" style="width:100%"></div>';
+  h += '<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Or User ID</label>';
+  h += '<input type="text" id="grant-userid" placeholder="Optional — if no email" class="search-input" style="width:100%"></div>';
+  h += '</div>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">';
+  h += '<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Duration</label>';
+  h += '<select id="grant-duration" class="search-input" style="width:100%;padding:7px 10px"><option value="weekly">7 days</option><option value="monthly" selected>30 days</option><option value="two_month">60 days</option><option value="three_month">90 days</option><option value="six_month">6 months</option><option value="yearly">1 year</option><option value="lifetime">Lifetime</option></select></div>';
+  h += '<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Reason</label>';
+  h += '<input type="text" id="grant-reason" placeholder="e.g. influencer collab, beta tester" class="search-input" style="width:100%"></div>';
+  h += '</div>';
+  h += '<div style="display:flex;gap:8px;align-items:center">';
+  h += '<button onclick="grantTrial()" style="background:var(--gold);color:#F2EDD8;border:none;padding:8px 20px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:system-ui,sans-serif">Grant Trial</button>';
+  h += '<span id="grant-status" style="font-size:11px;color:var(--muted)"></span>';
+  h += '</div></div>';
+
+  // Grant log
+  h += '<div class="cd"><h3>Recent Grants</h3>';
+  if (GRANT_LOG.length === 0) {
+    h += '<p style="font-size:11px;color:var(--muted)">No trials granted this session.</p>';
+  } else {
+    h += '<table class="tbl"><tr><th>Time</th><th>Email / User ID</th><th>Duration</th><th>Reason</th><th>Status</th></tr>';
+    for (var i = GRANT_LOG.length - 1; i >= 0; i--) {
+      var g = GRANT_LOG[i];
+      var sc = g.ok ? 'color:var(--green)' : 'color:var(--red)';
+      h += '<tr><td class="mono">' + g.time + '</td><td class="mono">' + (g.email || g.userId) + '</td><td>' + g.duration + '</td><td>' + (g.reason || '-') + '</td><td style="' + sc + ';font-weight:700">' + (g.ok ? 'Granted' : g.error) + '</td></tr>';
+    }
+    h += '</table>';
+  }
+  h += '</div>';
+
+  // Quick reference
+  h += '<div class="cd"><h3>Quick Reference</h3>';
+  h += '<p style="font-size:11px;color:var(--muted);line-height:1.6">';
+  h += '<strong>API endpoint:</strong> <code style="background:rgba(94,60,36,.06);padding:2px 5px;border-radius:3px;font-size:10px">POST /api/admin/grant-trial</code><br>';
+  h += '<strong>Auth:</strong> X-Admin-Secret header or ?key= param<br>';
+  h += '<strong>Body:</strong> { email, userId, duration, reason }<br>';
+  h += '<strong>Durations:</strong> daily, three_day, weekly, monthly, two_month, three_month, six_month, yearly, lifetime';
+  h += '</p></div>';
+
+  return h;
+}
+
+async function grantTrial(){
+  var email = document.getElementById('grant-email').value.trim();
+  var userId = document.getElementById('grant-userid').value.trim();
+  var duration = document.getElementById('grant-duration').value;
+  var reason = document.getElementById('grant-reason').value.trim();
+  var status = document.getElementById('grant-status');
+  if (!email && !userId) { status.textContent = 'Enter an email or user ID'; status.style.color = 'var(--red)'; return; }
+  status.textContent = 'Granting...'; status.style.color = 'var(--muted)';
+  try {
+    var body = { duration: duration, reason: reason || 'dashboard grant' };
+    if (email) body.email = email;
+    if (userId) body.userId = userId;
+    var res = await fetch(B + '/api/admin/grant-trial?key=' + K, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    var data = await res.json();
+    if (res.ok && data.success) {
+      status.textContent = 'Granted ' + data.durationLabel + ' to ' + (email || data.userId); status.style.color = 'var(--green)';
+      GRANT_LOG.push({ time: new Date().toLocaleTimeString(), email: email, userId: data.userId, duration: data.durationLabel, reason: reason, ok: true });
+      document.getElementById('grant-email').value = '';
+      document.getElementById('grant-userid').value = '';
+      document.getElementById('grant-reason').value = '';
+      render();
+    } else {
+      status.textContent = data.error || 'Failed'; status.style.color = 'var(--red)';
+      GRANT_LOG.push({ time: new Date().toLocaleTimeString(), email: email, userId: userId, duration: duration, reason: reason, ok: false, error: data.error || 'Failed' });
+      render();
+    }
+  } catch (e) { status.textContent = 'Network error'; status.style.color = 'var(--red)'; }
 }
 
 // ─── Init ────────────────────────────────────────────────────

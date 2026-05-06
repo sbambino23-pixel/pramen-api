@@ -1624,7 +1624,7 @@ app.post("/api/referrals/reverse", async (c) => { const sec = c.req.header("X-Ad
 // ─── ADMIN: GRANT TRIAL ─────────────────────────────────────────
 app.post("/api/admin/grant-trial", async (c) => {
   const key = c.req.query("key") || c.req.header("X-Admin-Secret");
-  if (key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
   const { email, userId, duration, reason } = await c.req.json();
   if (!email && !userId) return c.json({ error: "email or userId required" }, 400);
   const dur = duration || "monthly";
