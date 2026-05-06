@@ -866,11 +866,17 @@ function rOg(){
   // TikTok section
   var tt=OG.tiktok||{};
   if(tt.username||tt.followers){
+    var ttTotalViews=0,ttTotalLikes=0,ttTotalComments=0,ttTotalShares=0;
+    if(tt.recent_videos){tt.recent_videos.forEach(function(v){ttTotalViews+=parseInt(v.views||0);ttTotalLikes+=parseInt(v.likes||0);ttTotalComments+=parseInt(v.comments||0);ttTotalShares+=parseInt(v.shares||0)})}
+    var ttEng=ttTotalViews>0?((ttTotalLikes+ttTotalComments+ttTotalShares)/ttTotalViews*100).toFixed(1):'0';
     html+='<div class="cd" style="border-color:rgba(94,60,36,.25)"><h3>prAmen · TikTok · @'+tt.username+'</h3>';
     html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
       kpi("Followers",parseInt(tt.followers||0).toLocaleString(),"var(--text)")+
-      kpi("Likes",parseInt(tt.likes||0).toLocaleString(),"var(--red)")+
       kpi("Videos",parseInt(tt.video_count||0),"var(--purple)")+
+      kpi("Total Views",ttTotalViews.toLocaleString(),"var(--blue)")+
+      kpi("Total Likes",ttTotalLikes.toLocaleString(),"var(--red)")+
+      kpi("Total Comments",ttTotalComments.toLocaleString(),"var(--muted)")+
+      kpi("Eng. Rate",ttEng+"%","var(--gold)")+
     '</div></div>';
   }
   if(tt.recent_videos&&tt.recent_videos.length){
@@ -885,10 +891,18 @@ function rOg(){
   // Instagram section
   var ig=OG.instagram||{};
   if(ig.account_id||ig.username){
+    var igTotalLikes=0,igTotalComments=0;
+    if(ig.recent_posts){ig.recent_posts.forEach(function(p){igTotalLikes+=parseInt(p.likes||0);igTotalComments+=parseInt(p.comments||0)})}
+    var igTotalEng=igTotalLikes+igTotalComments;
+    var igFollowers=parseInt(ig.followers||0);
+    var igEngRate=igFollowers>0?((igTotalEng/ig.recent_posts.length)/igFollowers*100).toFixed(1):'0';
     html+='<div class="cd" style="border-color:rgba(154,104,72,.25)"><h3>prAmen · Instagram · @'+ig.username+'</h3>';
     html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
-      kpi("Followers",parseInt(ig.followers||0).toLocaleString(),"var(--orange)")+
+      kpi("Followers",igFollowers.toLocaleString(),"var(--orange)")+
       kpi("Posts",parseInt(ig.media_count||0),"var(--purple)")+
+      kpi("Total Likes",igTotalLikes.toLocaleString(),"var(--red)")+
+      kpi("Total Comments",igTotalComments.toLocaleString(),"var(--muted)")+
+      kpi("Eng. Rate",igEngRate+"%","var(--gold)")+
     '</div></div>';
   }
   if(ig.recent_posts&&ig.recent_posts.length){
