@@ -915,7 +915,9 @@ function rOg(){
   if(ig.recent_posts&&ig.recent_posts.length){
     var igPosts=ig.recent_posts.map(function(p){
       var type=p.media_product_type==='REELS'?'REEL':(p.media_type||'');
-      return{caption:p.caption,type:type,views:parseInt(p.views||0),likes:parseInt(p.likes||0),comments:parseInt(p.comments||0),timestamp:p.timestamp};
+      var v=parseInt(p.views||0),l=parseInt(p.likes||0),cm=parseInt(p.comments||0);
+      var eng=v>0?((l+cm)/v*100):(igFollowers>0?((l+cm)/igFollowers*100):0);
+      return{caption:p.caption,type:type,views:v,likes:l,comments:cm,engagement:eng,timestamp:p.timestamp};
     });
     // Type filter
     var igTypes={};igPosts.forEach(function(p){igTypes[p.type]=true});
@@ -928,9 +930,10 @@ function rOg(){
     html+='<button class="filter-chip'+(IG_TYPE_FILTER==='all'?' on':'')+'" onclick="IG_TYPE_FILTER=\'all\';render()">All</button>';
     Object.keys(igTypes).sort().forEach(function(t){html+='<button class="filter-chip'+(IG_TYPE_FILTER===t?' on':'')+'" onclick="IG_TYPE_FILTER=\''+t+'\';render()">'+t+'</button>'});
     html+='</div>';
-    html+='<table class="tbl"><tr><th>Caption</th><th>Type</th>'+igSortHdr('Views','views')+igSortHdr('Likes','likes')+igSortHdr('Comments','comments')+igSortHdr('Posted','timestamp')+'</tr>';
+    html+='<table class="tbl"><tr><th>Caption</th><th>Type</th>'+igSortHdr('Views','views')+igSortHdr('Likes','likes')+igSortHdr('Comments','comments')+igSortHdr('Eng. Rate','engagement')+igSortHdr('Posted','timestamp')+'</tr>';
     igFiltered.forEach(function(p){
-      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+p.caption+'</td><td class="mono" style="color:var(--muted)">'+p.type+'</td><td class="mono" style="color:var(--blue)">'+(p.views>0?p.views.toLocaleString():'-')+'</td><td class="mono" style="color:var(--orange)">'+p.likes.toLocaleString()+'</td><td class="mono">'+p.comments.toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(p.timestamp).toLocaleDateString()+'</td></tr>';
+      var igEng=p.views>0?((p.likes+p.comments)/p.views*100).toFixed(1):(igFollowers>0?((p.likes+p.comments)/igFollowers*100).toFixed(1):'0');
+      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+p.caption+'</td><td class="mono" style="color:var(--muted)">'+p.type+'</td><td class="mono" style="color:var(--blue)">'+(p.views>0?p.views.toLocaleString():'-')+'</td><td class="mono" style="color:var(--orange)">'+p.likes.toLocaleString()+'</td><td class="mono">'+p.comments.toLocaleString()+'</td><td class="mono" style="color:var(--gold)">'+igEng+'%</td><td class="mono" style="color:var(--muted)">'+new Date(p.timestamp).toLocaleDateString()+'</td></tr>';
     });
     html+='</table></div>';
   }
