@@ -2416,10 +2416,23 @@ app.get("/api/dashboard/organic", async (c) => {
           const igData = (await igRes.json()) as any;
           instagramStats = { account_id: igData.id, username: igData.username, name: igData.name, followers: igData.followers_count || 0, media_count: igData.media_count || 0 };
           // Fetch recent media
-          const mediaRes = await fetch(`https://graph.instagram.com/v22.0/${INSTAGRAM_ACCOUNT_ID}/media?fields=id,caption,timestamp,media_type,like_count,comments_count,media_url,permalink&limit=30&access_token=${INSTAGRAM_ACCESS_TOKEN}`);
+          const mediaRes = await fetch(`https://graph.instagram.com/v22.0/${INSTAGRAM_ACCOUNT_ID}/media?fields=id,caption,timestamp,media_type,like_count,comments_count,media_url,permalink,media_product_type&limit=30&access_token=${INSTAGRAM_ACCESS_TOKEN}`);
           if (mediaRes.ok) {
             const mediaData = (await mediaRes.json()) as any;
-            instagramStats.recent_posts = (mediaData.data || []).map((p: any) => ({ id: p.id, caption: (p.caption || "").substring(0, 100), timestamp: p.timestamp, media_type: p.media_type, likes: p.like_count || 0, comments: p.comments_count || 0, permalink: p.permalink }));
+            const posts = (mediaData.data || []).map((p: any) => ({ id: p.id, caption: (p.caption || "").substring(0, 100), timestamp: p.timestamp, media_type: p.media_type, media_product_type: p.media_product_type || "", likes: p.like_count || 0, comments: p.comments_count || 0, permalink: p.permalink, views: 0 }));
+            // Fetch views/plays for video and reel posts
+            const videoPostIds = posts.filter((p: any) => p.media_type === "VIDEO" || p.media_product_type === "REELS").map((p: any) => p.id);
+            for (const mid of videoPostIds.slice(0, 30)) {
+              try {
+                const insRes = await fetch(`https://graph.instagram.com/v22.0/${mid}/insights?metric=plays&access_token=${INSTAGRAM_ACCESS_TOKEN}`);
+                if (insRes.ok) {
+                  const insData = (await insRes.json()) as any;
+                  const plays = insData.data?.find((m: any) => m.name === "plays");
+                  if (plays) { const post = posts.find((p: any) => p.id === mid); if (post) post.views = plays.values?.[0]?.value || 0; }
+                }
+              } catch {}
+            }
+            instagramStats.recent_posts = posts;
           }
         } else { console.error("[Instagram] API error:", igRes.status); }
       } catch (igErr: any) { console.error("[Instagram]", igErr.message); }

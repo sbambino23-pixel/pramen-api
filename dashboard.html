@@ -121,7 +121,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 <script>
 var B=location.origin,K=new URLSearchParams(location.search).get("key")||"",
     D=null,PH=null,AP=null,RC=null,TAB="overview",SU=null,
-    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",CUSTOM_FROM=null,CUSTOM_TO=null,USR_SEARCH="",USR_VIEW="list",YT_SORT="views",YT_SORT_DIR="desc",
+    RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",CUSTOM_FROM=null,CUSTOM_TO=null,USR_SEARCH="",USR_VIEW="list",YT_SORT="views",YT_SORT_DIR="desc",IG_SORT="likes",IG_SORT_DIR="desc",IG_TYPE_FILTER="all",TT_SORT="views",TT_SORT_DIR="desc",
     GR=null,OG=null;
 
 // Event colors & labels
@@ -880,10 +880,16 @@ function rOg(){
     '</div></div>';
   }
   if(tt.recent_videos&&tt.recent_videos.length){
+    var ttVids=tt.recent_videos.map(function(v){
+      var views=parseInt(v.views||0),likes=parseInt(v.likes||0),comments=parseInt(v.comments||0),shares=parseInt(v.shares||0);
+      return{title:v.title||'Untitled',views:views,likes:likes,comments:comments,shares:shares,engagement:views>0?((likes+comments+shares)/views*100):0,created_at:v.created_at};
+    });
+    ttVids.sort(function(a,b){var va=a[TT_SORT]||0,vb=b[TT_SORT]||0;if(TT_SORT==='created_at'){va=new Date(a.created_at).getTime();vb=new Date(b.created_at).getTime()}return TT_SORT_DIR==='desc'?vb-va:va-vb});
+    function ttSortHdr(label,field){var arrow=TT_SORT===field?(TT_SORT_DIR==='desc'?' v':' ^'):'';return'<th style="cursor:pointer" onclick="TT_SORT=\''+field+'\';TT_SORT_DIR=TT_SORT_DIR===\'desc\'?\'asc\':\'desc\';render()">'+label+arrow+'</th>'}
     html+='<div class="cd"><h3>prAmen · Recent TikTok Videos</h3>';
-    html+='<table class="tbl"><tr><th>Title</th><th>Views</th><th>Likes</th><th>Comments</th><th>Shares</th><th>Posted</th></tr>';
-    tt.recent_videos.forEach(function(v){
-      html+='<tr><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(v.title||'Untitled')+'</td><td class="mono" style="color:var(--blue)">'+parseInt(v.views||0).toLocaleString()+'</td><td class="mono" style="color:var(--red)">'+parseInt(v.likes||0).toLocaleString()+'</td><td class="mono">'+parseInt(v.comments||0).toLocaleString()+'</td><td class="mono">'+parseInt(v.shares||0).toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(v.created_at).toLocaleDateString()+'</td></tr>';
+    html+='<table class="tbl"><tr><th>Title</th>'+ttSortHdr('Views','views')+ttSortHdr('Likes','likes')+ttSortHdr('Comments','comments')+ttSortHdr('Shares','shares')+ttSortHdr('Eng. Rate','engagement')+ttSortHdr('Posted','created_at')+'</tr>';
+    ttVids.forEach(function(v){
+      html+='<tr><td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+v.title+'</td><td class="mono" style="color:var(--blue)">'+v.views.toLocaleString()+'</td><td class="mono" style="color:var(--red)">'+v.likes.toLocaleString()+'</td><td class="mono">'+v.comments.toLocaleString()+'</td><td class="mono">'+v.shares.toLocaleString()+'</td><td class="mono" style="color:var(--gold)">'+v.engagement.toFixed(1)+'%</td><td class="mono" style="color:var(--muted)">'+new Date(v.created_at).toLocaleDateString()+'</td></tr>';
     });
     html+='</table></div>';
   }
@@ -891,8 +897,8 @@ function rOg(){
   // Instagram section
   var ig=OG.instagram||{};
   if(ig.account_id||ig.username){
-    var igTotalLikes=0,igTotalComments=0;
-    if(ig.recent_posts){ig.recent_posts.forEach(function(p){igTotalLikes+=parseInt(p.likes||0);igTotalComments+=parseInt(p.comments||0)})}
+    var igTotalLikes=0,igTotalComments=0,igTotalViews=0;
+    if(ig.recent_posts){ig.recent_posts.forEach(function(p){igTotalLikes+=parseInt(p.likes||0);igTotalComments+=parseInt(p.comments||0);igTotalViews+=parseInt(p.views||0)})}
     var igTotalEng=igTotalLikes+igTotalComments;
     var igFollowers=parseInt(ig.followers||0);
     var igEngRate=igFollowers>0?((igTotalEng/ig.recent_posts.length)/igFollowers*100).toFixed(1):'0';
@@ -900,16 +906,31 @@ function rOg(){
     html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr))">'+
       kpi("Followers",igFollowers.toLocaleString(),"var(--orange)")+
       kpi("Posts",parseInt(ig.media_count||0),"var(--purple)")+
+      kpi("Total Views",igTotalViews.toLocaleString(),"var(--blue)")+
       kpi("Total Likes",igTotalLikes.toLocaleString(),"var(--red)")+
       kpi("Total Comments",igTotalComments.toLocaleString(),"var(--muted)")+
       kpi("Eng. Rate",igEngRate+"%","var(--gold)")+
     '</div></div>';
   }
   if(ig.recent_posts&&ig.recent_posts.length){
+    var igPosts=ig.recent_posts.map(function(p){
+      var type=p.media_product_type==='REELS'?'REEL':(p.media_type||'');
+      return{caption:p.caption,type:type,views:parseInt(p.views||0),likes:parseInt(p.likes||0),comments:parseInt(p.comments||0),timestamp:p.timestamp};
+    });
+    // Type filter
+    var igTypes={};igPosts.forEach(function(p){igTypes[p.type]=true});
+    var igFiltered=IG_TYPE_FILTER==='all'?igPosts:igPosts.filter(function(p){return p.type===IG_TYPE_FILTER});
+    // Sort
+    igFiltered.sort(function(a,b){var va=a[IG_SORT]||0,vb=b[IG_SORT]||0;if(IG_SORT==='timestamp'){va=new Date(a.timestamp).getTime();vb=new Date(b.timestamp).getTime()}return IG_SORT_DIR==='desc'?vb-va:va-vb});
+    function igSortHdr(label,field){var arrow=IG_SORT===field?(IG_SORT_DIR==='desc'?' v':' ^'):'';return'<th style="cursor:pointer" onclick="IG_SORT=\''+field+'\';IG_SORT_DIR=IG_SORT_DIR===\'desc\'?\'asc\':\'desc\';render()">'+label+arrow+'</th>'}
     html+='<div class="cd"><h3>prAmen · Recent Instagram Posts</h3>';
-    html+='<table class="tbl"><tr><th>Caption</th><th>Type</th><th>Likes</th><th>Comments</th><th>Posted</th></tr>';
-    ig.recent_posts.forEach(function(p){
-      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+p.caption+'</td><td class="mono" style="color:var(--muted)">'+p.media_type+'</td><td class="mono" style="color:var(--orange)">'+(parseInt(p.likes||0)).toLocaleString()+'</td><td class="mono">'+(parseInt(p.comments||0)).toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(p.timestamp).toLocaleDateString()+'</td></tr>';
+    html+='<div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap">';
+    html+='<button class="filter-chip'+(IG_TYPE_FILTER==='all'?' on':'')+'" onclick="IG_TYPE_FILTER=\'all\';render()">All</button>';
+    Object.keys(igTypes).sort().forEach(function(t){html+='<button class="filter-chip'+(IG_TYPE_FILTER===t?' on':'')+'" onclick="IG_TYPE_FILTER=\''+t+'\';render()">'+t+'</button>'});
+    html+='</div>';
+    html+='<table class="tbl"><tr><th>Caption</th><th>Type</th>'+igSortHdr('Views','views')+igSortHdr('Likes','likes')+igSortHdr('Comments','comments')+igSortHdr('Posted','timestamp')+'</tr>';
+    igFiltered.forEach(function(p){
+      html+='<tr><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+p.caption+'</td><td class="mono" style="color:var(--muted)">'+p.type+'</td><td class="mono" style="color:var(--blue)">'+(p.views>0?p.views.toLocaleString():'-')+'</td><td class="mono" style="color:var(--orange)">'+p.likes.toLocaleString()+'</td><td class="mono">'+p.comments.toLocaleString()+'</td><td class="mono" style="color:var(--muted)">'+new Date(p.timestamp).toLocaleDateString()+'</td></tr>';
     });
     html+='</table></div>';
   }
