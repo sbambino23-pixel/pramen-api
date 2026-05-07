@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.4", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.5", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -915,6 +915,22 @@ app.put("/api/user/avatar", async (c) => {
 app.get("/api/user/avatar", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
   return c.json({ avatarUrl: u.avatar_url || null });
+});
+
+// ─── Social Proof (for paywall) ──────────────────────────────────
+app.get("/api/stats/social-proof", async (c) => {
+  try {
+    const totalPrayers = await pool.query("SELECT COALESCE(SUM(total_prayers),0) as total FROM user_data").catch(() => ({ rows: [{ total: 0 }] }));
+    const totalUsers = await pool.query("SELECT COUNT(*) as count FROM users").catch(() => ({ rows: [{ count: 0 }] }));
+    const activeLast7d = await pool.query("SELECT COUNT(*) as count FROM user_data WHERE last_prayed_date >= CURRENT_DATE - INTERVAL '7 days'").catch(() => ({ rows: [{ count: 0 }] }));
+    const prayersThisWeek = await pool.query("SELECT COALESCE(SUM(total_prayers),0) as total FROM user_data WHERE last_prayed_date >= CURRENT_DATE - INTERVAL '7 days'").catch(() => ({ rows: [{ total: 0 }] }));
+    return c.json({
+      totalPrayers: parseInt(totalPrayers.rows[0]?.total || 0),
+      totalUsers: parseInt(totalUsers.rows[0]?.count || 0),
+      activeThisWeek: parseInt(activeLast7d.rows[0]?.count || 0),
+      prayersThisWeek: parseInt(prayersThisWeek.rows[0]?.total || 0)
+    });
+  } catch { return c.json({ totalPrayers: 0, totalUsers: 0, activeThisWeek: 0, prayersThisWeek: 0 }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2755,6 +2771,41 @@ async function start() {
   }
   setTimeout(() => { pullAppleSearchAds().catch(() => {}); }, 3 * 60 * 1000);
   setInterval(() => { pullAppleSearchAds().catch(() => {}); }, 6 * 60 * 60 * 1000);
+
+  // v5.12.4 — Nudge users stuck on paywall (daily at 10am)
+  async function nudgeStuckUsers(): Promise<void> {
+    try {
+      // Find users who: created account 1+ days ago, have device token, never subscribed, have no prayers
+      const stuck = await pool.query(`
+        SELECT u.id, u.name, u.device_token FROM users u
+        LEFT JOIN user_data ud ON ud.user_id = u.id
+        WHERE u.device_token IS NOT NULL
+        AND u.subscription_status = 'none'
+        AND u.created_at < NOW() - INTERVAL '1 day'
+        AND u.created_at > NOW() - INTERVAL '7 days'
+        AND (ud.total_prayers IS NULL OR ud.total_prayers = 0)
+      `);
+      if (stuck.rows.length === 0) return;
+      let sent = 0;
+      for (const user of stuck.rows) {
+        // Check throttle — only send once per user
+        const throttleKey = `paywall_nudge_${user.id}`;
+        const existing = await pool.query("SELECT throttle_key FROM push_throttle WHERE throttle_key=$1", [throttleKey]);
+        if (existing.rows.length > 0) continue;
+        await pushToUser(user.id, {
+          title: "Your free trial is waiting",
+          body: "Start your first guided prayer today — it only takes 2 minutes. Your 7-day free trial begins when you're ready.",
+          type: "streak_reminders"
+        });
+        await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
+        sent++;
+        trackEvent(user.id, "paywall_nudge_sent", {});
+      }
+      if (sent > 0) console.log(`[Nudge] Sent paywall nudge to ${sent} stuck users`);
+    } catch (err: any) { console.error("[Nudge]", err.message); }
+  }
+  // Run daily at 10am (check every hour)
+  setInterval(() => { const h = new Date().getHours(); if (h === 10) nudgeStuckUsers().catch(() => {}); }, 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API v5.10.9 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
