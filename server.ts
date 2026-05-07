@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.2", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.3", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2385,12 +2385,22 @@ app.get("/api/dashboard/growth", async (c) => {
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
   try {
     // a) Acquisition — last 30 days
-    const adRows = await pool.query(`SELECT channel, SUM(spend) as total_spend, SUM(installs) as total_installs FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY channel`).catch(() => ({ rows: [] }));
+    const adRows = await pool.query(`SELECT channel, SUM(spend) as total_spend, SUM(impressions) as total_impressions, SUM(clicks) as total_clicks, SUM(installs) as total_installs, SUM(trials) as total_trials FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY channel`).catch(() => ({ rows: [] }));
     const orgAcq = await pool.query(`SELECT SUM(impressions) as impressions, SUM(product_page_views) as page_views, SUM(app_units) as units FROM daily_app_store_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days'`).catch(() => ({ rows: [{}] }));
     const totalAdSpend = adRows.rows.reduce((s: number, r: any) => s + parseFloat(r.total_spend||0), 0);
     const totalInstalls = adRows.rows.reduce((s: number, r: any) => s + parseInt(r.total_installs||0), 0);
     const blendedCPI = totalInstalls > 0 ? totalAdSpend / totalInstalls : null;
-    const acquisitionByChannel = adRows.rows.map((r: any) => ({ channel: r.channel, spend: parseFloat(r.total_spend||0), installs: parseInt(r.total_installs||0), cpi: parseInt(r.total_installs||0) > 0 ? parseFloat(r.total_spend||0) / parseInt(r.total_installs||0) : null }));
+    const acquisitionByChannel = adRows.rows.map((r: any) => {
+      const spend = parseFloat(r.total_spend||0);
+      const impressions = parseInt(r.total_impressions||0);
+      const clicks = parseInt(r.total_clicks||0);
+      const installs = parseInt(r.total_installs||0);
+      const trials = parseInt(r.total_trials||0);
+      const ctr = impressions > 0 ? (clicks / impressions * 100) : null;
+      const cpm = impressions > 0 ? (spend / impressions * 1000) : null;
+      const cpi = installs > 0 ? spend / installs : null;
+      return { channel: r.channel, spend, impressions, clicks, installs, trials, ctr, cpm, cpi };
+    });
 
     // b) Unit economics
     const revLast30 = await pool.query(`SELECT SUM(new_subscribers) as new_subs, SUM(cancellations) as cancels, SUM(revenue_gross) as gross FROM daily_revenue WHERE date >= CURRENT_DATE - INTERVAL '30 days'`).catch(() => ({ rows: [{}] }));
@@ -2437,8 +2447,8 @@ app.get("/api/dashboard/growth", async (c) => {
     const streakDistribution = streakRows.rows.map((r: any) => ({ range: r.range, count: parseInt(r.count||0) }));
 
     // f) Daily ad series for chart (last 30 days, per channel per day)
-    const dailySeriesRows = await pool.query(`SELECT date::text, channel, installs, trials FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' ORDER BY date ASC`).catch(() => ({ rows: [] }));
-    const dailySeries = dailySeriesRows.rows.map((r: any) => ({ date: r.date, channel: r.channel, installs: parseInt(r.installs||0), trials: parseInt(r.trials||0) }));
+    const dailySeriesRows = await pool.query(`SELECT date::text, channel, SUM(spend) as spend, SUM(impressions) as impressions, SUM(clicks) as clicks, SUM(installs) as installs, SUM(trials) as trials FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY date, channel ORDER BY date ASC`).catch(() => ({ rows: [] }));
+    const dailySeries = dailySeriesRows.rows.map((r: any) => ({ date: r.date, channel: r.channel, spend: parseFloat(r.spend||0), impressions: parseInt(r.impressions||0), clicks: parseInt(r.clicks||0), installs: parseInt(r.installs||0), trials: parseInt(r.trials||0) }));
 
     // g) Decision signals
     const avgD7 = cohortRetention.length > 0 ? cohortRetention.reduce((s: number, r: any) => s + r.d7_pct, 0) / cohortRetention.length : 0;
@@ -2657,8 +2667,8 @@ async function start() {
         if (!res.ok) { console.error("[Meta Ads]", res.status, await res.text().catch(()=>"")); continue; }
         const data = (await res.json()) as any;
         for (const row of (data.data || [])) {
-          const installs = (row.actions || []).find((a: any) => a.action_type === "app_installs")?.value || 0;
-          const trials = (row.actions || []).find((a: any) => a.action_type === "app_custom_event.fb_mobile_start_trial" || a.action_type === "omni_app_custom_event.fb_mobile_start_trial")?.value || 0;
+          const installs = (row.actions || []).find((a: any) => a.action_type === "app_installs" || a.action_type === "mobile_app_install" || a.action_type === "omni_app_install")?.value || 0;
+          const trials = (row.actions || []).find((a: any) => a.action_type === "app_custom_event.fb_mobile_start_trial" || a.action_type === "omni_app_custom_event.fb_mobile_start_trial" || a.action_type === "app_custom_event.StartTrial")?.value || 0;
           await pool.query(`INSERT INTO daily_ad_metrics (date,channel,campaign,spend,impressions,clicks,installs,trials,updated_at) VALUES ($1,'meta',$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT (date,channel,campaign) DO UPDATE SET spend=$3,impressions=$4,clicks=$5,installs=$6,trials=$7,updated_at=NOW()`,
             [date, row.campaign_name || "unknown", parseFloat(row.spend||0), parseInt(row.impressions||0), parseInt(row.clicks||0), parseInt(installs), parseInt(trials)]);
         }
