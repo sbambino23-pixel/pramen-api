@@ -444,6 +444,26 @@ function rOv(){
   html+=row("Active Trials",rc.active_trials||0,"var(--blue)");
   html+=row("MRR (Gross)","$"+(rc.mrr_estimated||0).toFixed(2),"var(--gold)");
   html+=row("MRR (Net)","$"+(rc.net_mrr||0).toFixed(2),"var(--gold)");
+
+  // Plan breakdown from subscriber data
+  var subs=RC&&RC.subscribers?RC.subscribers:[];
+  var planMonthly=0,planYearly=0,planLifetime=0;
+  subs.forEach(function(s){
+    var activeSubs=(s.subscriptions||[]).filter(function(x){return x.is_active});
+    activeSubs.forEach(function(x){
+      if(x.product.indexOf('lifetime')>=0)planLifetime++;
+      else if(x.product.indexOf('yearly')>=0)planYearly++;
+      else if(x.product.indexOf('monthly')>=0)planMonthly++;
+    });
+  });
+  if(planMonthly+planYearly+planLifetime>0){
+    html+='<h3 style="margin-top:14px">Active Plans</h3>';
+    html+='<div class="kg" style="grid-template-columns:repeat(3,1fr)">';
+    html+=kpi("Monthly",planMonthly,"var(--blue)");
+    html+=kpi("Yearly",planYearly,"var(--green)");
+    html+=kpi("Lifetime",planLifetime,"var(--gold)");
+    html+='</div>';
+  }
   html+='<h3 style="margin-top:14px">Circles</h3>'+row("Active",D.circles.total,"var(--blue)")+row("Members",D.circles.total_members,"var(--indigo)")+row("Encouragements",D.circles.total_encouragements||0,"var(--teal)");
   html+='</div></div>';
 
