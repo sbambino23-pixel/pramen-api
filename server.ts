@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.2", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -1705,7 +1705,7 @@ app.post("/api/admin/grant-trial", async (c) => {
 // ─── Promo Codes ────────────────────────────────────────────────
 function generatePromoCode(): string {
   const ch = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let code = "PRAY-";
+  let code = "PRAY";
   for (let i = 0; i < 4; i++) code += ch[Math.floor(Math.random() * ch.length)];
   return code;
 }
@@ -2436,7 +2436,11 @@ app.get("/api/dashboard/growth", async (c) => {
     const streakRows = await pool.query(`SELECT CASE WHEN streak_count=0 THEN '0' WHEN streak_count<=3 THEN '1-3' WHEN streak_count<=7 THEN '4-7' WHEN streak_count<=14 THEN '8-14' WHEN streak_count<=30 THEN '15-30' ELSE '31+' END as range, COUNT(*) as count FROM user_data GROUP BY 1 ORDER BY MIN(streak_count)`).catch(() => ({ rows: [] }));
     const streakDistribution = streakRows.rows.map((r: any) => ({ range: r.range, count: parseInt(r.count||0) }));
 
-    // f) Decision signals
+    // f) Daily ad series for chart (last 30 days, per channel per day)
+    const dailySeriesRows = await pool.query(`SELECT date::text, channel, installs, trials FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' ORDER BY date ASC`).catch(() => ({ rows: [] }));
+    const dailySeries = dailySeriesRows.rows.map((r: any) => ({ date: r.date, channel: r.channel, installs: parseInt(r.installs||0), trials: parseInt(r.trials||0) }));
+
+    // g) Decision signals
     const avgD7 = cohortRetention.length > 0 ? cohortRetention.reduce((s: number, r: any) => s + r.d7_pct, 0) / cohortRetention.length : 0;
     const unitEconSignal = cpa === null || ltv === null ? "gray" : cpa < ltv * 0.5 ? "green" : cpa < ltv ? "yellow" : "red";
     const unitEconAction = unitEconSignal === "green" ? "Scale spend. CPA is well below LTV." : unitEconSignal === "yellow" ? "Optimize creative. CPA approaching LTV." : unitEconSignal === "gray" ? "Not enough data yet." : "Pause paid. CPA exceeds LTV.";
@@ -2452,6 +2456,7 @@ app.get("/api/dashboard/growth", async (c) => {
       viral: { circles: circleCount, total_circle_members: totalCircleMembers, avg_members_per_circle: Math.round(avgMembersPerCircle * 10) / 10, invite_tokens_created: totalInvites, invite_tokens_accepted: acceptedInvites, acceptance_rate: Math.round(acceptanceRate * 100) / 100, avg_invites_per_user: Math.round(avgInvitesPerUser * 100) / 100, viral_k: Math.round(viralK * 100) / 100 },
       cohort_retention: cohortRetention,
       streak_distribution: streakDistribution,
+      daily_series: dailySeries,
       signals: { unit_economics: { status: unitEconSignal, action: unitEconAction, cpa, ltv }, viral_loop: { status: viralSignal, action: viralAction, k: Math.round(viralK * 100) / 100 }, retention: { status: retentionSignal, action: retentionAction, d7_avg_pct: Math.round(avgD7) } }
     });
   } catch (err: any) { return c.json({ error: "Growth dashboard failed", detail: err.message }, 500); }

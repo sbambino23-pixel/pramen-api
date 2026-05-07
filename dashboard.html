@@ -237,6 +237,104 @@ function kpi(l,v,c,delta){return'<div class="k"><div class="l">'+l+'</div><div c
 function row(n,v,c){return'<div class="tr"><span class="n">'+n+'</span><span class="ct" style="color:'+(c||'var(--gold)')+'">'+v+'</span></div>'}
 function pct(a,b){return b>0?Math.round(a/b*100):0}
 
+// ─── Daily chart drawing ─────────────────────────────────────
+function drawDailyChart(ds){
+  var canvas=document.getElementById('dailyChart');
+  if(!canvas)return;
+  var dpr=window.devicePixelRatio||1;
+  var rect=canvas.getBoundingClientRect();
+  canvas.width=rect.width*dpr;
+  canvas.height=rect.height*dpr;
+  var ctx=canvas.getContext('2d');
+  ctx.scale(dpr,dpr);
+  var W=rect.width,H=rect.height;
+
+  // Parse data: build per-date series
+  var dateMap={};
+  ds.forEach(function(r){
+    if(!dateMap[r.date])dateMap[r.date]={meta_installs:0,meta_trials:0,asa_installs:0};
+    var ch=r.channel?r.channel.toLowerCase():'';
+    if(ch==='meta'){dateMap[r.date].meta_installs+=r.installs||0;dateMap[r.date].meta_trials+=r.trials||0}
+    if(ch==='asa'||ch==='apple'){dateMap[r.date].asa_installs+=r.installs||0}
+  });
+  var dates=Object.keys(dateMap).sort();
+  if(dates.length<2)return;
+
+  var metaI=dates.map(function(d){return dateMap[d].meta_installs});
+  var metaT=dates.map(function(d){return dateMap[d].meta_trials});
+  var asaI=dates.map(function(d){return dateMap[d].asa_installs});
+
+  var allVals=metaI.concat(metaT).concat(asaI);
+  var maxVal=Math.max.apply(null,allVals);
+  if(maxVal===0)maxVal=1;
+
+  // Padding
+  var padL=48,padR=16,padT=16,padB=40;
+  var cW=W-padL-padR,cH=H-padT-padB;
+
+  // Background
+  ctx.fillStyle='#F2EDD8';
+  ctx.fillRect(0,0,W,H);
+
+  // Grid lines + Y labels
+  ctx.strokeStyle='rgba(94,60,36,0.1)';
+  ctx.lineWidth=1;
+  ctx.fillStyle='#545742';
+  ctx.font='9px ui-monospace, SF Mono, monospace';
+  ctx.textAlign='right';
+  var ySteps=5;
+  for(var i=0;i<=ySteps;i++){
+    var y=padT+cH-cH*(i/ySteps);
+    ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(padL+cW,y);ctx.stroke();
+    var label=Math.round(maxVal*i/ySteps);
+    ctx.fillText(label,padL-6,y+3);
+  }
+
+  // X axis labels
+  ctx.textAlign='center';
+  ctx.fillStyle='#5E3C24';
+  var labelEvery=Math.max(1,Math.floor(dates.length/8));
+  for(var i=0;i<dates.length;i++){
+    if(i%labelEvery===0||i===dates.length-1){
+      var x=padL+cW*(i/(dates.length-1));
+      var parts=dates[i].split('-');
+      var lbl=parseInt(parts[1])+'/'+parseInt(parts[2]);
+      ctx.fillText(lbl,x,H-padB+16);
+    }
+  }
+
+  // Draw lines
+  function drawLine(vals,color){
+    ctx.strokeStyle=color;
+    ctx.lineWidth=2;
+    ctx.lineJoin='round';
+    ctx.lineCap='round';
+    ctx.beginPath();
+    for(var i=0;i<vals.length;i++){
+      var x=padL+cW*(i/(vals.length-1));
+      var y=padT+cH-cH*(vals[i]/maxVal);
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    // Draw dots
+    for(var i=0;i<vals.length;i++){
+      var x=padL+cW*(i/(vals.length-1));
+      var y=padT+cH-cH*(vals[i]/maxVal);
+      ctx.fillStyle=color;
+      ctx.beginPath();ctx.arc(x,y,2.5,0,Math.PI*2);ctx.fill();
+    }
+  }
+
+  var styles=getComputedStyle(document.documentElement);
+  var blue=styles.getPropertyValue('--blue').trim()||'#5A8A9E';
+  var green=styles.getPropertyValue('--green').trim()||'#7A8A68';
+  var orange=styles.getPropertyValue('--orange').trim()||'#C07040';
+
+  drawLine(metaI,blue);
+  drawLine(metaT,green);
+  drawLine(asaI,orange);
+}
+
 // ─── Insights generator ──────────────────────────────────────
 function generateInsights(m,pm){
   var ins=[];
@@ -718,6 +816,19 @@ function rGr(){
     html+='</table>';
   }
   html+='</div>';
+
+  // Daily performance chart
+  var ds=GR.daily_series||[];
+  if(ds.length){
+    html+='<div class="cd"><h3>Daily Performance (30d)</h3>';
+    html+='<canvas id="dailyChart" width="800" height="280" style="width:100%;height:280px;border-radius:6px"></canvas>';
+    html+='<div style="display:flex;gap:16px;margin-top:8px;justify-content:center">';
+    html+='<span style="font-size:10px;font-weight:600;color:var(--blue)">&#9644; Meta Installs</span>';
+    html+='<span style="font-size:10px;font-weight:600;color:var(--green)">&#9644; Meta Trials</span>';
+    html+='<span style="font-size:10px;font-weight:600;color:var(--orange)">&#9644; ASA Installs</span>';
+    html+='</div></div>';
+    setTimeout(function(){drawDailyChart(ds)},0);
+  }
 
   // Meta Ads + Apple Search Ads breakdown
   var metaCh=(a.by_channel||[]).find(function(c){return c.channel==='meta'});
