@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.3", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.4", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2678,6 +2678,83 @@ async function start() {
   }
   setTimeout(() => { pullMetaAdSpend().catch(() => {}); }, 2 * 60 * 1000);
   setInterval(() => { pullMetaAdSpend().catch(() => {}); }, 6 * 60 * 60 * 1000);
+
+  // v5.12.3 — Auto-pull Apple Search Ads data every 6 hours
+  const ASA_ORG_ID = process.env.ASA_ORG_ID || "";
+  async function pullAppleSearchAds(): Promise<void> {
+    if (!ASC_KEY_ID || !ASC_ISSUER_ID || !ASC_PRIVATE_KEY) return;
+    if (!ASA_ORG_ID) { console.log("[ASA] No ASA_ORG_ID configured, skipping"); return; }
+    try {
+      // Generate ASC-style JWT — Apple Search Ads v4 accepts these
+      const token = generateASCToken();
+      if (!token) { console.error("[ASA] No token"); return; }
+      const today = new Date().toISOString().split("T")[0];
+      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+      const reportUrl = "https://api.searchads.apple.com/api/v5/reports/campaigns";
+      const body = {
+        startTime: weekAgo,
+        endTime: today,
+        granularity: "DAILY",
+        selector: { orderBy: [{ field: "countryOrRegion", sortOrder: "ASCENDING" }] },
+        groupBy: ["countryOrRegion"],
+        returnRowTotals: true,
+        returnGrandTotals: true
+      };
+      const res = await fetch(reportUrl, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "X-Apple-Ads-Orgid": ASA_ORG_ID
+        },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        console.error(`[ASA] API error ${res.status}: ${errText.substring(0, 300)}`);
+        return;
+      }
+      const data = (await res.json()) as any;
+      const rows = data?.data?.reportingDataResponse?.row || [];
+      let stored = 0;
+      for (const row of rows) {
+        const meta = row.metadata || {};
+        const totals = row.total || {};
+        const granularity = row.granularity || [];
+        // Process daily granularity
+        for (const day of granularity) {
+          const date = day.date?.substring(0, 10);
+          if (!date) continue;
+          const spend = parseFloat(day.spend?.amount || totals.localSpend?.amount || 0);
+          const impressions = parseInt(day.impressions || 0);
+          const taps = parseInt(day.taps || 0);
+          const installs = parseInt(day.installs || day.totalInstalls || 0);
+          const campaignName = meta.campaignName || meta.campaignId || "all";
+          await pool.query(
+            `INSERT INTO daily_ad_metrics (date,channel,campaign,spend,impressions,clicks,installs,updated_at) VALUES ($1,'asa',$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date,channel,campaign) DO UPDATE SET spend=$3,impressions=$4,clicks=$5,installs=$6,updated_at=NOW()`,
+            [date, campaignName, spend, impressions, taps, installs]
+          );
+          stored++;
+        }
+        // If no granularity, use row totals
+        if (granularity.length === 0 && totals.spend) {
+          const spend = parseFloat(totals.spend?.amount || 0);
+          const impressions = parseInt(totals.impressions || 0);
+          const taps = parseInt(totals.taps || 0);
+          const installs = parseInt(totals.installs || totals.totalInstalls || 0);
+          await pool.query(
+            `INSERT INTO daily_ad_metrics (date,channel,campaign,spend,impressions,clicks,installs,updated_at) VALUES ($1,'asa','all',$2,$3,$4,$5,NOW()) ON CONFLICT (date,channel,campaign) DO UPDATE SET spend=$2,impressions=$3,clicks=$4,installs=$5,updated_at=NOW()`,
+            [today, spend, impressions, taps, installs]
+          );
+          stored++;
+        }
+      }
+      if (stored > 0) console.log(`[ASA] Stored ${stored} daily metrics`);
+      else console.log("[ASA] No data returned from API");
+    } catch (err: any) { console.error("[ASA]", err.message); }
+  }
+  setTimeout(() => { pullAppleSearchAds().catch(() => {}); }, 3 * 60 * 1000);
+  setInterval(() => { pullAppleSearchAds().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API v5.10.9 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
