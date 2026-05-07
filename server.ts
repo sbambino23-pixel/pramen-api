@@ -2695,15 +2695,55 @@ async function start() {
   setTimeout(() => { pullMetaAdSpend().catch(() => {}); }, 2 * 60 * 1000);
   setInterval(() => { pullMetaAdSpend().catch(() => {}); }, 6 * 60 * 60 * 1000);
 
-  // v5.12.3 — Auto-pull Apple Search Ads data every 6 hours
+  // v5.12.5 — Auto-pull Apple Search Ads data every 6 hours (OAuth2 flow)
   const ASA_ORG_ID = process.env.ASA_ORG_ID || "";
-  async function pullAppleSearchAds(): Promise<void> {
-    if (!ASC_KEY_ID || !ASC_ISSUER_ID || !ASC_PRIVATE_KEY) return;
-    if (!ASA_ORG_ID) { console.log("[ASA] No ASA_ORG_ID configured, skipping"); return; }
+  let asaAccessToken: { token: string; expiresAt: number } | null = null;
+
+  async function getAsaAccessToken(): Promise<string | null> {
+    if (!ASC_KEY_ID || !ASC_PRIVATE_KEY) return null;
+    // Return cached token if still valid (with 5 min buffer)
+    if (asaAccessToken && Date.now() < asaAccessToken.expiresAt - 300000) return asaAccessToken.token;
     try {
-      // Generate ASC-style JWT — Apple Search Ads v4 accepts these
-      const token = generateASCToken();
-      if (!token) { console.error("[ASA] No token"); return; }
+      // Step 1: Generate client secret JWT for Search Ads OAuth2
+      const teamId = APNS_TEAM_ID || "5QTJL794PU";
+      const clientId = `SEARCHADS.${teamId}`;
+      const now = Math.floor(Date.now() / 1000);
+      const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: ASC_KEY_ID })).toString("base64url");
+      const payload = Buffer.from(JSON.stringify({
+        sub: clientId,
+        iss: teamId,
+        aud: "https://appleid.apple.com",
+        iat: now,
+        exp: now + 86400
+      })).toString("base64url");
+      const signer = createSign("SHA256");
+      signer.update(`${header}.${payload}`);
+      const signature = signer.sign({ key: ASC_PRIVATE_KEY, dsaEncoding: "ieee-p1363" }, "base64url");
+      const clientSecret = `${header}.${payload}.${signature}`;
+
+      // Step 2: Exchange for access token
+      const tokenRes = await fetch("https://appleid.apple.com/auth/oauth2/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}&scope=searchadsorg`
+      });
+      if (!tokenRes.ok) {
+        const errText = await tokenRes.text().catch(() => "");
+        console.error(`[ASA] OAuth2 token error ${tokenRes.status}: ${errText.substring(0, 300)}`);
+        return null;
+      }
+      const tokenData = (await tokenRes.json()) as any;
+      asaAccessToken = { token: tokenData.access_token, expiresAt: Date.now() + (tokenData.expires_in || 3600) * 1000 };
+      console.log("[ASA] OAuth2 access token obtained");
+      return asaAccessToken.token;
+    } catch (err: any) { console.error("[ASA] OAuth2 error:", err.message); return null; }
+  }
+
+  async function pullAppleSearchAds(): Promise<void> {
+    if (!ASA_ORG_ID) { console.log("[ASA] No ASA_ORG_ID configured, skipping"); return; }
+    const token = await getAsaAccessToken();
+    if (!token) { console.error("[ASA] No access token"); return; }
+    try {
       const today = new Date().toISOString().split("T")[0];
       const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
       const reportUrl = "https://api.searchads.apple.com/api/v5/reports/campaigns";
@@ -2711,8 +2751,6 @@ async function start() {
         startTime: weekAgo,
         endTime: today,
         granularity: "DAILY",
-        selector: { orderBy: [{ field: "countryOrRegion", sortOrder: "ASCENDING" }] },
-        groupBy: ["countryOrRegion"],
         returnRowTotals: true,
         returnGrandTotals: true
       };
@@ -2727,7 +2765,9 @@ async function start() {
       });
       if (!res.ok) {
         const errText = await res.text().catch(() => "");
-        console.error(`[ASA] API error ${res.status}: ${errText.substring(0, 300)}`);
+        console.error(`[ASA] Report API error ${res.status}: ${errText.substring(0, 300)}`);
+        // If 401, clear cached token so it re-authenticates next time
+        if (res.status === 401) asaAccessToken = null;
         return;
       }
       const data = (await res.json()) as any;
@@ -2737,15 +2777,14 @@ async function start() {
         const meta = row.metadata || {};
         const totals = row.total || {};
         const granularity = row.granularity || [];
-        // Process daily granularity
+        const campaignName = meta.campaignName || meta.campaignId || "all";
         for (const day of granularity) {
           const date = day.date?.substring(0, 10);
           if (!date) continue;
-          const spend = parseFloat(day.spend?.amount || totals.localSpend?.amount || 0);
+          const spend = parseFloat(day.spend?.amount || 0);
           const impressions = parseInt(day.impressions || 0);
           const taps = parseInt(day.taps || 0);
           const installs = parseInt(day.installs || day.totalInstalls || 0);
-          const campaignName = meta.campaignName || meta.campaignId || "all";
           await pool.query(
             `INSERT INTO daily_ad_metrics (date,channel,campaign,spend,impressions,clicks,installs,updated_at) VALUES ($1,'asa',$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date,channel,campaign) DO UPDATE SET spend=$3,impressions=$4,clicks=$5,installs=$6,updated_at=NOW()`,
             [date, campaignName, spend, impressions, taps, installs]
@@ -2759,14 +2798,14 @@ async function start() {
           const taps = parseInt(totals.taps || 0);
           const installs = parseInt(totals.installs || totals.totalInstalls || 0);
           await pool.query(
-            `INSERT INTO daily_ad_metrics (date,channel,campaign,spend,impressions,clicks,installs,updated_at) VALUES ($1,'asa','all',$2,$3,$4,$5,NOW()) ON CONFLICT (date,channel,campaign) DO UPDATE SET spend=$2,impressions=$3,clicks=$4,installs=$5,updated_at=NOW()`,
-            [today, spend, impressions, taps, installs]
+            `INSERT INTO daily_ad_metrics (date,channel,campaign,spend,impressions,clicks,installs,updated_at) VALUES ($1,'asa',$2,$3,$4,$5,$6,NOW()) ON CONFLICT (date,channel,campaign) DO UPDATE SET spend=$2,impressions=$3,clicks=$4,installs=$5,updated_at=NOW()`,
+            [today, campaignName, spend, impressions, taps, installs]
           );
           stored++;
         }
       }
       if (stored > 0) console.log(`[ASA] Stored ${stored} daily metrics`);
-      else console.log("[ASA] No data returned from API");
+      else console.log("[ASA] No campaign data returned");
     } catch (err: any) { console.error("[ASA]", err.message); }
   }
   setTimeout(() => { pullAppleSearchAds().catch(() => {}); }, 3 * 60 * 1000);
