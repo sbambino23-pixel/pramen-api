@@ -947,6 +947,8 @@ function rOg(){
 
 // ─── Admin Tab ───────────────────────────────────────────────
 var GRANT_LOG = [];
+var PROMO_GENERATED = [];
+var PROMO_ALL = [];
 function rAd(){
   var h = '<div class="cd"><h3>Grant Free Trial</h3>';
   h += '<p style="font-size:11px;color:var(--muted);margin-bottom:10px">Grant premium access to influencers, partners, or anyone. Uses RevenueCat promotional entitlements.</p>';
@@ -983,13 +985,65 @@ function rAd(){
   }
   h += '</div>';
 
+  // ─── Promo Codes ───────────────────────────────────────────
+  h += '<div class="cd"><h3>Promo Codes for Outreach</h3>';
+  h += '<p style="font-size:11px;color:var(--muted);margin-bottom:10px">Generate codes to include in influencer DMs. They enter the code in the app to unlock premium — no signup coordination needed.</p>';
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">';
+  h += '<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">How Many</label>';
+  h += '<input type="number" id="promo-count" value="5" min="1" max="50" class="search-input" style="width:100%"></div>';
+  h += '<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Duration</label>';
+  h += '<select id="promo-duration" class="search-input" style="width:100%;padding:7px 10px"><option value="weekly">7 days</option><option value="monthly" selected>30 days</option><option value="two_month">60 days</option><option value="three_month">90 days</option></select></div>';
+  h += '<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Campaign</label>';
+  h += '<input type="text" id="promo-campaign" value="influencer" placeholder="e.g. tiktok-may" class="search-input" style="width:100%"></div>';
+  h += '<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Expires In (days)</label>';
+  h += '<input type="number" id="promo-expires" value="30" min="1" max="365" class="search-input" style="width:100%"></div>';
+  h += '</div>';
+  h += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">';
+  h += '<button onclick="generatePromoCodes()" style="background:var(--gold);color:#F2EDD8;border:none;padding:8px 20px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:system-ui,sans-serif">Generate Codes</button>';
+  h += '<button onclick="loadPromoCodes()" style="background:transparent;color:var(--gold);border:1px solid var(--gold);padding:8px 20px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:system-ui,sans-serif">Refresh List</button>';
+  h += '<span id="promo-status" style="font-size:11px;color:var(--muted)"></span>';
+  h += '</div>';
+
+  // Generated codes display
+  if (PROMO_GENERATED.length > 0) {
+    h += '<div style="background:rgba(94,60,36,.04);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px">';
+    h += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><span style="font-size:11px;font-weight:700;color:var(--text)">Just Generated (' + PROMO_GENERATED.length + ' codes)</span>';
+    h += '<button onclick="copyAllPromo()" style="background:var(--gold);color:#F2EDD8;border:none;padding:4px 12px;border-radius:4px;font-size:10px;font-weight:700;cursor:pointer">Copy All</button></div>';
+    h += '<div style="display:flex;flex-wrap:wrap;gap:6px">';
+    for (var i = 0; i < PROMO_GENERATED.length; i++) {
+      h += '<span onclick="copyCode(this)" style="background:rgba(94,60,36,.08);padding:4px 10px;border-radius:4px;font-size:12px;font-weight:700;font-family:monospace;cursor:pointer;color:var(--text)" title="Click to copy">' + PROMO_GENERATED[i] + '</span>';
+    }
+    h += '</div></div>';
+  }
+
+  // All codes table
+  h += '<div id="promo-table-wrap">';
+  if (PROMO_ALL.length > 0) {
+    var active = PROMO_ALL.filter(function(x){return x.status==='active'}).length;
+    var redeemed = PROMO_ALL.filter(function(x){return x.status==='redeemed'}).length;
+    h += '<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><strong>' + active + '</strong> active · <strong>' + redeemed + '</strong> redeemed · <strong>' + PROMO_ALL.length + '</strong> total</div>';
+    h += '<table class="tbl"><tr><th>Code</th><th>Duration</th><th>Campaign</th><th>Status</th><th>Redeemed By</th><th>Created</th></tr>';
+    for (var i = 0; i < PROMO_ALL.length; i++) {
+      var p = PROMO_ALL[i];
+      var st = p.status === 'active' ? 'color:var(--green)' : p.status === 'redeemed' ? 'color:var(--gold)' : 'color:var(--red)';
+      var rb = p.redeemed_by_name ? (p.redeemed_by_name + (p.redeemed_by_email ? ' (' + p.redeemed_by_email + ')' : '')) : (p.redeemed_by_user_id || '-');
+      var durLabel = {daily:'1d',three_day:'3d',weekly:'7d',monthly:'30d',two_month:'60d',three_month:'90d',six_month:'6mo',yearly:'1yr',lifetime:'forever'}[p.duration]||p.duration;
+      h += '<tr><td class="mono" style="font-weight:700;cursor:pointer" onclick="copyCode(this)">' + p.code + '</td><td>' + durLabel + '</td><td>' + (p.campaign||'-') + '</td><td style="'+st+';font-weight:700">' + p.status + '</td><td style="font-size:10px">' + rb + '</td><td class="mono">' + new Date(p.created_at).toLocaleDateString() + '</td></tr>';
+    }
+    h += '</table>';
+  } else {
+    h += '<p style="font-size:11px;color:var(--muted)">No promo codes yet. Generate some above.</p>';
+  }
+  h += '</div>';
+  h += '</div>';
+
   // Quick reference
   h += '<div class="cd"><h3>Quick Reference</h3>';
   h += '<p style="font-size:11px;color:var(--muted);line-height:1.6">';
-  h += '<strong>API endpoint:</strong> <code style="background:rgba(94,60,36,.06);padding:2px 5px;border-radius:3px;font-size:10px">POST /api/admin/grant-trial</code><br>';
-  h += '<strong>Auth:</strong> X-Admin-Secret header or ?key= param<br>';
-  h += '<strong>Body:</strong> { email, userId, duration, reason }<br>';
-  h += '<strong>Durations:</strong> daily, three_day, weekly, monthly, two_month, three_month, six_month, yearly, lifetime';
+  h += '<strong>Grant trial:</strong> <code style="background:rgba(94,60,36,.06);padding:2px 5px;border-radius:3px;font-size:10px">POST /api/admin/grant-trial</code><br>';
+  h += '<strong>Generate codes:</strong> <code style="background:rgba(94,60,36,.06);padding:2px 5px;border-radius:3px;font-size:10px">POST /api/admin/promo-codes/generate</code><br>';
+  h += '<strong>Redeem (app):</strong> <code style="background:rgba(94,60,36,.06);padding:2px 5px;border-radius:3px;font-size:10px">POST /api/promo-codes/redeem</code> (Bearer auth + {code})<br>';
+  h += '<strong>Durations:</strong> weekly, monthly, two_month, three_month, six_month, yearly, lifetime';
   h += '</p></div>';
 
   return h;
@@ -1024,8 +1078,50 @@ async function grantTrial(){
   } catch (e) { status.textContent = 'Network error'; status.style.color = 'var(--red)'; }
 }
 
+// ─── Promo Code Functions ────────────────────────────────────
+async function generatePromoCodes(){
+  var count = document.getElementById('promo-count').value;
+  var duration = document.getElementById('promo-duration').value;
+  var campaign = document.getElementById('promo-campaign').value.trim() || 'influencer';
+  var expiresInDays = document.getElementById('promo-expires').value;
+  var status = document.getElementById('promo-status');
+  status.textContent = 'Generating...'; status.style.color = 'var(--muted)';
+  try {
+    var res = await fetch(B + '/api/admin/promo-codes/generate?key=' + K, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ count: parseInt(count), duration: duration, campaign: campaign, expiresInDays: expiresInDays }) });
+    var data = await res.json();
+    if (res.ok && data.success) {
+      PROMO_GENERATED = data.codes;
+      status.textContent = 'Generated ' + data.count + ' codes!'; status.style.color = 'var(--green)';
+      await loadPromoCodes();
+    } else { status.textContent = data.error || 'Failed'; status.style.color = 'var(--red)'; }
+  } catch(e) { status.textContent = 'Network error'; status.style.color = 'var(--red)'; }
+}
+
+async function loadPromoCodes(){
+  try {
+    var res = await fetch(B + '/api/admin/promo-codes?key=' + K);
+    var data = await res.json();
+    if (res.ok) { PROMO_ALL = data.codes || []; render(); }
+  } catch(e) {}
+}
+
+function copyCode(el){
+  navigator.clipboard.writeText(el.textContent.trim());
+  var orig = el.style.background;
+  el.style.background = 'rgba(122,138,104,.3)';
+  setTimeout(function(){ el.style.background = orig; }, 400);
+}
+
+function copyAllPromo(){
+  var text = PROMO_GENERATED.join('\n');
+  navigator.clipboard.writeText(text);
+  var status = document.getElementById('promo-status');
+  status.textContent = 'All codes copied!'; status.style.color = 'var(--green)';
+  setTimeout(function(){ status.textContent = ''; }, 2000);
+}
+
 // ─── Init ────────────────────────────────────────────────────
-updateDateLabel();loadAll();setInterval(loadAll,5*60*1000);
+updateDateLabel();loadAll();setInterval(loadAll,5*60*1000);loadPromoCodes();
 </script>
 </body>
 </html>

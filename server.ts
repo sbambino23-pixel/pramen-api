@@ -548,7 +548,11 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS push_throttle (throttle_key TEXT PRIMARY KEY, sent_date TEXT NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_ad_metrics (date DATE NOT NULL, channel TEXT NOT NULL, campaign TEXT NOT NULL DEFAULT 'all', spend NUMERIC DEFAULT 0, impressions INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, installs INTEGER DEFAULT 0, trials INTEGER DEFAULT 0, subscriptions INTEGER DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (date, channel, campaign))`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_organic_metrics (date DATE NOT NULL, channel TEXT NOT NULL, views INTEGER DEFAULT 0, subscribers_gained INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, watch_hours REAL DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (date, channel))`);
-    console.log("DB initialized (v5.9.4 — referral system: /api/referrals/validate/:code, /ref/ deep-link path, link format updated)");
+    // v5.12.0 — promo codes for influencer outreach
+    await client.query(`CREATE TABLE IF NOT EXISTS promo_codes (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, code TEXT UNIQUE NOT NULL, duration TEXT NOT NULL DEFAULT 'monthly', campaign TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT 'admin', redeemed_by_user_id TEXT, redeemed_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_promo_codes_campaign ON promo_codes(campaign)`);
+    console.log("DB initialized (v5.12.0 — promo codes for influencer outreach)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -694,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.11.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -1647,6 +1651,90 @@ app.post("/api/admin/grant-trial", async (c) => {
     return c.json({ success: true, userId: targetUserId, duration: dur, durationLabel: durationLabel[dur] });
   } catch (err: any) { return c.json({ error: `Grant failed: ${err.message}` }, 500); }
 });
+
+// ─── Promo Codes ────────────────────────────────────────────────
+function generatePromoCode(): string {
+  const ch = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "PRAY-";
+  for (let i = 0; i < 4; i++) code += ch[Math.floor(Math.random() * ch.length)];
+  return code;
+}
+
+// Generate promo codes (admin)
+app.post("/api/admin/promo-codes/generate", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const { count, duration, campaign, expiresInDays } = await c.req.json();
+  const qty = Math.min(Math.max(parseInt(count) || 1, 1), 50);
+  const dur = duration || "monthly";
+  const validDurations = ["daily", "three_day", "weekly", "monthly", "two_month", "three_month", "six_month", "yearly", "lifetime"];
+  if (!validDurations.includes(dur)) return c.json({ error: `Invalid duration. Valid: ${validDurations.join(", ")}` }, 400);
+  const camp = campaign || "influencer";
+  const expiresAt = expiresInDays ? new Date(Date.now() + parseInt(expiresInDays) * 86400000).toISOString() : null;
+  const codes: string[] = [];
+  for (let i = 0; i < qty; i++) {
+    let code = generatePromoCode();
+    let attempts = 0;
+    while (attempts < 10) {
+      try {
+        await pool.query("INSERT INTO promo_codes (code, duration, campaign, expires_at) VALUES ($1, $2, $3, $4)", [code, dur, camp, expiresAt]);
+        codes.push(code);
+        break;
+      } catch {
+        code = generatePromoCode();
+        attempts++;
+      }
+    }
+  }
+  console.log(`[Promo] Generated ${codes.length} codes for campaign "${camp}" (${dur})`);
+  return c.json({ success: true, codes, count: codes.length, duration: dur, campaign: camp, expiresAt });
+});
+
+// List promo codes (admin)
+app.get("/api/admin/promo-codes", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const campaign = c.req.query("campaign");
+  let q = "SELECT pc.*, u.name as redeemed_by_name, u.email as redeemed_by_email FROM promo_codes pc LEFT JOIN users u ON pc.redeemed_by_user_id = u.id";
+  const params: any[] = [];
+  if (campaign) { q += " WHERE pc.campaign=$1"; params.push(campaign); }
+  q += " ORDER BY pc.created_at DESC LIMIT 200";
+  const r = await pool.query(q, params);
+  const summary = { total: r.rows.length, active: r.rows.filter((x: any) => x.status === "active").length, redeemed: r.rows.filter((x: any) => x.status === "redeemed").length, expired: r.rows.filter((x: any) => x.status === "expired").length };
+  return c.json({ codes: r.rows, summary });
+});
+
+// Redeem promo code (authenticated user from the app)
+app.post("/api/promo-codes/redeem", async (c) => {
+  const u = await requireAuth(c);
+  if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
+  const { code } = await c.req.json();
+  if (!code) return c.json({ error: "Please enter a promo code." }, 400);
+  const normalized = code.trim().toUpperCase();
+  const r = await pool.query("SELECT * FROM promo_codes WHERE code=$1", [normalized]);
+  if (!r.rows[0]) return c.json({ error: "Invalid promo code." }, 404);
+  const promo = r.rows[0];
+  if (promo.status === "redeemed") return c.json({ error: "This promo code has already been used." }, 409);
+  if (promo.status === "expired" || (promo.expires_at && new Date(promo.expires_at) < new Date())) {
+    await pool.query("UPDATE promo_codes SET status='expired' WHERE id=$1", [promo.id]);
+    return c.json({ error: "This promo code has expired." }, 410);
+  }
+  // Check if user already has an active promo
+  const existing = await pool.query("SELECT id FROM promo_codes WHERE redeemed_by_user_id=$1 AND status='redeemed'", [u.id]);
+  if (existing.rows.length > 0) return c.json({ error: "You have already redeemed a promo code." }, 409);
+  // Grant RC promotional entitlement
+  if (!REVENUECAT_SECRET_KEY) return c.json({ error: "Subscription service unavailable." }, 500);
+  try {
+    const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(u.id)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: promo.duration }) });
+    if (!rcRes.ok) { const errText = await rcRes.text().catch(() => ""); return c.json({ error: "Could not activate promo. Please try again." }, 500); }
+    await pool.query("UPDATE promo_codes SET status='redeemed', redeemed_by_user_id=$1, redeemed_at=NOW() WHERE id=$2", [u.id, promo.id]);
+    const durationLabel: Record<string, string> = { daily: "1 day", three_day: "3 days", weekly: "7 days", monthly: "30 days", two_month: "60 days", three_month: "90 days", six_month: "6 months", yearly: "1 year", lifetime: "lifetime" };
+    console.log(`[Promo] Code ${normalized} redeemed by ${u.id} (${u.email || "no email"}) — ${durationLabel[promo.duration]} premium`);
+    trackEvent(u.id, "promo_code_redeemed", { code: normalized, campaign: promo.campaign, duration: promo.duration });
+    return c.json({ success: true, duration: promo.duration, durationLabel: durationLabel[promo.duration], message: `You now have ${durationLabel[promo.duration]} of premium access!` });
+  } catch (err: any) { return c.json({ error: "Could not activate promo. Please try again." }, 500); }
+});
+
 app.get("/api/referrals/circle/:code", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ count: 0 }); const memberIds = ci.members.map(m => m.userId); const result = await pool.query("SELECT COUNT(*) as count FROM referrals WHERE referrer_user_id=$1 AND referred_user_id = ANY($2) AND status='confirmed'", [u.id, memberIds]); return c.json({ count: parseInt(result.rows[0]?.count || "0") }); });
 app.post("/api/referrals/invite-batch", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
