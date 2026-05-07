@@ -2697,10 +2697,15 @@ async function start() {
 
   // v5.12.5 — Auto-pull Apple Search Ads data every 6 hours (OAuth2 flow)
   const ASA_ORG_ID = process.env.ASA_ORG_ID || "";
+  const ASA_KEY_ID = process.env.ASA_KEY_ID || "";
+  const ASA_PRIVATE_KEY = (process.env.ASA_PRIVATE_KEY || "").replace(/\\n/g, "\n");
   let asaAccessToken: { token: string; expiresAt: number } | null = null;
 
   async function getAsaAccessToken(): Promise<string | null> {
-    if (!ASC_KEY_ID || !ASC_PRIVATE_KEY) return null;
+    if (!ASA_KEY_ID || !ASA_PRIVATE_KEY) {
+      console.log("[ASA] No ASA_KEY_ID or ASA_PRIVATE_KEY configured");
+      return null;
+    }
     // Return cached token if still valid (with 5 min buffer)
     if (asaAccessToken && Date.now() < asaAccessToken.expiresAt - 300000) return asaAccessToken.token;
     try {
@@ -2708,7 +2713,7 @@ async function start() {
       const teamId = APNS_TEAM_ID || "5QTJL794PU";
       const clientId = `SEARCHADS.${teamId}`;
       const now = Math.floor(Date.now() / 1000);
-      const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: ASC_KEY_ID })).toString("base64url");
+      const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: ASA_KEY_ID })).toString("base64url");
       const payload = Buffer.from(JSON.stringify({
         sub: clientId,
         iss: teamId,
@@ -2718,7 +2723,7 @@ async function start() {
       })).toString("base64url");
       const signer = createSign("SHA256");
       signer.update(`${header}.${payload}`);
-      const signature = signer.sign({ key: ASC_PRIVATE_KEY, dsaEncoding: "ieee-p1363" }, "base64url");
+      const signature = signer.sign({ key: ASA_PRIVATE_KEY, dsaEncoding: "ieee-p1363" }, "base64url");
       const clientSecret = `${header}.${payload}.${signature}`;
 
       // Step 2: Exchange for access token
