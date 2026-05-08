@@ -57,6 +57,8 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 /* Insights */
 .insight{padding:8px 12px;border-radius:6px;margin-bottom:6px;font-size:11px;display:flex;align-items:center;gap:6px}.insight-warn{background:rgba(192,112,64,.08);border:1px solid rgba(192,112,64,.18);color:var(--orange)}.insight-good{background:rgba(122,138,104,.08);border:1px solid rgba(122,138,104,.18);color:var(--green)}.insight-info{background:rgba(107,110,82,.08);border:1px solid rgba(107,110,82,.18);color:var(--indigo)}.insight-crit{background:rgba(168,79,62,.08);border:1px solid rgba(168,79,62,.18);color:var(--red)}
 .insight-icon{font-size:14px;flex-shrink:0}
+/* CSV Drop Zone */
+.csv-drop{border:2px dashed var(--border);border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:all .2s;background:rgba(94,60,36,.02);margin-bottom:10px}.csv-drop:hover,.csv-drop.dragover{border-color:var(--gold);background:rgba(154,104,72,.06)}.csv-drop .csv-icon{font-size:28px;margin-bottom:6px;opacity:.5}.csv-drop .csv-label{font-size:11px;font-weight:600;color:var(--muted)}.csv-drop .csv-sub{font-size:9px;color:var(--muted);margin-top:4px;opacity:.6}.csv-msg{margin-top:8px;padding:8px 12px;border-radius:6px;font-size:11px;font-weight:600}.csv-msg-ok{background:rgba(122,138,104,.12);color:var(--green);border:1px solid rgba(122,138,104,.2)}.csv-msg-err{background:rgba(168,79,62,.1);color:var(--red);border:1px solid rgba(168,79,62,.2)}
 /* Sparkline (CSS only mini bar chart) */
 .spark{display:flex;align-items:flex-end;gap:1px;height:24px}.spark-bar{flex:1;min-width:2px;border-radius:1px;background:var(--gold);opacity:.6;transition:all .15s}.spark-bar:hover{opacity:1}
 /* Traffic light signals */
@@ -230,7 +232,7 @@ function computeMetrics(events){
 }
 
 // ─── Render ──────────────────────────────────────────────────
-function render(){if(!D)return;var el=document.getElementById("main");switch(TAB){case"overview":el.innerHTML=rOv();break;case"funnel":el.innerHTML=rFn();break;case"users":el.innerHTML=rUs();break;case"events":el.innerHTML=rEv();break;case"revenue":el.innerHTML=rRv();break;case"web":el.innerHTML=rWb();break;case"circles":el.innerHTML=rCr();break;case"growth":el.innerHTML=rGr();break;case"organic":el.innerHTML=rOg();break;case"admin":el.innerHTML=rAd();break}}
+function render(){if(!D)return;var el=document.getElementById("main");switch(TAB){case"overview":el.innerHTML=rOv();break;case"funnel":el.innerHTML=rFn();break;case"users":el.innerHTML=rUs();break;case"events":el.innerHTML=rEv();break;case"revenue":el.innerHTML=rRv();break;case"web":el.innerHTML=rWb();break;case"circles":el.innerHTML=rCr();break;case"growth":el.innerHTML=rGr();setTimeout(initAsaCsvDrop,0);break;case"organic":el.innerHTML=rOg();break;case"admin":el.innerHTML=rAd();break}}
 
 // ─── KPI helper with delta ────────────────────────────────────
 function kpi(l,v,c,delta){return'<div class="k"><div class="l">'+l+'</div><div class="v" style="color:'+c+'">'+v+'</div>'+deltaHtml(delta)+'</div>'}
@@ -882,6 +884,17 @@ function rGr(){
   }
   html+='</div></div>';
 
+  // CSV Drop Zone for Apple Search Ads
+  html+='<div class="cd"><h3>Import Apple Search Ads</h3>';
+  html+='<div id="asaCsvDrop" class="csv-drop" onclick="document.getElementById(\'asaCsvFile\').click()">';
+  html+='<div class="csv-icon">&#128196;</div>';
+  html+='<div class="csv-label">Drop Apple Ads CSV here</div>';
+  html+='<div class="csv-sub">or click to browse &middot; exported from searchads.apple.com</div>';
+  html+='</div>';
+  html+='<input type="file" id="asaCsvFile" accept=".csv" style="display:none">';
+  html+='<div id="asaCsvMsg"></div>';
+  html+='</div>';
+
   html+='<div class="g2"><div class="cd"><h3>Unit Economics</h3>';
   html+=row("CPA (Cost per Paying Sub)",u.cpa!==null?"$"+u.cpa.toFixed(2):"—","var(--red)");
   html+=row("LTV (Lifetime Value)",u.ltv!==null?"$"+u.ltv.toFixed(2):"—","var(--green)");
@@ -1249,6 +1262,105 @@ function copyAllPromo(){
   var status = document.getElementById('promo-status');
   status.textContent = 'All codes copied!'; status.style.color = 'var(--green)';
   setTimeout(function(){ status.textContent = ''; }, 2000);
+}
+
+// ─── ASA CSV Upload ──────────────────────────────────────────
+function initAsaCsvDrop(){
+  var drop=document.getElementById('asaCsvDrop');
+  var inp=document.getElementById('asaCsvFile');
+  if(!drop||!inp)return;
+  drop.addEventListener('dragover',function(e){e.preventDefault();e.stopPropagation();drop.classList.add('dragover')});
+  drop.addEventListener('dragleave',function(e){e.preventDefault();e.stopPropagation();drop.classList.remove('dragover')});
+  drop.addEventListener('drop',function(e){e.preventDefault();e.stopPropagation();drop.classList.remove('dragover');if(e.dataTransfer.files.length)handleAsaCsv(e.dataTransfer.files[0])});
+  inp.addEventListener('change',function(){if(inp.files.length){handleAsaCsv(inp.files[0]);inp.value=''}});
+}
+
+function handleAsaCsv(file){
+  var msgEl=document.getElementById('asaCsvMsg');
+  msgEl.innerHTML='<div class="csv-msg csv-msg-ok">Parsing...</div>';
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var text=e.target.result;
+      var lines=text.split(/\r?\n/);
+      // Extract date range from header lines
+      var startDate='',endDate='';
+      for(var i=0;i<Math.min(5,lines.length);i++){
+        var sl=lines[i].replace(/"/g,'').trim();
+        if(sl.indexOf('Start Date:')===0)startDate=sl.replace('Start Date:','').trim();
+        if(sl.indexOf('End Date:')===0)endDate=sl.replace('End Date:','').trim();
+      }
+      // Find the header row (line with "Campaign ID")
+      var headerIdx=-1;
+      for(var i=0;i<Math.min(10,lines.length);i++){
+        if(lines[i].indexOf('Campaign ID')!==-1){headerIdx=i;break}
+      }
+      if(headerIdx===-1){msgEl.innerHTML='<div class="csv-msg csv-msg-err">Could not find CSV header row (expected "Campaign ID" column).</div>';return}
+      // Parse header to find column indices
+      var headers=parseCsvRow(lines[headerIdx]);
+      var colMap={};
+      headers.forEach(function(h,idx){colMap[h.trim()]=idx});
+      var nameIdx=colMap['Campaign Name'];
+      var spendIdx=colMap['Spend'];
+      var impIdx=colMap['Impressions'];
+      var tapIdx=colMap['Taps'];
+      var installIdx=colMap['Installs (Total)'];
+      var dlIdx=colMap['New Downloads (Total)'];
+      if(nameIdx===undefined||spendIdx===undefined){msgEl.innerHTML='<div class="csv-msg csv-msg-err">Missing required columns: Campaign Name, Spend</div>';return}
+      // Determine the date to use (end date from header, or today)
+      var useDate=endDate?parseAsaDate(endDate):new Date().toISOString().slice(0,10);
+      // Parse campaign rows
+      var entries=[];
+      for(var i=headerIdx+1;i<lines.length;i++){
+        var line=lines[i].trim();
+        if(!line)continue;
+        var cols=parseCsvRow(line);
+        if(!cols[nameIdx])continue;
+        var campName=cols[nameIdx].trim();
+        var spend=parseFloat((cols[spendIdx]||'0').replace(/[$,]/g,''))||0;
+        var imps=parseInt((cols[impIdx]||'0').replace(/,/g,''))||0;
+        var taps=parseInt((cols[tapIdx]||'0').replace(/,/g,''))||0;
+        var installs=parseInt((cols[installIdx]||'0').replace(/,/g,''))||0;
+        var downloads=parseInt((cols[dlIdx]||'0').replace(/,/g,''))||0;
+        entries.push({date:useDate,channel:'asa',campaign:campName,spend:spend,impressions:imps,clicks:taps,installs:installs||downloads,trials:0,subscriptions:0});
+      }
+      if(!entries.length){msgEl.innerHTML='<div class="csv-msg csv-msg-err">No campaign rows found in CSV.</div>';return}
+      // POST to ad-metrics endpoint
+      fetch(B+'/api/dashboard/ad-metrics?key='+K,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entries:entries})}).then(function(r){return r.json()}).then(function(resp){
+        if(resp.error){msgEl.innerHTML='<div class="csv-msg csv-msg-err">Error: '+resp.error+'</div>';return}
+        msgEl.innerHTML='<div class="csv-msg csv-msg-ok">Imported '+entries.length+' campaign'+(entries.length>1?'s':'')+' for '+useDate+' ('+resp.stored+' rows stored).</div>';
+        setTimeout(function(){loadAll()},1000);
+      }).catch(function(err){msgEl.innerHTML='<div class="csv-msg csv-msg-err">Network error: '+err.message+'</div>'});
+    }catch(ex){msgEl.innerHTML='<div class="csv-msg csv-msg-err">Parse error: '+ex.message+'</div>'}
+  };
+  reader.readAsText(file);
+}
+
+function parseAsaDate(str){
+  // Parse "May 04, 2026" -> "2026-05-04"
+  var months={Jan:'01',Feb:'02',Mar:'03',Apr:'04',May:'05',Jun:'06',Jul:'07',Aug:'08',Sep:'09',Oct:'10',Nov:'11',Dec:'12'};
+  var parts=str.replace(/,/g,'').split(/\s+/);
+  if(parts.length>=3&&months[parts[0]]){return parts[2]+'-'+months[parts[0]]+'-'+parts[1].padStart(2,'0')}
+  var d=new Date(str);return isNaN(d)?new Date().toISOString().slice(0,10):d.toISOString().slice(0,10);
+}
+
+function parseCsvRow(line){
+  // Handle quoted CSV fields properly
+  var result=[];var current='';var inQuotes=false;
+  for(var i=0;i<line.length;i++){
+    var ch=line[i];
+    if(inQuotes){
+      if(ch==='"'&&i+1<line.length&&line[i+1]==='"'){current+='"';i++}
+      else if(ch==='"'){inQuotes=false}
+      else{current+=ch}
+    }else{
+      if(ch==='"'){inQuotes=true}
+      else if(ch===','){result.push(current);current=''}
+      else{current+=ch}
+    }
+  }
+  result.push(current);
+  return result;
 }
 
 // ─── Init ────────────────────────────────────────────────────
