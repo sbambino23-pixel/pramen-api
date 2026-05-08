@@ -232,7 +232,44 @@ function computeMetrics(events){
 }
 
 // ─── Render ──────────────────────────────────────────────────
-function render(){if(!D)return;var el=document.getElementById("main");switch(TAB){case"overview":el.innerHTML=rOv();break;case"funnel":el.innerHTML=rFn();break;case"users":el.innerHTML=rUs();break;case"events":el.innerHTML=rEv();break;case"revenue":el.innerHTML=rRv();break;case"web":el.innerHTML=rWb();break;case"circles":el.innerHTML=rCr();break;case"growth":el.innerHTML=rGr();setTimeout(initAsaCsvDrop,0);break;case"organic":el.innerHTML=rOg();break;case"admin":el.innerHTML=rAd();break}}
+function renderChurnAlerts(){
+  if(!PH||!PH.recent_events)return'';
+  var cancels=PH.recent_events.filter(function(e){return e.event==='subscription_cancelled'||e.event==='subscription_expired'});
+  if(!cancels.length)return'';
+  // Dedupe by user, keep most recent
+  var byUser={};
+  cancels.forEach(function(e){
+    var uid=e.full_user_id||e.distinct_id;
+    if(!byUser[uid]||e.timestamp>byUser[uid].timestamp)byUser[uid]=e;
+  });
+  var recent=Object.values(byUser).sort(function(a,b){return b.timestamp.localeCompare(a.timestamp)}).slice(0,5);
+  var html='<div style="margin-bottom:12px">';
+  recent.forEach(function(e){
+    var uid=e.full_user_id||e.distinct_id;
+    var short=uid.substring(0,8);
+    var name=e.properties?.$name||short;
+    var plan=e.properties?.plan||e.properties?.product_id||'unknown';
+    var type=e.event==='subscription_cancelled'?'Cancelled':'Expired';
+    var icon=e.event==='subscription_cancelled'?'⚠':'✘';
+    var ago=timeAgo(e.timestamp);
+    var color=e.event==='subscription_cancelled'?'var(--orange)':'var(--red)';
+    html+='<div style="display:flex;align-items:center;gap:8px;padding:6px 12px;margin-bottom:4px;background:rgba(168,79,62,.06);border-left:3px solid '+color+';border-radius:4px;font-size:11px">';
+    html+='<span style="font-size:13px">'+icon+'</span>';
+    html+='<span style="font-weight:700;color:'+color+'">'+type+'</span>';
+    html+='<span style="color:var(--text)">'+name+'</span>';
+    html+='<span style="color:var(--muted)">'+plan.replace('pramen.individual.','')+'</span>';
+    html+='<span style="color:var(--muted);margin-left:auto;font-size:10px">'+ago+'</span>';
+    html+='</div>';
+  });
+  html+='</div>';
+  return html;
+}
+function timeAgo(ts){
+  var d=Math.floor((Date.now()-new Date(ts).getTime())/1000);
+  if(d<60)return d+'s ago';if(d<3600)return Math.floor(d/60)+'m ago';
+  if(d<86400)return Math.floor(d/3600)+'h ago';return Math.floor(d/86400)+'d ago';
+}
+function render(){if(!D)return;var el=document.getElementById("main");var alerts=renderChurnAlerts();switch(TAB){case"overview":el.innerHTML=alerts+rOv();break;case"funnel":el.innerHTML=alerts+rFn();break;case"users":el.innerHTML=alerts+rUs();break;case"events":el.innerHTML=alerts+rEv();break;case"revenue":el.innerHTML=alerts+rRv();break;case"web":el.innerHTML=alerts+rWb();break;case"circles":el.innerHTML=alerts+rCr();break;case"growth":el.innerHTML=alerts+rGr();setTimeout(initAsaCsvDrop,0);break;case"organic":el.innerHTML=alerts+rOg();break;case"admin":el.innerHTML=alerts+rAd();break}}
 
 // ─── KPI helper with delta ────────────────────────────────────
 function kpi(l,v,c,delta){return'<div class="k"><div class="l">'+l+'</div><div class="v" style="color:'+c+'">'+v+'</div>'+deltaHtml(delta)+'</div>'}
