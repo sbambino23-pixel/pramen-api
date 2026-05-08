@@ -280,6 +280,13 @@ function timeAgo(ts){
   if(d<60)return d+'s ago';if(d<3600)return Math.floor(d/60)+'m ago';
   if(d<86400)return Math.floor(d/3600)+'h ago';return Math.floor(d/86400)+'d ago';
 }
+function metaRowCells(r){
+  var cpiStr=r.cpi!==null&&r.cpi!==undefined?'$'+r.cpi.toFixed(2):'—';
+  var ctrStr=r.ctr!==null&&r.ctr!==undefined?r.ctr.toFixed(2)+'%':'—';
+  var ic=r.installs>0?'color:var(--green);font-weight:700':'color:var(--red)';
+  var tc=r.trials>0?'color:var(--gold);font-weight:700':'color:var(--muted)';
+  return'<td>$'+(r.spend||0).toFixed(2)+'</td><td>'+(r.impressions||0).toLocaleString()+'</td><td>'+(r.clicks||0)+'</td><td style="'+ic+'">'+(r.installs||0)+'</td><td style="'+tc+'">'+(r.trials||0)+'</td><td>'+cpiStr+'</td><td>'+ctrStr+'</td>';
+}
 function render(){if(!D)return;var el=document.getElementById("main");var alerts=renderChurnAlerts();switch(TAB){case"overview":el.innerHTML=alerts+rOv();break;case"funnel":el.innerHTML=alerts+rFn();break;case"users":el.innerHTML=alerts+rUs();break;case"events":el.innerHTML=alerts+rEv();break;case"revenue":el.innerHTML=alerts+rRv();break;case"web":el.innerHTML=alerts+rWb();break;case"circles":el.innerHTML=alerts+rCr();break;case"growth":el.innerHTML=alerts+rGr();setTimeout(initAsaCsvDrop,0);break;case"organic":el.innerHTML=alerts+rOg();break;case"admin":el.innerHTML=alerts+rAd();break}}
 
 // ─── KPI helper with delta ────────────────────────────────────
@@ -939,24 +946,34 @@ function rGr(){
   }
   html+='</div></div>';
 
-  // Meta Ad Creative Breakdown
-  var adBreakdown=GR.meta_ad_breakdown||[];
-  if(adBreakdown.length>0){
-    html+='<div class="cd"><h3>Meta Ad Creative Breakdown</h3>';
-    html+='<table class="tbl"><tr><th style="text-align:left">Ad Creative</th><th>Spend</th><th>Impr.</th><th>Clicks</th><th>Installs</th><th>Trials</th><th>CPI</th><th>CTR</th></tr>';
-    adBreakdown.forEach(function(ad){
-      var cpiStr=ad.cpi!==null?'$'+ad.cpi.toFixed(2):'—';
-      var ctrStr=ad.ctr!==null?ad.ctr.toFixed(2)+'%':'—';
-      var installColor=ad.installs>0?'color:var(--green);font-weight:700':'color:var(--red)';
-      var trialColor=ad.trials>0?'color:var(--gold);font-weight:700':'color:var(--muted)';
-      html+='<tr><td style="text-align:left;font-weight:600;font-size:11px">'+ad.ad_name+'</td>';
-      html+='<td>$'+ad.spend.toFixed(2)+'</td>';
-      html+='<td>'+(ad.impressions||0).toLocaleString()+'</td>';
-      html+='<td>'+(ad.clicks||0)+'</td>';
-      html+='<td style="'+installColor+'">'+(ad.installs||0)+'</td>';
-      html+='<td style="'+trialColor+'">'+(ad.trials||0)+'</td>';
-      html+='<td>'+cpiStr+'</td>';
-      html+='<td>'+ctrStr+'</td></tr>';
+  // Meta Ad Hierarchy: Campaign → Ad Set → Ad (expandable)
+  var hierarchy=GR.meta_hierarchy||[];
+  if(hierarchy.length>0){
+    html+='<div class="cd"><h3>Meta Ads Breakdown</h3>';
+    html+='<table class="tbl" style="border-collapse:collapse">';
+    html+='<tr><th style="text-align:left">Name</th><th>Spend</th><th>Impr.</th><th>Clicks</th><th>Installs</th><th>Trials</th><th>CPI</th><th>CTR</th></tr>';
+    hierarchy.forEach(function(camp,ci){
+      var cid='camp_'+ci;
+      // Campaign row
+      html+='<tr style="cursor:pointer;background:var(--card)" onclick="var el=document.querySelectorAll(\'.\'+\''+cid+'\');el.forEach(function(e){e.style.display=e.style.display===\'none\'?\'table-row\':\'none\'})">';
+      html+='<td style="text-align:left;font-weight:700;font-size:11px">▸ '+camp.name+'</td>';
+      html+=metaRowCells(camp);
+      html+='</tr>';
+      // Ad set rows (hidden by default)
+      (camp.adsets||[]).forEach(function(adset,asi){
+        var asid=cid+'_as'+asi;
+        html+='<tr class="'+cid+'" style="display:none;cursor:pointer;background:rgba(94,60,36,.03)" onclick="event.stopPropagation();var el=document.querySelectorAll(\'.\'+\''+asid+'\');el.forEach(function(e){e.style.display=e.style.display===\'none\'?\'table-row\':\'none\'})">';
+        html+='<td style="text-align:left;font-weight:600;font-size:10px;padding-left:20px">▸ '+adset.name+'</td>';
+        html+=metaRowCells(adset);
+        html+='</tr>';
+        // Ad rows (hidden by default)
+        (adset.ads||[]).forEach(function(ad){
+          html+='<tr class="'+cid+' '+asid+'" style="display:none;background:rgba(94,60,36,.06)">';
+          html+='<td style="text-align:left;font-size:10px;padding-left:40px">'+ad.name+'</td>';
+          html+=metaRowCells(ad);
+          html+='</tr>';
+        });
+      });
     });
     html+='</table></div>';
   }
