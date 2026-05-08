@@ -238,6 +238,9 @@ function renderChurnAlerts(){
     .filter(function(e){
       // Filter out renewal events that are actually trial starts (period_type=trial, price=0)
       if(e.event==='subscription_renewed'&&e.properties&&(e.properties.period_type==='trial'||e.properties.price===0||e.properties.$revenue===0))return false;
+      // Filter out $RCAnonymous ghost events — these are duplicate/re-fired webhooks
+      var uid=e.full_user_id||e.distinct_id||'';
+      if(uid.indexOf('$RCAnonymous')>=0)return false;
       return true;
     });
   if(!cancels.length)return'';
