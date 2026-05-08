@@ -234,7 +234,7 @@ function computeMetrics(events){
 // ─── Render ──────────────────────────────────────────────────
 function renderChurnAlerts(){
   if(!PH||!PH.recent_events)return'';
-  var cancels=PH.recent_events.filter(function(e){return e.event==='subscription_cancelled'||e.event==='subscription_expired'});
+  var cancels=PH.recent_events.filter(function(e){return e.event==='subscription_cancelled'});
   if(!cancels.length)return'';
   // Dedupe by user, keep most recent
   var byUser={};
