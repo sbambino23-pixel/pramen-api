@@ -939,6 +939,28 @@ function rGr(){
   }
   html+='</div></div>';
 
+  // Meta Ad Creative Breakdown
+  var adBreakdown=a.meta_ad_breakdown||[];
+  if(adBreakdown.length>0){
+    html+='<div class="cd"><h3>Meta Ad Creative Breakdown</h3>';
+    html+='<table class="tbl"><tr><th style="text-align:left">Ad Creative</th><th>Spend</th><th>Impr.</th><th>Clicks</th><th>Installs</th><th>Trials</th><th>CPI</th><th>CTR</th></tr>';
+    adBreakdown.forEach(function(ad){
+      var cpiStr=ad.cpi!==null?'$'+ad.cpi.toFixed(2):'—';
+      var ctrStr=ad.ctr!==null?ad.ctr.toFixed(2)+'%':'—';
+      var installColor=ad.installs>0?'color:var(--green);font-weight:700':'color:var(--red)';
+      var trialColor=ad.trials>0?'color:var(--gold);font-weight:700':'color:var(--muted)';
+      html+='<tr><td style="text-align:left;font-weight:600;font-size:11px">'+ad.ad_name+'</td>';
+      html+='<td>$'+ad.spend.toFixed(2)+'</td>';
+      html+='<td>'+(ad.impressions||0).toLocaleString()+'</td>';
+      html+='<td>'+(ad.clicks||0)+'</td>';
+      html+='<td style="'+installColor+'">'+(ad.installs||0)+'</td>';
+      html+='<td style="'+trialColor+'">'+(ad.trials||0)+'</td>';
+      html+='<td>'+cpiStr+'</td>';
+      html+='<td>'+ctrStr+'</td></tr>';
+    });
+    html+='</table></div>';
+  }
+
   // CSV Drop Zone for Apple Search Ads
   html+='<div class="cd"><h3>Import Apple Search Ads</h3>';
   html+='<div id="asaCsvDrop" class="csv-drop" onclick="document.getElementById(\'asaCsvFile\').click()">';

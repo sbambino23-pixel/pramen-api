@@ -2401,7 +2401,7 @@ app.get("/api/dashboard/growth", async (c) => {
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
   try {
     // a) Acquisition — last 30 days
-    const adRows = await pool.query(`SELECT channel, SUM(spend) as total_spend, SUM(impressions) as total_impressions, SUM(clicks) as total_clicks, SUM(installs) as total_installs, SUM(trials) as total_trials FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY channel`).catch(() => ({ rows: [] }));
+    const adRows = await pool.query(`SELECT channel, SUM(spend) as total_spend, SUM(impressions) as total_impressions, SUM(clicks) as total_clicks, SUM(installs) as total_installs, SUM(trials) as total_trials FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' AND channel != 'meta_ad' GROUP BY channel`).catch(() => ({ rows: [] }));
     const orgAcq = await pool.query(`SELECT SUM(impressions) as impressions, SUM(product_page_views) as page_views, SUM(app_units) as units FROM daily_app_store_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days'`).catch(() => ({ rows: [{}] }));
     const totalAdSpend = adRows.rows.reduce((s: number, r: any) => s + parseFloat(r.total_spend||0), 0);
     const totalInstalls = adRows.rows.reduce((s: number, r: any) => s + parseInt(r.total_installs||0), 0);
@@ -2463,10 +2463,18 @@ app.get("/api/dashboard/growth", async (c) => {
     const streakDistribution = streakRows.rows.map((r: any) => ({ range: r.range, count: parseInt(r.count||0) }));
 
     // f) Daily ad series for chart (last 30 days, per channel per day)
-    const dailySeriesRows = await pool.query(`SELECT date::text, channel, SUM(spend) as spend, SUM(impressions) as impressions, SUM(clicks) as clicks, SUM(installs) as installs, SUM(trials) as trials FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY date, channel ORDER BY date ASC`).catch(() => ({ rows: [] }));
+    const dailySeriesRows = await pool.query(`SELECT date::text, channel, SUM(spend) as spend, SUM(impressions) as impressions, SUM(clicks) as clicks, SUM(installs) as installs, SUM(trials) as trials FROM daily_ad_metrics WHERE date >= CURRENT_DATE - INTERVAL '30 days' AND channel != 'meta_ad' GROUP BY date, channel ORDER BY date ASC`).catch(() => ({ rows: [] }));
     const dailySeries = dailySeriesRows.rows.map((r: any) => ({ date: r.date, channel: r.channel, spend: parseFloat(r.spend||0), impressions: parseInt(r.impressions||0), clicks: parseInt(r.clicks||0), installs: parseInt(r.installs||0), trials: parseInt(r.trials||0) }));
 
-    // g) Decision signals
+    // g) Meta ad-level breakdown (individual creatives)
+    const adLevelRows = await pool.query(`SELECT campaign as ad_name, SUM(spend) as spend, SUM(impressions) as impressions, SUM(clicks) as clicks, SUM(installs) as installs, SUM(trials) as trials FROM daily_ad_metrics WHERE channel='meta_ad' AND date >= CURRENT_DATE - INTERVAL '30 days' GROUP BY campaign ORDER BY SUM(spend) DESC`).catch(() => ({ rows: [] }));
+    const metaAdBreakdown = adLevelRows.rows.map((r: any) => {
+      const spend = parseFloat(r.spend||0); const impressions = parseInt(r.impressions||0); const clicks = parseInt(r.clicks||0);
+      const installs = parseInt(r.installs||0); const trials = parseInt(r.trials||0);
+      return { ad_name: r.ad_name, spend, impressions, clicks, installs, trials, cpi: installs > 0 ? spend / installs : null, ctr: impressions > 0 ? (clicks / impressions * 100) : null };
+    });
+
+    // h) Decision signals
     const avgD7 = cohortRetention.length > 0 ? cohortRetention.reduce((s: number, r: any) => s + r.d7_pct, 0) / cohortRetention.length : 0;
     const unitEconSignal = cpa === null || ltv === null ? "gray" : cpa < ltv * 0.5 ? "green" : cpa < ltv ? "yellow" : "red";
     const unitEconAction = unitEconSignal === "green" ? "Scale spend. CPA is well below LTV." : unitEconSignal === "yellow" ? "Optimize creative. CPA approaching LTV." : unitEconSignal === "gray" ? "Not enough data yet." : "Pause paid. CPA exceeds LTV.";
@@ -2483,6 +2491,7 @@ app.get("/api/dashboard/growth", async (c) => {
       cohort_retention: cohortRetention,
       streak_distribution: streakDistribution,
       daily_series: dailySeries,
+      meta_ad_breakdown: metaAdBreakdown,
       signals: { unit_economics: { status: unitEconSignal, action: unitEconAction, cpa, ltv }, viral_loop: { status: viralSignal, action: viralAction, k: Math.round(viralK * 100) / 100 }, retention: { status: retentionSignal, action: retentionAction, d7_avg_pct: Math.round(avgD7) } }
     });
   } catch (err: any) { return c.json({ error: "Growth dashboard failed", detail: err.message }, 500); }
@@ -2678,6 +2687,7 @@ async function start() {
       const today = new Date().toISOString().split("T")[0];
       const yesterday = new Date(Date.now() - 24*60*60*1000).toISOString().split("T")[0];
       for (const date of [yesterday, today]) {
+        // Campaign-level pull
         const url = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=campaign_name,spend,impressions,reach,clicks,cpm,cpc,ctr,actions&time_range={"since":"${date}","until":"${date}"}&level=campaign&access_token=${META_CAPI_ACCESS_TOKEN}`;
         const res = await fetch(url);
         if (!res.ok) { console.error("[Meta Ads]", res.status, await res.text().catch(()=>"")); continue; }
@@ -2689,6 +2699,18 @@ async function start() {
             [date, row.campaign_name || "unknown", parseFloat(row.spend||0), parseInt(row.impressions||0), parseInt(row.clicks||0), parseInt(installs), parseInt(trials)]);
         }
         if (data.data?.length) console.log(`[Meta Ads] ${date}: ${data.data.length} campaigns stored`);
+        // Ad-level pull (individual creatives)
+        const adUrl = `https://graph.facebook.com/v19.0/act_${adAccountId}/insights?fields=ad_name,campaign_name,spend,impressions,clicks,actions&time_range={"since":"${date}","until":"${date}"}&level=ad&access_token=${META_CAPI_ACCESS_TOKEN}`;
+        const adRes = await fetch(adUrl);
+        if (!adRes.ok) continue;
+        const adData = (await adRes.json()) as any;
+        for (const row of (adData.data || [])) {
+          const installs = (row.actions || []).find((a: any) => a.action_type === "app_installs" || a.action_type === "mobile_app_install" || a.action_type === "omni_app_install")?.value || 0;
+          const trials = (row.actions || []).find((a: any) => a.action_type === "app_custom_event.fb_mobile_start_trial" || a.action_type === "omni_app_custom_event.fb_mobile_start_trial" || a.action_type === "app_custom_event.StartTrial")?.value || 0;
+          await pool.query(`INSERT INTO daily_ad_metrics (date,channel,campaign,spend,impressions,clicks,installs,trials,updated_at) VALUES ($1,'meta_ad',$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT (date,channel,campaign) DO UPDATE SET spend=$3,impressions=$4,clicks=$5,installs=$6,trials=$7,updated_at=NOW()`,
+            [date, row.ad_name || "unknown", parseFloat(row.spend||0), parseInt(row.impressions||0), parseInt(row.clicks||0), parseInt(installs), parseInt(trials)]);
+        }
+        if (adData.data?.length) console.log(`[Meta Ads] ${date}: ${adData.data.length} ads stored`);
       }
     } catch (err: any) { console.error("[Meta Ads]", err.message); }
   }
