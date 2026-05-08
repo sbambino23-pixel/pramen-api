@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.5", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.12.7", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2699,27 +2699,29 @@ async function start() {
   const ASA_ORG_ID = process.env.ASA_ORG_ID || "";
   const ASA_KEY_ID = process.env.ASA_KEY_ID || "";
   const ASA_PRIVATE_KEY = (process.env.ASA_PRIVATE_KEY || "").replace(/\\n/g, "\n");
+  const ASA_CLIENT_ID = process.env.ASA_CLIENT_ID || ""; // SEARCHADS.<UUID> from ASA API settings
+  const ASA_TEAM_ID = process.env.ASA_TEAM_ID || "";     // SEARCHADS.<UUID> from ASA API settings
   let asaAccessToken: { token: string; expiresAt: number } | null = null;
 
   async function getAsaAccessToken(): Promise<string | null> {
-    if (!ASA_KEY_ID || !ASA_PRIVATE_KEY) {
-      console.log("[ASA] No ASA_KEY_ID or ASA_PRIVATE_KEY configured");
+    if (!ASA_KEY_ID || !ASA_PRIVATE_KEY || !ASA_CLIENT_ID || !ASA_TEAM_ID) {
+      console.log("[ASA] Missing config:", { key: !!ASA_KEY_ID, pk: !!ASA_PRIVATE_KEY, clientId: !!ASA_CLIENT_ID, teamId: !!ASA_TEAM_ID });
       return null;
     }
-    // Return cached token if still valid (with 5 min buffer)
-    if (asaAccessToken && Date.now() < asaAccessToken.expiresAt - 300000) return asaAccessToken.token;
+    // Return cached token if still valid (with 2 min buffer)
+    if (asaAccessToken && Date.now() < asaAccessToken.expiresAt - 120000) return asaAccessToken.token;
     try {
       // Step 1: Generate client secret JWT for Search Ads OAuth2
-      const teamId = APNS_TEAM_ID || "5QTJL794PU";
-      const clientId = `SEARCHADS.${teamId}`;
+      // ASA_CLIENT_ID = "SEARCHADS.<UUID>" (clientId from Apple Search Ads API settings)
+      // ASA_TEAM_ID  = "SEARCHADS.<UUID>" (teamId from Apple Search Ads API settings)
       const now = Math.floor(Date.now() / 1000);
       const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: ASA_KEY_ID })).toString("base64url");
       const payload = Buffer.from(JSON.stringify({
-        sub: clientId,
-        iss: teamId,
+        sub: ASA_CLIENT_ID,
+        iss: ASA_TEAM_ID,
         aud: "https://appleid.apple.com",
         iat: now,
-        exp: now + 86400
+        exp: now + 1200
       })).toString("base64url");
       const signer = createSign("SHA256");
       signer.update(`${header}.${payload}`);
@@ -2730,7 +2732,7 @@ async function start() {
       const tokenRes = await fetch("https://appleid.apple.com/auth/oauth2/token", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: `grant_type=client_credentials&client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}&scope=searchadsorg`
+        body: `grant_type=client_credentials&client_id=${encodeURIComponent(ASA_CLIENT_ID)}&client_secret=${encodeURIComponent(clientSecret)}&scope=searchadsorg`
       });
       if (!tokenRes.ok) {
         const errText = await tokenRes.text().catch(() => "");
@@ -2850,6 +2852,89 @@ async function start() {
   }
   // Run daily at 10am (check every hour)
   setInterval(() => { const h = new Date().getHours(); if (h === 10) nudgeStuckUsers().catch(() => {}); }, 60 * 60 * 1000);
+
+  // v5.12.6 — Sync user segments to Loops.so for email campaigns (every 6 hours)
+  const LOOPS_API_KEY = process.env.LOOPS_API_KEY || "";
+  async function syncToLoops(): Promise<void> {
+    if (!LOOPS_API_KEY || !REVENUECAT_SECRET_KEY) { console.log("[Loops] No LOOPS_API_KEY or REVENUECAT_SECRET_KEY"); return; }
+    try {
+      // Get all users with real emails (no Apple Private Relay)
+      const users = await pool.query(`SELECT id, name, email, created_at, subscription_status FROM users WHERE email IS NOT NULL AND email != '' AND email NOT LIKE '%privaterelay.appleid.com'`);
+      if (users.rows.length === 0) { console.log("[Loops] No users with real emails"); return; }
+      let synced = 0;
+      for (const user of users.rows) {
+        try {
+          // Check RevenueCat for subscription status
+          const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(user.id)}`, {
+            headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }
+          });
+          let category = "active_free";
+          let subscriptionDate: string | null = null;
+          let cancellationDate: string | null = null;
+          let plan = "";
+          if (rcRes.ok) {
+            const rcData = (await rcRes.json()) as any;
+            const sub = rcData.subscriber;
+            const subscriptions = sub?.subscriptions || {};
+            const now = new Date();
+            // Determine category
+            let hasActivePaid = false;
+            let hasActiveTrial = false;
+            let hasCancelledTrial = false;
+            let hasCancelledAfterTrial = false;
+            for (const [pid, s2] of Object.entries(subscriptions) as any[]) {
+              const expires = new Date(s2.expires_date);
+              const isActive = expires > now;
+              const isTrial = s2.period_type === "trial";
+              const isCancelled = !!s2.unsubscribe_detected_at;
+              if (isActive && !isTrial && !isCancelled) hasActivePaid = true;
+              if (isActive && isTrial && !isCancelled) hasActiveTrial = true;
+              if (isTrial && (isCancelled || expires <= now)) hasCancelledTrial = true;
+              if (!isTrial && (isCancelled || expires <= now)) hasCancelledAfterTrial = true;
+              // Extract dates
+              if (s2.purchase_date && !subscriptionDate) subscriptionDate = s2.purchase_date;
+              if (s2.unsubscribe_detected_at && !cancellationDate) cancellationDate = s2.unsubscribe_detected_at;
+              if (pid.includes("yearly")) plan = "yearly";
+              else if (pid.includes("monthly")) plan = plan || "monthly";
+              else if (pid.includes("lifetime")) plan = "lifetime";
+            }
+            if (hasActivePaid) category = "active_subscriber";
+            else if (hasActiveTrial) category = "active_trial";
+            else if (hasCancelledTrial) category = "cancelled_before_trial_end";
+            else if (hasCancelledAfterTrial) category = "cancelled_after_trial";
+          }
+          // Sync to Loops
+          const loopsBody: any = {
+            email: user.email,
+            firstName: (user.name || "").split(" ")[0] || undefined,
+            lastName: (user.name || "").split(" ").slice(1).join(" ") || undefined,
+            source: "pramen",
+            userId: user.id,
+            userGroup: category,
+            mailingLists: {},
+          };
+          // Add custom properties
+          if (subscriptionDate) loopsBody.subscriptionDate = subscriptionDate;
+          if (cancellationDate) loopsBody.cancellationDate = cancellationDate;
+          if (plan) loopsBody.plan = plan;
+          loopsBody.signupDate = user.created_at;
+          const loopsRes = await fetch("https://app.loops.so/api/v1/contacts/update", {
+            method: "PUT",
+            headers: { Authorization: `Bearer ${LOOPS_API_KEY}`, "Content-Type": "application/json" },
+            body: JSON.stringify(loopsBody)
+          });
+          if (loopsRes.ok) synced++;
+          else {
+            const errText = await loopsRes.text().catch(() => "");
+            if (synced === 0) console.error(`[Loops] Contact sync error: ${loopsRes.status} ${errText.substring(0, 200)}`);
+          }
+        } catch {}
+      }
+      console.log(`[Loops] Synced ${synced}/${users.rows.length} contacts with emails`);
+    } catch (err: any) { console.error("[Loops]", err.message); }
+  }
+  setTimeout(() => { syncToLoops().catch(() => {}); }, 5 * 60 * 1000);
+  setInterval(() => { syncToLoops().catch(() => {}); }, 6 * 60 * 60 * 1000);
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API v5.10.9 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
