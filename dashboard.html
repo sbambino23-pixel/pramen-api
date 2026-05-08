@@ -571,14 +571,21 @@ function renderJourneyTable(events){
     var planTaps=0;
     evts.forEach(function(e){if(e.event==='paywall_plan_selected')planTaps++});
 
-    // Subscription
+    // Subscription — check all subscription events (started, renewed, lifetime)
     var subEvt=null;
-    evts.forEach(function(e){if(e.event==='subscription_started'||e.event==='lifetime_purchased')subEvt=e});
+    var renewEvt=null;
+    evts.forEach(function(e){
+      if(e.event==='subscription_started'||e.event==='lifetime_purchased')subEvt=e;
+      if(e.event==='subscription_renewed')renewEvt=e;
+    });
+    // A renewal without a start means trial-to-paid conversion
+    if(!subEvt&&renewEvt)subEvt=renewEvt;
     var subStr='No';
     if(subEvt){
       var plan=(subEvt.properties&&subEvt.properties.plan)||'';
       var price=subEvt.properties&&subEvt.properties.price?parseFloat(subEvt.properties.price):0;
       if(subEvt.event==='lifetime_purchased')subStr='Yes, lifetime';
+      else if(subEvt.event==='subscription_renewed')subStr='Yes, '+(plan||'converted');
       else if(price===0||plan.indexOf('trial')>=0||(subEvt.properties&&subEvt.properties.period_type==='trial'))subStr='Yes, trial';
       else if(plan.indexOf('yearly')>=0||plan.indexOf('annual')>=0)subStr='Yes, yearly';
       else if(plan.indexOf('monthly')>=0)subStr='Yes, monthly';
