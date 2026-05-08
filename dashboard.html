@@ -234,7 +234,7 @@ function computeMetrics(events){
 // ─── Render ──────────────────────────────────────────────────
 function renderChurnAlerts(){
   if(!PH||!PH.recent_events)return'';
-  var cancels=PH.recent_events.filter(function(e){return e.event==='subscription_cancelled'});
+  var cancels=PH.recent_events.filter(function(e){return e.event==='subscription_cancelled'||e.event==='subscription_started'||e.event==='subscription_renewed'||e.event==='lifetime_purchased'});
   if(!cancels.length)return'';
   // Dedupe by user, keep most recent
   var byUser={};
@@ -257,11 +257,14 @@ function renderChurnAlerts(){
     }
     if(!name)name=short;
     var plan=e.properties?.plan||e.properties?.product_id||'unknown';
-    var type=e.event==='subscription_cancelled'?'Cancelled':'Expired';
-    var icon=e.event==='subscription_cancelled'?'⚠':'✘';
+    var typeMap={'subscription_cancelled':['Cancelled','⚠','var(--red)','rgba(168,79,62,.06)'],
+      'subscription_started':['Started Trial','✦','var(--green)','rgba(74,122,62,.06)'],
+      'subscription_renewed':['Converted','★','var(--gold)','rgba(154,104,72,.06)'],
+      'lifetime_purchased':['Lifetime','★','var(--gold)','rgba(154,104,72,.06)']};
+    var info=typeMap[e.event]||['Unknown','·','var(--muted)','rgba(0,0,0,.03)'];
+    var type=info[0],icon=info[1],color=info[2],bgColor=info[3];
     var ago=timeAgo(e.timestamp);
-    var color=e.event==='subscription_cancelled'?'var(--orange)':'var(--red)';
-    html+='<div style="display:flex;align-items:center;gap:8px;padding:6px 12px;margin-bottom:4px;background:rgba(168,79,62,.06);border-left:3px solid '+color+';border-radius:4px;font-size:11px">';
+    html+='<div style="display:flex;align-items:center;gap:8px;padding:6px 12px;margin-bottom:4px;background:'+bgColor+';border-left:3px solid '+color+';border-radius:4px;font-size:11px">';
     html+='<span style="font-size:13px">'+icon+'</span>';
     html+='<span style="font-weight:700;color:'+color+'">'+type+'</span>';
     html+='<span style="color:var(--text)">'+name+'</span>';
