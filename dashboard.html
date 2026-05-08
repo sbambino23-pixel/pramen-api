@@ -247,7 +247,15 @@ function renderChurnAlerts(){
   recent.forEach(function(e){
     var uid=e.full_user_id||e.distinct_id;
     var short=uid.substring(0,8);
-    var name=e.properties?.$name||short;
+    // Look up name from RC subscribers or all_users
+    var name=e.properties?.$name||null;
+    if(!name&&RC){
+      var allUsers=(RC.subscribers||[]).concat(RC.all_users||[]);
+      var match=allUsers.find(function(s){return s.user_id===uid||s.user_id?.startsWith(uid)});
+      if(match&&match.name)name=match.name;
+      else if(match&&match.email)name=match.email.split('@')[0];
+    }
+    if(!name)name=short;
     var plan=e.properties?.plan||e.properties?.product_id||'unknown';
     var type=e.event==='subscription_cancelled'?'Cancelled':'Expired';
     var icon=e.event==='subscription_cancelled'?'⚠':'✘';
