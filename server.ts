@@ -2940,6 +2940,50 @@ async function start() {
   // Run daily at 10am (check every hour)
   setInterval(() => { const h = new Date().getHours(); if (h === 10) nudgeStuckUsers().catch(() => {}); }, 60 * 60 * 1000);
 
+  // v5.12.7 — Win-back push for cancelled trial users (1 day before trial expires)
+  async function nudgeCancelledTrials(): Promise<void> {
+    try {
+      // Find users who: cancelled subscription, trial_end_date is tomorrow, have device token
+      const expiring = await pool.query(`
+        SELECT u.id, u.name, u.device_token, u.trial_end_date FROM users u
+        LEFT JOIN user_data ud ON ud.user_id = u.id
+        WHERE u.device_token IS NOT NULL
+        AND u.subscription_status = 'cancelled'
+        AND u.trial_end_date IS NOT NULL
+        AND u.trial_end_date > NOW()
+        AND u.trial_end_date < NOW() + INTERVAL '2 days'
+      `);
+      if (expiring.rows.length === 0) return;
+      let sent = 0;
+      for (const user of expiring.rows) {
+        const throttleKey = `trial_expiry_nudge_${user.id}`;
+        const existing = await pool.query("SELECT throttle_key FROM push_throttle WHERE throttle_key=$1", [throttleKey]);
+        if (existing.rows.length > 0) continue;
+        // Personalize with prayer count
+        const ud = await pool.query("SELECT total_prayers, streak_count FROM user_data WHERE user_id=$1", [user.id]);
+        const prayers = ud.rows[0]?.total_prayers || 0;
+        const streak = ud.rows[0]?.streak_count || 0;
+        let body = "Your trial ends tomorrow. Resubscribe to keep your prayer journey going.";
+        if (prayers > 0 && streak > 0) {
+          body = `Your trial ends tomorrow. You've prayed ${prayers} times and built a ${streak}-day streak. Don't start from zero.`;
+        } else if (prayers > 0) {
+          body = `Your trial ends tomorrow. You've prayed ${prayers} times already. Keep the momentum going.`;
+        }
+        await pushToUser(user.id, {
+          title: "Your trial ends tomorrow",
+          body,
+          type: "streak_reminders"
+        });
+        await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
+        sent++;
+        trackEvent(user.id, "trial_expiry_nudge_sent", { prayers, streak });
+      }
+      if (sent > 0) console.log(`[Nudge] Sent trial-expiry nudge to ${sent} cancelled trial users`);
+    } catch (err: any) { console.error("[Nudge] Trial expiry:", err.message); }
+  }
+  // Run daily at 9am (check every hour)
+  setInterval(() => { const h = new Date().getHours(); if (h === 9) nudgeCancelledTrials().catch(() => {}); }, 60 * 60 * 1000);
+
   // v5.12.6 — Sync user segments to Loops.so for email campaigns (every 6 hours)
   const LOOPS_API_KEY = process.env.LOOPS_API_KEY || "";
   async function syncToLoops(): Promise<void> {
