@@ -1931,13 +1931,24 @@ app.get("/api/circles/:code/streak", async (c) => {
 async function checkStreakAtRisk(): Promise<void> {
   try {
     const today = new Date().toISOString().split("T")[0];
-    // Find users who have a streak > 0 but haven't prayed today
+    // Find users who have a streak > 0 but haven't prayed today (UTC check)
     const result = await pool.query(
       "SELECT ud.user_id, ud.streak_count, ud.last_prayed_date FROM user_data ud WHERE ud.streak_count > 0 AND (ud.last_prayed_date IS NULL OR ud.last_prayed_date::date < $1::date)",
       [today]
     );
+    let sent = 0;
     for (const row of result.rows) {
-      if (row.streak_count >= 3) { // Only nudge if streak is worth protecting
+      if (row.streak_count >= 3) {
+        // Double-check: did they pray today in their own timezone via circle data?
+        let prayedInLocalTZ = false;
+        for (const [, circle] of circles) {
+          const member = circle.members.find(m => m.userId === row.user_id);
+          if (member && prayedTodayInOwnTZ(member)) {
+            prayedInLocalTZ = true;
+            break;
+          }
+        }
+        if (prayedInLocalTZ) continue; // Skip — they DID pray today in their timezone
         pushToUserLocalized(row.user_id, {
           titleKey: "streak_at_risk_title",
           titleParams: { count: row.streak_count },
@@ -1945,9 +1956,10 @@ async function checkStreakAtRisk(): Promise<void> {
           type: "streak_at_risk"
         });
         trackEvent(row.user_id, "streak_at_risk_push", { streak_count: row.streak_count });
+        sent++;
       }
     }
-    console.log(`[Streak] Checked ${result.rows.length} users at risk`);
+    console.log(`[Streak] Checked ${result.rows.length} at risk, sent ${sent} nudges`);
   } catch (err: any) { console.error("[Streak] At-risk check error:", err.message); }
 }
 
