@@ -536,6 +536,9 @@ function rOv(){
   // ─── Onboarding Step Funnel ──────────────────────────────────
   html+=renderOnboardingFunnel();
 
+  // ─── Cancellation Funnel ───────────────────────────────────
+  html+=renderCancellationFunnel();
+
   // ─── User Journey Summary Table ──────────────────────────────
   html+=renderJourneyTable(p.cur);
 
@@ -545,19 +548,45 @@ function rOv(){
 function renderOnboardingFunnel(){
   var of=PH&&PH.onboarding_funnel;
   if(!of||!of.length)return'';
-  var labels={"welcome":"Welcome","language":"Language","topics":"Topics","reminders":"Reminders","sign_in":"Sign In","circle_created":"Circle Created","invite_story":"Shared Story","invite_code":"Sent Code","invite_later":"Skipped Invite","paywall":"Paywall"};
+  var labels={"welcome":"Welcome","language":"Language","topics":"Topics","reminders":"Reminders","sign_in":"Sign In","circle_created":"Circle Created","invite_story":"Shared Story","invite_code":"Sent Code","invite_later":"Skipped Invite","paywall":"Paywall","converted":"Converted"};
   var maxCount=Math.max.apply(null,of.map(function(s){return s.count}))||1;
   var html='<div class="cd" style="margin-top:16px"><h3>Onboarding Step Funnel</h3>';
   html+='<table class="tbl"><tr><th>Step</th><th>Users</th><th style="width:40%">Funnel</th><th>Who</th></tr>';
   for(var i=0;i<of.length;i++){
     var s=of[i];
     var pct=maxCount>0?Math.round(s.count/maxCount*100):0;
-    var color=s.step==='invite_later'?'var(--red)':s.step==='invite_story'||s.step==='invite_code'?'var(--green)':s.step==='circle_created'?'var(--blue)':'var(--gold)';
+    var color=s.step==='converted'?'var(--green)':s.step==='invite_later'?'var(--red)':s.step==='invite_story'||s.step==='invite_code'?'var(--teal)':s.step==='circle_created'?'var(--blue)':s.step==='paywall'?'var(--orange)':'var(--gold)';
     var names=s.users.map(function(u){return u.name}).join(', ')||'—';
     html+='<tr><td><strong style="color:var(--text)">'+(labels[s.step]||s.step)+'</strong></td>';
     html+='<td class="mono" style="font-size:15px;font-weight:700;color:'+color+'">'+s.count+'</td>';
     html+='<td><div style="background:rgba(94,60,36,.08);border-radius:4px;height:20px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+color+';border-radius:4px;transition:width .3s"></div></div></td>';
     html+='<td style="font-size:11px;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+names+'</td></tr>';
+  }
+  html+='</table></div>';
+  return html;
+}
+
+function renderCancellationFunnel(){
+  var cf=PH&&PH.cancellation_funnel;
+  if(!cf||!cf.length)return'';
+  var html='<div class="cd" style="margin-top:16px"><h3>Cancellation Journey</h3>';
+  html+='<p style="font-size:11px;color:var(--muted);margin-bottom:12px">What each cancelled user did before churning</p>';
+  html+='<table class="tbl"><tr><th>User</th><th>Plan</th><th>Journey</th></tr>';
+  for(var i=0;i<cf.length;i++){
+    var u=cf[i];
+    var steps=u.actions.map(function(a){
+      var col='var(--muted)';
+      if(a==='Cancelled')col='var(--red)';
+      else if(a.indexOf('Prayed')>=0)col='var(--green)';
+      else if(a.indexOf('circle')>=0||a.indexOf('Circle')>=0)col='var(--blue)';
+      else if(a.indexOf('invite')>=0||a.indexOf('Invite')>=0||a.indexOf('Sent')>=0||a.indexOf('Shared')>=0)col='var(--teal)';
+      else if(a.indexOf('trial')>=0||a.indexOf('Started')>=0)col='var(--orange)';
+      else if(a.indexOf('Skipped')>=0)col='var(--red)';
+      return'<span style="display:inline-block;padding:2px 8px;margin:2px;border-radius:10px;font-size:10px;background:rgba(94,60,36,.06);color:'+col+';border:1px solid '+col+'">'+a+'</span>';
+    }).join('<span style="color:var(--muted);font-size:10px"> → </span>');
+    html+='<tr><td><strong style="color:var(--text)">'+u.name+'</strong></td>';
+    html+='<td class="mono" style="color:var(--muted)">'+u.plan+'</td>';
+    html+='<td style="line-height:2">'+steps+'</td></tr>';
   }
   html+='</table></div>';
   return html;

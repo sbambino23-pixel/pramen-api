@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.13.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.13.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2072,8 +2072,8 @@ app.get("/api/dashboard/events", async (c) => {
     const ec: Record<string,number> = {}; for (const e of events) { if (e.event !== "$identify") ec[e.event] = (ec[e.event]||0)+1; }
     const fn = { first_open: new Set<string>(), onboarding: new Set<string>(), paywall: new Set<string>(), plan_tap: new Set<string>(), prayer: new Set<string>(), circle: new Set<string>(), signup: new Set<string>(), scripture: new Set<string>() };
     for (const e of events) { const u = e.full_user_id; if (e.properties.is_first_open === true || e.properties.is_first_open === "True") fn.first_open.add(u); if (e.event === "onboarding_completed") fn.onboarding.add(u); if (e.event === "paywall_viewed") fn.paywall.add(u); if (e.event === "paywall_plan_selected") fn.plan_tap.add(u); if (e.event === "prayer_logged") fn.prayer.add(u); if (e.event === "circle_created") fn.circle.add(u); if (e.event === "user_signed_up") fn.signup.add(u); if (e.event === "scripture_viewed") fn.scripture.add(u); }
-    // v5.12.9 — onboarding step funnel with user names
-    const stepOrder = ["welcome","language","topics","reminders","sign_in","circle_created","invite_story","invite_code","invite_later","paywall"];
+    // v5.13.0 — onboarding step funnel with user names + conversion + cancellation funnel
+    const stepOrder = ["welcome","language","topics","reminders","sign_in","circle_created","invite_story","invite_code","invite_later","paywall","converted"];
     const stepUsers: Record<string, { name: string, id: string }[]> = {};
     for (const s of stepOrder) stepUsers[s] = [];
     for (const e of events) {
@@ -2083,20 +2083,52 @@ app.get("/api/dashboard/events", async (c) => {
           stepUsers[sn].push({ name: idToName[e.full_user_id] || e.full_user_id.substring(0,8), id: e.full_user_id });
         }
       }
-      // Count paywall_viewed as "paywall" step
       if (e.event === "paywall_viewed" && e.properties.trigger === "first") {
         if (!stepUsers["paywall"].find((u: any) => u.id === e.full_user_id)) {
           stepUsers["paywall"].push({ name: idToName[e.full_user_id] || e.full_user_id.substring(0,8), id: e.full_user_id });
         }
       }
+      if (e.event === "subscription_started") {
+        if (!stepUsers["converted"].find((u: any) => u.id === e.full_user_id)) {
+          stepUsers["converted"].push({ name: idToName[e.full_user_id] || e.full_user_id.substring(0,8), id: e.full_user_id });
+        }
+      }
     }
     const onboardingFunnel = stepOrder.map(s => ({ step: s, count: stepUsers[s].length, users: stepUsers[s] }));
+
+    // Cancellation funnel — for each cancelled user, trace what they did
+    const cancelledUsers: { name: string, id: string, plan: string, actions: string[] }[] = [];
+    for (const e of events) {
+      if (e.event === "subscription_cancelled" || e.event === "subscription_expired") {
+        const uid = e.full_user_id;
+        if (cancelledUsers.find(u => u.id === uid)) continue;
+        const userEvents = events.filter((ev: any) => ev.full_user_id === uid && ev.event !== "$identify").sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+        const actions: string[] = [];
+        const actionSet = new Set<string>();
+        for (const ue of userEvents) {
+          let label = "";
+          if (ue.event === "app_opened" && !actionSet.has("opened")) { label = "Opened app"; actionSet.add("opened"); }
+          else if (ue.event === "onboarding_completed" && !actionSet.has("onboarded")) { label = "Completed onboarding"; actionSet.add("onboarded"); }
+          else if (ue.event === "subscription_started" && !actionSet.has("subscribed")) { label = "Started trial" + (ue.properties.plan ? " (" + ue.properties.plan + ")" : ""); actionSet.add("subscribed"); }
+          else if (ue.event === "circle_created" && !actionSet.has("circle")) { label = "Created circle" + (ue.properties.circle_name ? " \"" + ue.properties.circle_name + "\"" : ""); actionSet.add("circle"); }
+          else if (ue.event === "prayer_logged" && !actionSet.has("prayed")) { label = "Prayed"; actionSet.add("prayed"); }
+          else if ((ue.event === "circle_invite_social_tapped" || ue.event === "circle_invite_code_tapped") && !actionSet.has("invited")) { label = "Invited to circle"; actionSet.add("invited"); }
+          else if (ue.event === "onboarding_step_completed" && ue.properties.step_name === "invite_code" && !actionSet.has("invited")) { label = "Sent invite code"; actionSet.add("invited"); }
+          else if (ue.event === "onboarding_step_completed" && ue.properties.step_name === "invite_story" && !actionSet.has("invited")) { label = "Shared story"; actionSet.add("invited"); }
+          else if (ue.event === "onboarding_step_completed" && ue.properties.step_name === "invite_later" && !actionSet.has("skip_invite")) { label = "Skipped invite"; actionSet.add("skip_invite"); }
+          else if ((ue.event === "subscription_cancelled" || ue.event === "subscription_expired") && !actionSet.has("cancelled")) { label = "Cancelled"; actionSet.add("cancelled"); }
+          if (label) actions.push(label);
+        }
+        cancelledUsers.push({ name: idToName[uid] || uid.substring(0,8), id: uid, plan: e.properties.plan || "?", actions });
+      }
+    }
+    const cancellationFunnel = cancelledUsers;
 
     const topics: Record<string,number> = {}; for (const e of events) { if (e.event === "prayer_logged" && e.properties.type) topics[e.properties.type] = (topics[e.properties.type]||0)+1; }
     const plans: Record<string,number> = {}; for (const e of events) { if (e.event === "paywall_plan_selected" && e.properties.plan) plans[e.properties.plan] = (plans[e.properties.plan]||0)+1; }
     const dMap: Record<string, Set<string>> = {}; for (const e of events) { const d = e.timestamp.split("T")[0]; if (!dMap[d]) dMap[d] = new Set(); dMap[d].add(e.full_user_id); }
     const dau = Object.entries(dMap).map(([d, s]) => ({ date: d, dau: s.size })).sort((a, b) => b.date.localeCompare(a.date));
-    return c.json({ generated_at: new Date().toISOString(), total_events: events.length, total_users: users.length, event_counts: Object.entries(ec).sort((a, b) => b[1] - a[1]), funnel: { first_open: fn.first_open.size, onboarding: fn.onboarding.size, paywall: fn.paywall.size, plan_tap: fn.plan_tap.size, prayer: fn.prayer.size, circle: fn.circle.size, signup: fn.signup.size, scripture: fn.scripture.size }, onboarding_funnel: onboardingFunnel, prayer_topics: Object.entries(topics).sort((a, b) => b[1] - a[1]), plan_taps: Object.entries(plans).sort((a, b) => b[1] - a[1]), daily_dau: dau, users: users.map((u: any) => ({ id: u.id, full_id: u.full_id, name: u.name || "", event_count: u.events.length, event_types: u.counts, first_seen: u.first_seen, last_seen: u.last_seen, city: u.city, country: u.country, max_streak: u.max_streak, plan_taps: u.plan_taps })), recent_events: events.filter((e: any) => e.event !== "$identify").slice(0, 500) });
+    return c.json({ generated_at: new Date().toISOString(), total_events: events.length, total_users: users.length, event_counts: Object.entries(ec).sort((a, b) => b[1] - a[1]), funnel: { first_open: fn.first_open.size, onboarding: fn.onboarding.size, paywall: fn.paywall.size, plan_tap: fn.plan_tap.size, prayer: fn.prayer.size, circle: fn.circle.size, signup: fn.signup.size, scripture: fn.scripture.size }, onboarding_funnel: onboardingFunnel, cancellation_funnel: cancellationFunnel, prayer_topics: Object.entries(topics).sort((a, b) => b[1] - a[1]), plan_taps: Object.entries(plans).sort((a, b) => b[1] - a[1]), daily_dau: dau, users: users.map((u: any) => ({ id: u.id, full_id: u.full_id, name: u.name || "", event_count: u.events.length, event_types: u.counts, first_seen: u.first_seen, last_seen: u.last_seen, city: u.city, country: u.country, max_streak: u.max_streak, plan_taps: u.plan_taps })), recent_events: events.filter((e: any) => e.event !== "$identify").slice(0, 500) });
   } catch (e: any) { console.error("[PostHog]", e); return c.json({ error: "PostHog failed", detail: e.message }, 500); }
 });
 
