@@ -533,9 +533,33 @@ function rOv(){
   html+='<h3 style="margin-top:14px">Circles</h3>'+row("Active",D.circles.total,"var(--blue)")+row("Members",D.circles.total_members,"var(--indigo)")+row("Encouragements",D.circles.total_encouragements||0,"var(--teal)");
   html+='</div></div>';
 
+  // ─── Onboarding Step Funnel ──────────────────────────────────
+  html+=renderOnboardingFunnel();
+
   // ─── User Journey Summary Table ──────────────────────────────
   html+=renderJourneyTable(p.cur);
 
+  return html;
+}
+
+function renderOnboardingFunnel(){
+  var of=PH&&PH.onboarding_funnel;
+  if(!of||!of.length)return'';
+  var labels={"welcome":"Welcome","language":"Language","topics":"Topics","reminders":"Reminders","sign_in":"Sign In","circle_created":"Circle Created","invite_story":"Shared Story","invite_code":"Sent Code","invite_later":"Skipped Invite","paywall":"Paywall"};
+  var maxCount=Math.max.apply(null,of.map(function(s){return s.count}))||1;
+  var html='<div class="cd" style="margin-top:16px"><h3>Onboarding Step Funnel</h3>';
+  html+='<table class="tbl"><tr><th>Step</th><th>Users</th><th style="width:40%">Funnel</th><th>Who</th></tr>';
+  for(var i=0;i<of.length;i++){
+    var s=of[i];
+    var pct=maxCount>0?Math.round(s.count/maxCount*100):0;
+    var color=s.step==='invite_later'?'var(--red)':s.step==='invite_story'||s.step==='invite_code'?'var(--green)':s.step==='circle_created'?'var(--blue)':'var(--gold)';
+    var names=s.users.map(function(u){return u.name}).join(', ')||'—';
+    html+='<tr><td><strong style="color:var(--text)">'+(labels[s.step]||s.step)+'</strong></td>';
+    html+='<td class="mono" style="font-size:15px;font-weight:700;color:'+color+'">'+s.count+'</td>';
+    html+='<td><div style="background:rgba(94,60,36,.08);border-radius:4px;height:20px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:'+color+';border-radius:4px;transition:width .3s"></div></div></td>';
+    html+='<td style="font-size:11px;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+names+'</td></tr>';
+  }
+  html+='</table></div>';
   return html;
 }
 
