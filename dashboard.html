@@ -643,7 +643,12 @@ function renderJourneyTable(events){
   // Build rows
   var rows=[];
   users.forEach(function(u){
-    var evts=u.events.sort(function(a,b){return new Date(a.timestamp)-new Date(b.timestamp)});
+    // Filter out server-side events that aren't real user actions
+    var serverEvents=['inactive_trial_nudge_sent','paywall_nudge_sent','streak_at_risk_push','last_one_standing_nudge','circle_all_prayed'];
+    var evts=u.events.filter(function(e){return serverEvents.indexOf(e.event)<0}).sort(function(a,b){return new Date(a.timestamp)-new Date(b.timestamp)});
+
+    // Skip users whose only events were server-side nudges
+    if(evts.length===0)return;
 
     // First app_opened
     var firstOpen=null;
