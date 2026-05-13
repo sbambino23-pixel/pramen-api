@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.13.3", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.13.4", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -3106,8 +3106,8 @@ async function start() {
   async function syncToLoops(): Promise<void> {
     if (!LOOPS_API_KEY || !REVENUECAT_SECRET_KEY) { console.log("[Loops] No LOOPS_API_KEY or REVENUECAT_SECRET_KEY"); return; }
     try {
-      // Get all users with real emails (no Apple Private Relay)
-      const users = await pool.query(`SELECT id, name, email, created_at, subscription_status FROM users WHERE email IS NOT NULL AND email != '' AND email NOT LIKE '%privaterelay.appleid.com'`);
+      // Get all users with real emails (no Apple Private Relay) + user_data for engagement props
+      const users = await pool.query(`SELECT u.id, u.name, u.email, u.created_at, u.subscription_status, ud.total_prayers, ud.streak_count, ud.last_prayed_date, ud.circle_codes FROM users u LEFT JOIN user_data ud ON ud.user_id = u.id WHERE u.email IS NOT NULL AND u.email != '' AND u.email NOT LIKE '%privaterelay.appleid.com'`);
       if (users.rows.length === 0) { console.log("[Loops] No users with real emails"); return; }
       let synced = 0;
       for (const user of users.rows) {
@@ -3166,6 +3166,13 @@ async function start() {
           if (cancellationDate) loopsBody.cancellationDate = cancellationDate;
           if (plan) loopsBody.plan = plan;
           loopsBody.signupDate = user.created_at;
+          // v5.13.3 — engagement properties for conditional email logic
+          loopsBody.totalPrayers = user.total_prayers || 0;
+          loopsBody.streakCount = user.streak_count || 0;
+          loopsBody.lastPrayedDate = user.last_prayed_date || null;
+          const circleCodesArr = user.circle_codes || [];
+          const inCircleMap = Array.from(circles.values()).some(c => c.members.some(m => m.userId === user.id));
+          loopsBody.hasCircle = circleCodesArr.length > 0 || inCircleMap;
           const loopsRes = await fetch("https://app.loops.so/api/v1/contacts/update", {
             method: "PUT",
             headers: { Authorization: `Bearer ${LOOPS_API_KEY}`, "Content-Type": "application/json" },
