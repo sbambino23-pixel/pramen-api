@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.13.7", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -810,10 +810,10 @@ app.post("/api/auth/apple", async (c) => {
       }
     } else {
       isNewUser = true; const authToken = generateAuthToken(); const userId = randomUUID(); const userName = fullName || "";
-      const ts = new Date(); const te = new Date(ts.getTime() + 7*24*60*60*1000);
-      await pool.query(`INSERT INTO users (id,apple_user_id,email,name,auth_token,device_user_id,trial_start_date,trial_end_date,subscription_status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'trial')`, [userId, appleUserId, email||null, userName, authToken, deviceUserId||null, ts, te]);
+      // v5.13.7 — new users start as 'none'. Real trial status comes from RevenueCat webhooks only.
+      await pool.query(`INSERT INTO users (id,apple_user_id,email,name,auth_token,device_user_id,subscription_status) VALUES ($1,$2,$3,$4,$5,$6,'none')`, [userId, appleUserId, email||null, userName, authToken, deviceUserId||null]);
       await pool.query(`INSERT INTO user_data (user_id) VALUES ($1)`, [userId]);
-      user = { id: userId, apple_user_id: appleUserId, email, name: userName, auth_token: authToken, device_user_id: deviceUserId, trial_start_date: ts, trial_end_date: te, subscription_status: "trial" };
+      user = { id: userId, apple_user_id: appleUserId, email, name: userName, auth_token: authToken, device_user_id: deviceUserId, trial_start_date: null, trial_end_date: null, subscription_status: "none" };
       trackEvent(userId, "user_signed_up", { auth_provider: "apple", has_email: !!email, has_device_migration: !!deviceUserId });
     }
     if (deviceUserId && isNewUser) await migrateCircleMembership(deviceUserId, user.id, user.name || "");
@@ -838,10 +838,10 @@ app.post("/api/auth/google", async (c) => {
       }
     } else {
       isNewUser = true; const authToken = generateAuthToken(); const userId = randomUUID(); const userName = fullName || email.split("@")[0];
-      const ts = new Date(); const te = new Date(ts.getTime() + 7*24*60*60*1000);
-      await pool.query(`INSERT INTO users (id,google_user_id,email,name,auth_provider,auth_token,device_user_id,trial_start_date,trial_end_date,subscription_status) VALUES ($1,$2,$3,$4,'google',$5,$6,$7,$8,'trial')`, [userId, googleUserId, email, userName, authToken, deviceUserId||null, ts, te]);
+      // v5.13.7 — new users start as 'none'. Real trial status comes from RevenueCat webhooks only.
+      await pool.query(`INSERT INTO users (id,google_user_id,email,name,auth_provider,auth_token,device_user_id,subscription_status) VALUES ($1,$2,$3,$4,'google',$5,$6,'none')`, [userId, googleUserId, email, userName, authToken, deviceUserId||null]);
       await pool.query(`INSERT INTO user_data (user_id) VALUES ($1)`, [userId]);
-      user = { id: userId, google_user_id: googleUserId, email, name: userName, auth_token: authToken, device_user_id: deviceUserId, trial_start_date: ts, trial_end_date: te, subscription_status: "trial" };
+      user = { id: userId, google_user_id: googleUserId, email, name: userName, auth_token: authToken, device_user_id: deviceUserId, trial_start_date: null, trial_end_date: null, subscription_status: "none" };
       trackEvent(userId, "user_signed_up", { auth_provider: "google", has_email: true, has_device_migration: !!deviceUserId });
     }
     if (deviceUserId && isNewUser) await migrateCircleMembership(deviceUserId, user.id, user.name || "");
@@ -2801,6 +2801,35 @@ app.get("/dashboard", (c) => {
 const PORT = parseInt(process.env.PORT || "3000", 10);
 async function start() {
   await initDb(); await loadAllFromDb();
+
+  // v5.14.0 — one-time migration: fix fake trial statuses
+  // Users who were auto-assigned 'trial' on signup but never actually subscribed via RevenueCat
+  if (REVENUECAT_SECRET_KEY) {
+    (async () => {
+      try {
+        const fakeTrials = await pool.query("SELECT id FROM users WHERE subscription_status='trial'");
+        let fixed = 0;
+        for (const row of fakeTrials.rows) {
+          try {
+            const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(row.id)}`, {
+              headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}` }
+            });
+            if (rcRes.ok) {
+              const rcData = (await rcRes.json()) as any;
+              const subs = rcData.subscriber?.subscriptions || {};
+              const hasActive = Object.values(subs).some((s: any) => new Date(s.expires_date) > new Date());
+              if (!hasActive) {
+                await pool.query("UPDATE users SET subscription_status='none', trial_start_date=NULL, trial_end_date=NULL, updated_at=NOW() WHERE id=$1", [row.id]);
+                fixed++;
+              }
+            }
+          } catch {}
+        }
+        if (fixed > 0) console.log(`[Migration] Fixed ${fixed} fake trial statuses → 'none'`);
+      } catch (err: any) { console.error("[Migration]", err.message); }
+    })();
+  }
+
   backfillPlausible().catch(() => {});
   pullPlausibleMetrics().catch(() => {});
   pullAppleSalesReport().catch(() => {});
@@ -3029,7 +3058,7 @@ async function start() {
         SELECT u.id, u.name, u.device_token FROM users u
         LEFT JOIN user_data ud ON ud.user_id = u.id
         WHERE u.device_token IS NOT NULL
-        AND u.subscription_status = 'trial'
+        AND u.subscription_status IN ('trial', 'none')
         AND u.created_at < NOW() - INTERVAL '12 hours'
         AND u.created_at > NOW() - INTERVAL '3 days'
         AND (ud.total_prayers IS NULL OR ud.total_prayers = 0)
