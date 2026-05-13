@@ -708,19 +708,21 @@ function renderJourneyTable(events){
       else subStr='Yes'+(plan?', '+plan:'');
     }
 
-    // Status
+    // Status — clear labels for every state
     var status='',statusCls='';
+    var hasSignup=evts.some(function(e){return e.event==='user_signed_up'});
+    var hasCircle=evts.some(function(e){return e.event==='circle_created'});
+    var hasPrayer=evts.some(function(e){return e.event==='prayer_logged'});
+    var nonOpenEvents=evts.filter(function(e){return e.event!=='app_opened'&&e.event!=='$identify'});
+
     if(subEvt){status='Converted';statusCls='color:var(--green);font-weight:700'}
     else if(pwCount>=5&&!subEvt){status='Stuck on paywall';statusCls='color:var(--orange);font-weight:700'}
+    else if(pwCount>0&&planTaps>0&&!subEvt){status='Stuck on paywall';statusCls='color:var(--orange);font-weight:700'}
     else if(pwCount>0&&planTaps===0&&!subEvt){status='Bounced at paywall';statusCls='color:var(--red);font-weight:700'}
-    else if((obSteps>0&&!obCompleted)&&pwCount===0){status='Dropped in onboarding';statusCls='color:var(--muted)'}
-    else if(pwCount>0&&!subEvt){status='Active free';statusCls='color:var(--blue)'}
-    else{
-      // Check if user did anything beyond app_opened
-      var nonOpenEvents=evts.filter(function(e){return e.event!=='app_opened'&&e.event!=='$identify'});
-      if(nonOpenEvents.length===0){status='Opened only';statusCls='color:var(--muted);opacity:.6'}
-      else{status='Active free';statusCls='color:var(--blue)'}
-    }
+    else if(obSteps>0&&!obCompleted&&pwCount===0){status='Dropped in onboarding';statusCls='color:var(--muted)'}
+    else if(hasSignup&&!obCompleted&&pwCount===0){status='Signed up only';statusCls='color:var(--muted)'}
+    else if(nonOpenEvents.length===0){status='Opened only';statusCls='color:var(--muted);opacity:.6'}
+    else{status='Browsing';statusCls='color:var(--muted);opacity:.8'}
 
     // Display name
     var displayName=u.name||(u.uid.length>10?u.uid.substring(0,10)+'...':u.uid);
