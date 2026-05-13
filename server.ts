@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -3149,7 +3149,7 @@ async function start() {
           const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(user.id)}`, {
             headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }
           });
-          let category = "active_free";
+          let category = "signed_up_no_trial";
           let subscriptionDate: string | null = null;
           let cancellationDate: string | null = null;
           let plan = "";
@@ -3163,7 +3163,9 @@ async function start() {
             let hasActiveTrial = false;
             let hasCancelledTrial = false;
             let hasCancelledAfterTrial = false;
+            let hasAnySubscription = false;
             for (const [pid, s2] of Object.entries(subscriptions) as any[]) {
+              hasAnySubscription = true;
               const expires = new Date(s2.expires_date);
               const isActive = expires > now;
               const isTrial = s2.period_type === "trial";
@@ -3183,6 +3185,9 @@ async function start() {
             else if (hasActiveTrial) category = "active_trial";
             else if (hasCancelledTrial) category = "cancelled_before_trial_end";
             else if (hasCancelledAfterTrial) category = "cancelled_after_trial";
+            // v5.14.0 — distinguish: had a subscription before (active_free/bypasser) vs never subscribed
+            else if (hasAnySubscription) category = "active_free";
+            else category = "signed_up_no_trial";
           }
           // Sync to Loops
           const loopsBody: any = {
