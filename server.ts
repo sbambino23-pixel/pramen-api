@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.1", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.2", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2257,7 +2257,12 @@ app.get("/api/dashboard/revenuecat", async (c) => {
     const summaryMrr = ovMetrics?.mrr ? ovMetrics.mrr / 100 : Math.max(adjustedMrr, 0);
     const summaryNetMrr = ovMetrics?.mrr ? Math.round(ovMetrics.mrr / 100 * (1 - APPLE_CUT) * 100) / 100 : Math.round(Math.max(adjustedMrr, 0) * (1 - APPLE_CUT) * 100) / 100;
 
-    return c.json({ generated_at: new Date().toISOString(), rc_overview: rcOverview ? "v2" : "v1_computed", summary: { active_subscriptions: summaryActive, active_trials: summaryTrials, total_revenue_estimated: totalRevenue, mrr_estimated: summaryMrr, net_mrr: summaryNetMrr, total_users_checked: allCandidates.length, subscribers_found: subscribers.filter(s => s.has_active || s.has_trial).length }, subscribers: subscribers.filter(s => s.subscriptions.length > 0 || s.has_active || s.has_trial), all_users: subscribers });
+    // v5.14.1 — net counts: only users who haven't cancelled and are still active
+    // These are the "real" numbers — excluding users who cancelled but haven't expired yet
+    const netActiveTrials = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && !sub.unsubscribe_detected_at)).length;
+    const netActiveSubscribers = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type !== "trial" && !sub.unsubscribe_detected_at)).length;
+
+    return c.json({ generated_at: new Date().toISOString(), rc_overview: rcOverview ? "v2" : "v1_computed", summary: { active_subscriptions: summaryActive, active_trials: summaryTrials, net_active_trials: netActiveTrials, net_active_subscribers: netActiveSubscribers, total_revenue_estimated: totalRevenue, mrr_estimated: summaryMrr, net_mrr: summaryNetMrr, total_users_checked: allCandidates.length, subscribers_found: subscribers.filter(s => s.has_active || s.has_trial).length }, subscribers: subscribers.filter(s => s.subscriptions.length > 0 || s.has_active || s.has_trial), all_users: subscribers });
   } catch (err: any) { return c.json({ error: "RevenueCat query failed", detail: err.message }, 500); }
 });
 
