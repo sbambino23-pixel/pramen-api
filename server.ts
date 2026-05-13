@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.13.6", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.13.7", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -948,6 +948,8 @@ app.get("/api/user/avatar", async (c) => {
 
 // ─── Social Proof (for paywall) ──────────────────────────────────
 app.get("/api/stats/social-proof", async (c) => {
+  // v5.13.6 — public endpoint for landing page social proof (no auth required, CORS enabled)
+  c.header("Access-Control-Allow-Origin", "*");
   try {
     const totalPrayers = await pool.query("SELECT COALESCE(SUM(total_prayers),0) as total FROM user_data").catch(() => ({ rows: [{ total: 0 }] }));
     const totalUsers = await pool.query("SELECT COUNT(*) as count FROM users").catch(() => ({ rows: [{ count: 0 }] }));
@@ -957,9 +959,11 @@ app.get("/api/stats/social-proof", async (c) => {
       totalPrayers: parseInt(totalPrayers.rows[0]?.total || 0),
       totalUsers: parseInt(totalUsers.rows[0]?.count || 0),
       activeThisWeek: parseInt(activeLast7d.rows[0]?.count || 0),
-      prayersThisWeek: parseInt(prayersThisWeek.rows[0]?.total || 0)
+      prayersThisWeek: parseInt(prayersThisWeek.rows[0]?.total || 0),
+      activeCircles: circles.size,
+      languages: 4
     });
-  } catch { return c.json({ totalPrayers: 0, totalUsers: 0, activeThisWeek: 0, prayersThisWeek: 0 }); }
+  } catch { return c.json({ totalPrayers: 0, totalUsers: 0, activeThisWeek: 0, prayersThisWeek: 0, activeCircles: 0, languages: 4 }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
