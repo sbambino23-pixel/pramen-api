@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.3", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.4", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2089,7 +2089,7 @@ app.get("/api/dashboard/events", async (c) => {
     const fn = { first_open: new Set<string>(), onboarding: new Set<string>(), paywall: new Set<string>(), plan_tap: new Set<string>(), prayer: new Set<string>(), circle: new Set<string>(), signup: new Set<string>(), scripture: new Set<string>() };
     for (const e of events) { const u = e.full_user_id; if (e.properties.is_first_open === true || e.properties.is_first_open === "True") fn.first_open.add(u); if (e.event === "onboarding_completed") fn.onboarding.add(u); if (e.event === "paywall_viewed") fn.paywall.add(u); if (e.event === "paywall_plan_selected") fn.plan_tap.add(u); if (e.event === "prayer_logged") fn.prayer.add(u); if (e.event === "circle_created") fn.circle.add(u); if (e.event === "user_signed_up") fn.signup.add(u); if (e.event === "scripture_viewed") fn.scripture.add(u); }
     // v5.13.0 — onboarding step funnel with user names + conversion + cancellation funnel
-    const stepOrder = ["welcome","language","topics","reminders","sign_in","circle_created","invite_story","invite_code","invite_later","paywall","converted"];
+    const stepOrder = ["welcome","language","topics","reminders","sign_in","circle_created","invite_story","saved_story","invite_code","invite_later","paywall","converted"];
     const stepUsers: Record<string, { name: string, id: string }[]> = {};
     for (const s of stepOrder) stepUsers[s] = [];
     for (const e of events) {
@@ -2102,6 +2102,11 @@ app.get("/api/dashboard/events", async (c) => {
       if (e.event === "paywall_viewed" && e.properties.trigger === "first") {
         if (!stepUsers["paywall"].find((u: any) => u.id === e.full_user_id)) {
           stepUsers["paywall"].push({ name: idToName[e.full_user_id] || e.full_user_id.substring(0,8), id: e.full_user_id });
+        }
+      }
+      if (e.event === "circle_story_saved") {
+        if (!stepUsers["saved_story"].find((u: any) => u.id === e.full_user_id)) {
+          stepUsers["saved_story"].push({ name: idToName[e.full_user_id] || e.full_user_id.substring(0,8), id: e.full_user_id });
         }
       }
       if (e.event === "subscription_started") {
