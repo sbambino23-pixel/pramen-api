@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.13.2", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.13.3", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -3016,6 +3016,46 @@ async function start() {
   }
   // Run daily at 10am (check every hour)
   setInterval(() => { const h = new Date().getHours(); if (h === 10) nudgeStuckUsers().catch(() => {}); }, 60 * 60 * 1000);
+
+  // v5.13.2 — Nudge trial users who haven't prayed after 24h
+  async function nudgeInactiveTrials(): Promise<void> {
+    try {
+      // Find trial users created 12-48h ago who have device token but zero prayers
+      const inactive = await pool.query(`
+        SELECT u.id, u.name, u.device_token FROM users u
+        LEFT JOIN user_data ud ON ud.user_id = u.id
+        WHERE u.device_token IS NOT NULL
+        AND u.subscription_status = 'trial'
+        AND u.created_at < NOW() - INTERVAL '12 hours'
+        AND u.created_at > NOW() - INTERVAL '3 days'
+        AND (ud.total_prayers IS NULL OR ud.total_prayers = 0)
+      `);
+      if (inactive.rows.length === 0) return;
+      let sent = 0;
+      for (const user of inactive.rows) {
+        const throttleKey = `inactive_trial_nudge_${user.id}`;
+        const existing = await pool.query("SELECT throttle_key FROM push_throttle WHERE throttle_key=$1", [throttleKey]);
+        if (existing.rows.length > 0) continue;
+        // Check if user has a circle
+        const ud = await pool.query("SELECT circle_codes FROM user_data WHERE user_id=$1", [user.id]);
+        const hasCodes = ud.rows[0]?.circle_codes?.length > 0;
+        const hasCircle = hasCodes || Array.from(circles.values()).some(c => c.members.some(m => m.userId === user.id));
+        const title = hasCircle ? "Your Prayer Circle is waiting" : "Your first prayer is waiting";
+        const body = hasCircle
+          ? "You created a circle but have not prayed yet. It only takes 30 seconds. Your friends are counting on you."
+          : "Open prAmen and pray your first guided prayer. It only takes 30 seconds. Your 7-day trial is ticking.";
+        await pushToUser(user.id, { title, body, type: "streak_reminders" });
+        await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
+        sent++;
+        trackEvent(user.id, "inactive_trial_nudge_sent", { has_circle: hasCircle });
+      }
+      if (sent > 0) console.log(`[Nudge] Sent inactive trial nudge to ${sent} users`);
+    } catch (err: any) { console.error("[InactiveNudge]", err.message); }
+  }
+  // Run every 6 hours
+  setInterval(() => { nudgeInactiveTrials().catch(() => {}); }, 6 * 60 * 60 * 1000);
+  // Run once on startup after 5 min
+  setTimeout(() => { nudgeInactiveTrials().catch(() => {}); }, 5 * 60 * 1000);
 
   // v5.12.7 — Win-back push for cancelled trial users (1 day before trial expires)
   async function nudgeCancelledTrials(): Promise<void> {
