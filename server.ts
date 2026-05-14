@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
-import { randomUUID, createHash, createSign } from "crypto";
+import { randomUUID, createHash, createSign, createHmac } from "crypto";
 import { gunzipSync } from "zlib";
 import { readFileSync } from "fs";
 import http2 from "http2";
@@ -49,6 +49,7 @@ const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "";
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || "";
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || "pramen-media";
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL || "";
+const LOOPS_WEBHOOK_SECRET = process.env.LOOPS_WEBHOOK_SECRET || "";
 const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || "AIzaSyD0WUdkjl_HBAoaojLM073AK0CuFgb5rro";
 const YT_CHANNEL_HANDLE = "fatherjohnprays";
 const INSTAGRAM_ACCESS_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN || "";
@@ -1122,7 +1123,25 @@ app.post("/webhooks/revenuecat", async (c) => {
 // ─── LOOPS WEBHOOK — email events → PostHog ─────────────────────
 app.post("/webhooks/loops", async (c) => {
   try {
-    const body = await c.req.json();
+    const rawBody = await c.req.text();
+
+    // Verify webhook signature if secret is configured
+    if (LOOPS_WEBHOOK_SECRET) {
+      const webhookId = c.req.header("webhook-id") || "";
+      const timestamp = c.req.header("webhook-timestamp") || "";
+      const signature = c.req.header("webhook-signature") || "";
+      if (!webhookId || !timestamp || !signature) return c.json({ error: "Missing webhook headers" }, 401);
+      const now = Math.floor(Date.now() / 1000);
+      if (Math.abs(now - parseInt(timestamp, 10)) > 300) return c.json({ error: "Timestamp too old" }, 401);
+      const secretBytes = Buffer.from(LOOPS_WEBHOOK_SECRET.replace(/^whsec_/, ""), "base64");
+      const signedContent = `${webhookId}.${timestamp}.${rawBody}`;
+      const expected = createHmac("sha256", secretBytes).update(signedContent).digest("base64");
+      const providedSig = signature.split(" ").find(s => s.startsWith("v1,"));
+      const providedHash = providedSig ? providedSig.slice(3) : "";
+      if (!providedHash || !Buffer.from(expected).equals(Buffer.from(providedHash))) return c.json({ error: "Invalid signature" }, 401);
+    }
+
+    const body = JSON.parse(rawBody);
     const event = body.eventName;
     if (!event) return c.json({ status: "ignored" });
 

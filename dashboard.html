@@ -550,6 +550,9 @@ function rOv(){
   // ─── Onboarding Step Funnel ──────────────────────────────────
   html+=renderOnboardingFunnel();
 
+  // ─── Loops Email Activity ──────────────────────────────────
+  html+=renderLoopsActivity();
+
   // ─── Cancellation Funnel ───────────────────────────────────
   html+=renderCancellationFunnel();
 
@@ -605,6 +608,56 @@ function renderOnboardingFunnel(){
     html+='<td style="font-size:11px;color:var(--muted);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+names+'</td></tr>';
   }
   html+='</table></div>';
+  return html;
+}
+
+function renderLoopsActivity(){
+  if(!PH||!PH.recent_events)return'';
+  var loopsEvents=PH.recent_events.filter(function(e){return e.event&&e.event.indexOf('loops_email_')===0});
+  if(!loopsEvents.length)return'<div class="cd" style="margin-top:16px"><h3>Loops Email Activity</h3><p style="font-size:11px;color:var(--muted);padding:12px 0">No email events yet</p></div>';
+
+  // Aggregate stats
+  var sent=0,delivered=0,opened=0,clicked=0,bounced=0;
+  loopsEvents.forEach(function(e){
+    if(e.event==='loops_email_sent')sent++;
+    else if(e.event==='loops_email_delivered')delivered++;
+    else if(e.event==='loops_email_opened')opened++;
+    else if(e.event==='loops_email_clicked')clicked++;
+    else if(e.event==='loops_email_bounced')bounced++;
+  });
+  var openRate=sent>0?Math.round(opened/sent*100):0;
+  var clickRate=sent>0?Math.round(clicked/sent*100):0;
+
+  // Group by user+subject for the detail table
+  var rowMap={};
+  loopsEvents.forEach(function(e){
+    var email=e.properties&&e.properties.contact_email||(e.full_user_id||e.distinct_id||'unknown');
+    var subject=e.properties&&e.properties.email_subject||'(no subject)';
+    var key=email+'|||'+subject;
+    if(!rowMap[key])rowMap[key]={email:email,subject:subject,sent:false,delivered:false,opened:false,clicked:false};
+    if(e.event==='loops_email_sent')rowMap[key].sent=true;
+    if(e.event==='loops_email_delivered')rowMap[key].delivered=true;
+    if(e.event==='loops_email_opened')rowMap[key].opened=true;
+    if(e.event==='loops_email_clicked')rowMap[key].clicked=true;
+  });
+  var rows=Object.keys(rowMap).map(function(k){return rowMap[k]});
+
+  var html='<div class="cd" style="margin-top:16px"><h3>Loops Email Activity</h3>';
+  html+='<div class="kg" style="grid-template-columns:repeat(5,1fr);margin-bottom:12px">';
+  html+=kpi("Sent",sent,"var(--blue)")+kpi("Opened",opened,"var(--green)")+kpi("Open Rate",openRate+"%","var(--gold)")+kpi("Clicked",clicked,"var(--teal)")+kpi("Click Rate",clickRate+"%","var(--indigo)");
+  html+='</div>';
+  html+='<div style="overflow-x:auto"><table class="tbl"><tr><th>User</th><th>Email Subject</th><th>Sent</th><th>Delivered</th><th>Opened</th><th>Clicked</th></tr>';
+  rows.forEach(function(r){
+    var chk='<span style="color:var(--green);font-weight:700">&#10003;</span>';
+    var dash='<span style="color:var(--muted)">&#8212;</span>';
+    html+='<tr><td class="mono" style="font-size:9px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+r.email+'</td>';
+    html+='<td style="font-size:11px;font-weight:500">'+r.subject+'</td>';
+    html+='<td style="text-align:center">'+(r.sent?chk:dash)+'</td>';
+    html+='<td style="text-align:center">'+(r.delivered?chk:dash)+'</td>';
+    html+='<td style="text-align:center">'+(r.opened?chk:dash)+'</td>';
+    html+='<td style="text-align:center">'+(r.clicked?chk:dash)+'</td></tr>';
+  });
+  html+='</table></div></div>';
   return html;
 }
 
