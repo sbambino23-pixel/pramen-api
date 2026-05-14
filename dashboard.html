@@ -628,13 +628,17 @@ function renderLoopsActivity(){
   var openRate=sent>0?Math.round(opened/sent*100):0;
   var clickRate=sent>0?Math.round(clicked/sent*100):0;
 
+  // Build user ID → name lookup from PH.users
+  var nameMap={};
+  if(PH.users)PH.users.forEach(function(u){if(u.name&&u.full_id)nameMap[u.full_id]=u.name;if(u.name&&u.id)nameMap[u.id]=u.name;});
   // Group by user+subject for the detail table
   var rowMap={};
   loopsEvents.forEach(function(e){
-    var email=e.properties&&e.properties.contact_email||(e.full_user_id||e.distinct_id||'unknown');
+    var uid=e.full_user_id||e.distinct_id||'unknown';
+    var displayName=nameMap[uid]||e.user||(e.properties&&e.properties.contact_email)||uid.substring(0,12);
     var subject=e.properties&&e.properties.email_subject||'(no subject)';
-    var key=email+'|||'+subject;
-    if(!rowMap[key])rowMap[key]={email:email,subject:subject,sent:false,delivered:false,opened:false,clicked:false};
+    var key=uid+'|||'+subject;
+    if(!rowMap[key])rowMap[key]={name:displayName,subject:subject,sent:false,delivered:false,opened:false,clicked:false};
     if(e.event==='loops_email_sent')rowMap[key].sent=true;
     if(e.event==='loops_email_delivered')rowMap[key].delivered=true;
     if(e.event==='loops_email_opened')rowMap[key].opened=true;
@@ -650,7 +654,7 @@ function renderLoopsActivity(){
   rows.forEach(function(r){
     var chk='<span style="color:var(--green);font-weight:700">&#10003;</span>';
     var dash='<span style="color:var(--muted)">&#8212;</span>';
-    html+='<tr><td class="mono" style="font-size:9px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+r.email+'</td>';
+    html+='<tr><td style="font-size:11px;font-weight:500;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+r.name+'</td>';
     html+='<td style="font-size:11px;font-weight:500">'+r.subject+'</td>';
     html+='<td style="text-align:center">'+(r.sent?chk:dash)+'</td>';
     html+='<td style="text-align:center">'+(r.delivered?chk:dash)+'</td>';
