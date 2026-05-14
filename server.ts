@@ -698,7 +698,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.5", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.6", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -1117,6 +1117,56 @@ app.post("/webhooks/revenuecat", async (c) => {
     }
     console.log(`[RC] ${ev.type} → ${name} | rc:${rcUid.substring(0,12)} → resolved:${resolvedUid.substring(0,12)} ${plan}`); return c.json({ status: "ok" });
   } catch (e) { console.error("[RC]", e); return c.json({ error: "Error" }, 500); }
+});
+
+// ─── LOOPS WEBHOOK — email events → PostHog ─────────────────────
+app.post("/webhooks/loops", async (c) => {
+  try {
+    const body = await c.req.json();
+    const event = body.eventName;
+    if (!event) return c.json({ status: "ignored" });
+
+    // Only track email engagement events
+    const trackableEvents: Record<string, string> = {
+      "email.delivered": "loops_email_delivered",
+      "email.opened": "loops_email_opened",
+      "email.clicked": "loops_email_clicked",
+      "email.bounced": "loops_email_bounced",
+      "email.softBounced": "loops_email_soft_bounced",
+      "email.hardBounced": "loops_email_hard_bounced",
+      "loop.email.sent": "loops_email_sent",
+      "campaign.email.sent": "loops_email_sent",
+    };
+
+    const phEvent = trackableEvents[event];
+    if (!phEvent) return c.json({ status: "ignored", event });
+
+    // Resolve user — prefer userId from contactIdentity, fall back to email lookup
+    const identity = body.contactIdentity || body.contact || {};
+    let userId = identity.userId || null;
+    const email = identity.email || "";
+
+    if (!userId && email) {
+      const res = await pool.query("SELECT id FROM users WHERE email = $1 LIMIT 1", [email]);
+      if (res.rows.length > 0) userId = res.rows[0].id;
+    }
+
+    if (!userId) {
+      console.log(`[Loops] No user found for ${email || "unknown"} — skipping`);
+      return c.json({ status: "skipped" });
+    }
+
+    const emailInfo = body.email || {};
+    trackEvent(userId, phEvent, {
+      email_subject: emailInfo.subject || "",
+      email_id: emailInfo.id || emailInfo.emailMessageId || "",
+      source_type: body.sourceType || "",
+      contact_email: email,
+    });
+
+    console.log(`[Loops] ${phEvent} → ${userId.substring(0, 12)} | ${emailInfo.subject || "no subject"}`);
+    return c.json({ status: "ok" });
+  } catch (e: any) { console.error("[Loops webhook]", e.message); return c.json({ error: "Error" }, 500); }
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2089,7 +2139,7 @@ app.get("/api/dashboard/events", async (c) => {
     const fn = { first_open: new Set<string>(), onboarding: new Set<string>(), paywall: new Set<string>(), plan_tap: new Set<string>(), prayer: new Set<string>(), circle: new Set<string>(), signup: new Set<string>(), scripture: new Set<string>() };
     for (const e of events) { const u = e.full_user_id; if (e.properties.is_first_open === true || e.properties.is_first_open === "True") fn.first_open.add(u); if (e.event === "onboarding_completed") fn.onboarding.add(u); if (e.event === "paywall_viewed") fn.paywall.add(u); if (e.event === "paywall_plan_selected") fn.plan_tap.add(u); if (e.event === "prayer_logged") fn.prayer.add(u); if (e.event === "circle_created") fn.circle.add(u); if (e.event === "user_signed_up") fn.signup.add(u); if (e.event === "scripture_viewed") fn.scripture.add(u); }
     // v5.13.0 — onboarding step funnel with user names + conversion + cancellation funnel
-    const stepOrder = ["welcome","language","topics","reminders","sign_in","circle_created","invite_story","saved_story","invite_code","invite_later","paywall","converted"];
+    const stepOrder = ["welcome","language","topics","reminders","sign_in","circle_created","invite_story","saved_story","invite_code","invite_later","invite_accepted","paywall","converted"];
     const stepUsers: Record<string, { name: string, id: string }[]> = {};
     for (const s of stepOrder) stepUsers[s] = [];
     for (const e of events) {
@@ -2112,6 +2162,12 @@ app.get("/api/dashboard/events", async (c) => {
       if (e.event === "subscription_started") {
         if (!stepUsers["converted"].find((u: any) => u.id === e.full_user_id)) {
           stepUsers["converted"].push({ name: idToName[e.full_user_id] || e.full_user_id.substring(0,8), id: e.full_user_id });
+        }
+      }
+      // v5.14.6 — track invite success: someone actually joined this user's circle
+      if (e.event === "circle_member_joined") {
+        if (!stepUsers["invite_accepted"].find((u: any) => u.id === e.full_user_id)) {
+          stepUsers["invite_accepted"].push({ name: idToName[e.full_user_id] || e.full_user_id.substring(0,8), id: e.full_user_id });
         }
       }
     }
