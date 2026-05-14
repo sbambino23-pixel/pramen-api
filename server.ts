@@ -699,7 +699,7 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.6", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.7", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -3138,12 +3138,14 @@ async function start() {
   // v5.13.2 — Nudge trial users who haven't prayed after 24h
   async function nudgeInactiveTrials(): Promise<void> {
     try {
-      // Find trial users created 12-48h ago who have device token but zero prayers
+      // v5.14.7 — Only nudge users with status 'none' (never started trial).
+      // Do NOT nudge active trial users — they are on the path to convert.
+      // Nudging them reminds them of the trial and can trigger cancellation (Keyvin incident).
       const inactive = await pool.query(`
         SELECT u.id, u.name, u.device_token FROM users u
         LEFT JOIN user_data ud ON ud.user_id = u.id
         WHERE u.device_token IS NOT NULL
-        AND u.subscription_status IN ('trial', 'none')
+        AND u.subscription_status = 'none'
         AND u.created_at < NOW() - INTERVAL '12 hours'
         AND u.created_at > NOW() - INTERVAL '3 days'
         AND (ud.total_prayers IS NULL OR ud.total_prayers = 0)
@@ -3161,7 +3163,7 @@ async function start() {
         const title = hasCircle ? "Your Prayer Circle is waiting" : "Your first prayer is waiting";
         const body = hasCircle
           ? "You created a circle but have not prayed yet. It only takes 30 seconds. Your friends are counting on you."
-          : "Open prAmen and pray your first guided prayer. It only takes 30 seconds. Your 7-day trial is ticking.";
+          : "Open prAmen and pray your first guided prayer. It only takes 30 seconds.";
         await pushToUser(user.id, { title, body, type: "streak_reminders" });
         await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
         sent++;
