@@ -490,6 +490,8 @@ async function initDb(): Promise<void> {
     // v5.9.1 — store user's selected app language for server-side push notification localization
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en'`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, streak_count INTEGER DEFAULT 0, highest_streak INTEGER DEFAULT 0, total_prayers INTEGER DEFAULT 0, total_minutes INTEGER DEFAULT 0, last_prayed_date TIMESTAMPTZ, sessions JSONB DEFAULT '[]'::jsonb, preferences JSONB DEFAULT '{}'::jsonb, circle_codes TEXT[] DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_local_date TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_timezone TEXT`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_apple_user_id ON users(apple_user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_google_user_id ON users(google_user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_auth_token ON users(auth_token)`);
@@ -900,7 +902,7 @@ app.post("/api/admin/push", async (c) => {
 // ─── DATA SYNC + DEVICE TOKEN ───────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 app.get("/api/user/data", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); return c.json({ user: { id: u.id, name: u.name, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id) }); });
-app.put("/api/user/data", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const b = await c.req.json(); try { await pool.query(`INSERT INTO user_data (user_id,streak_count,highest_streak,total_prayers,total_minutes,last_prayed_date,sessions,preferences,circle_codes,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()) ON CONFLICT (user_id) DO UPDATE SET streak_count=$2,highest_streak=GREATEST(user_data.highest_streak,$3),total_prayers=$4,total_minutes=$5,last_prayed_date=$6,sessions=$7,preferences=$8,circle_codes=$9,updated_at=NOW()`, [u.id, b.streakCount||0, b.highestStreak||0, b.totalPrayers||0, b.totalMinutes||0, b.lastPrayedDate||null, JSON.stringify(b.sessions||[]), JSON.stringify(b.preferences||{}), b.circleCodes||[]]); if (b.userName && b.userName !== u.name) await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [b.userName, u.id]); return c.json({ status: "ok", synced: true }); } catch (e: any) { return c.json({ error: "Sync failed", detail: e.message }, 500); } });
+app.put("/api/user/data", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const b = await c.req.json(); try { await pool.query(`INSERT INTO user_data (user_id,streak_count,highest_streak,total_prayers,total_minutes,last_prayed_date,last_prayed_local_date,last_prayed_timezone,sessions,preferences,circle_codes,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW()) ON CONFLICT (user_id) DO UPDATE SET streak_count=$2,highest_streak=GREATEST(user_data.highest_streak,$3),total_prayers=$4,total_minutes=$5,last_prayed_date=$6,last_prayed_local_date=COALESCE($7,user_data.last_prayed_local_date),last_prayed_timezone=COALESCE($8,user_data.last_prayed_timezone),sessions=$9,preferences=$10,circle_codes=$11,updated_at=NOW()`, [u.id, b.streakCount||0, b.highestStreak||0, b.totalPrayers||0, b.totalMinutes||0, b.lastPrayedDate||null, b.lastPrayedLocalDate||null, b.lastPrayedTimezone||null, JSON.stringify(b.sessions||[]), JSON.stringify(b.preferences||{}), b.circleCodes||[]]); if (b.userName && b.userName !== u.name) await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [b.userName, u.id]); return c.json({ status: "ok", synced: true }); } catch (e: any) { return c.json({ error: "Sync failed", detail: e.message }, 500); } });
 app.put("/api/user/name", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { name } = await c.req.json(); if (!name?.trim()) return c.json({ error: "Name required" }, 400); await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [name.trim(), u.id]); for (const [, ci] of circles) { const m = ci.members.find(m => m.userId === u.id || m.userId === u.device_user_id); if (m) { m.name = name.trim(); await saveCircleToDb(ci); } } return c.json({ success: true, name: name.trim() }); });
 app.put("/api/user/device-token", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { deviceToken } = await c.req.json(); if (!deviceToken) return c.json({ error: "deviceToken required" }, 400); await pool.query("UPDATE users SET device_token=$1, device_token_updated_at=NOW(), updated_at=NOW() WHERE id=$2", [deviceToken, u.id]); console.log(`[Token] Stored device token for ${u.id.substring(0,8)}… token=${deviceToken.substring(0,12)}…`); return c.json({ success: true }); });
 // v5.9.1 — user language sync so server-side push notifications arrive in the right language
@@ -2018,13 +2020,18 @@ async function checkStreakAtRisk(): Promise<void> {
     const today = new Date().toISOString().split("T")[0];
     // Find users who have a streak > 0 but haven't prayed today (UTC check)
     const result = await pool.query(
-      "SELECT ud.user_id, ud.streak_count, ud.last_prayed_date FROM user_data ud WHERE ud.streak_count > 0 AND (ud.last_prayed_date IS NULL OR ud.last_prayed_date::date < $1::date)",
+      "SELECT ud.user_id, ud.streak_count, ud.last_prayed_date, ud.last_prayed_local_date, ud.last_prayed_timezone FROM user_data ud WHERE ud.streak_count > 0 AND (ud.last_prayed_date IS NULL OR ud.last_prayed_date::date < $1::date)",
       [today]
     );
     let sent = 0;
     for (const row of result.rows) {
       if (row.streak_count >= 3) {
-        // Double-check: did they pray today in their own timezone via circle data?
+        // Check 1: did they pray today per their own timezone (from user_data sync)?
+        if (row.last_prayed_local_date && row.last_prayed_timezone) {
+          const localToday = todayInTimezone(row.last_prayed_timezone);
+          if (row.last_prayed_local_date === localToday) continue;
+        }
+        // Check 2: did they pray today in their own timezone via circle data?
         let prayedInLocalTZ = false;
         for (const [, circle] of circles) {
           const member = circle.members.find(m => m.userId === row.user_id);
