@@ -593,14 +593,14 @@ function renderAdSummary(){
 function renderOnboardingFunnel(){
   var of=PH&&PH.onboarding_funnel;
   if(!of||!of.length)return'';
-  var labels={"welcome":"Welcome","language":"Language","topics":"Topics","reminders":"Reminders","sign_in":"Sign In","circle_created":"Circle Created","invite_story":"Shared Story","saved_story":"Saved Story","invite_code":"Sent Code","invite_later":"Skipped Invite","invite_accepted":"Invite Accepted","paywall":"Paywall","converted":"Converted"};
+  var labels={"welcome":"Welcome","language":"Language","topics":"Topics","reminders":"Reminders","sign_in":"Sign In","community_circles_joined":"Joined Community","community_circles_skipped":"Skipped Community","circle_created":"Circle Created","invite_story":"Shared Story","saved_story":"Saved Story","invite_code":"Sent Code","invite_later":"Skipped Invite","invite_accepted":"Invite Accepted","paywall":"Paywall","converted":"Converted"};
   var maxCount=Math.max.apply(null,of.map(function(s){return s.count}))||1;
   var html='<div class="cd" style="margin-top:16px"><h3>Onboarding Step Funnel</h3>';
   html+='<table class="tbl"><tr><th>Step</th><th>Users</th><th style="width:40%">Funnel</th><th>Who</th></tr>';
   for(var i=0;i<of.length;i++){
     var s=of[i];
     var pct=maxCount>0?Math.round(s.count/maxCount*100):0;
-    var color=s.step==='converted'?'var(--green)':s.step==='invite_accepted'?'var(--green)':s.step==='invite_later'?'var(--red)':s.step==='invite_story'||s.step==='invite_code'||s.step==='saved_story'?'var(--teal)':s.step==='circle_created'?'var(--blue)':s.step==='paywall'?'var(--orange)':'var(--gold)';
+    var color=s.step==='converted'?'var(--green)':s.step==='invite_accepted'?'var(--green)':s.step==='community_circles_joined'?'var(--green)':s.step==='community_circles_skipped'?'var(--red)':s.step==='invite_later'?'var(--red)':s.step==='invite_story'||s.step==='invite_code'||s.step==='saved_story'?'var(--teal)':s.step==='circle_created'?'var(--blue)':s.step==='paywall'?'var(--orange)':'var(--gold)';
     var names=s.users.map(function(u){return u.name}).join(', ')||'—';
     html+='<tr><td><strong style="color:var(--text)">'+(labels[s.step]||s.step)+'</strong></td>';
     html+='<td class="mono" style="font-size:15px;font-weight:700;color:'+color+'">'+s.count+'</td>';

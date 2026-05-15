@@ -2158,7 +2158,7 @@ app.get("/api/dashboard/events", async (c) => {
     const fn = { first_open: new Set<string>(), onboarding: new Set<string>(), paywall: new Set<string>(), plan_tap: new Set<string>(), prayer: new Set<string>(), circle: new Set<string>(), signup: new Set<string>(), scripture: new Set<string>() };
     for (const e of events) { const u = e.full_user_id; if (e.properties.is_first_open === true || e.properties.is_first_open === "True") fn.first_open.add(u); if (e.event === "onboarding_completed") fn.onboarding.add(u); if (e.event === "paywall_viewed") fn.paywall.add(u); if (e.event === "paywall_plan_selected") fn.plan_tap.add(u); if (e.event === "prayer_logged") fn.prayer.add(u); if (e.event === "circle_created") fn.circle.add(u); if (e.event === "user_signed_up") fn.signup.add(u); if (e.event === "scripture_viewed") fn.scripture.add(u); }
     // v5.13.0 — onboarding step funnel with user names + conversion + cancellation funnel
-    const stepOrder = ["welcome","language","topics","reminders","sign_in","circle_created","invite_story","saved_story","invite_code","invite_later","invite_accepted","paywall","converted"];
+    const stepOrder = ["welcome","language","topics","reminders","sign_in","community_circles_joined","community_circles_skipped","circle_created","invite_story","saved_story","invite_code","invite_later","invite_accepted","paywall","converted"];
     const stepUsers: Record<string, { name: string, id: string }[]> = {};
     for (const s of stepOrder) stepUsers[s] = [];
     for (const e of events) {
