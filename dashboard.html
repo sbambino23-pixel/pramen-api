@@ -445,9 +445,15 @@ function rOv(){
   // Net subscriber + trial KPIs (top of overview)
   var netTrials=rc.net_active_trials;
   var netSubs=rc.net_active_subscribers;
+  var trialM=rc.net_trial_monthly||0,trialY=rc.net_trial_yearly||0;
+  var subM=rc.net_sub_monthly||0,subY=rc.net_sub_yearly||0,subL=rc.net_sub_lifetime||0;
   if(netTrials!==undefined||netSubs!==undefined){
     html+='<div class="cd" style="border-color:rgba(122,143,104,.4);margin-bottom:16px">';
     html+='<div class="kg" style="grid-template-columns:repeat(2,1fr)">'+kpi("Active Trials (Net)",netTrials||0,"var(--blue)")+kpi("Active Subscribers (Net)",netSubs||0,"var(--green)")+'</div>';
+    html+='<div style="display:flex;gap:32px;margin-top:8px;font-size:11px;color:var(--muted)">';
+    html+='<div><span style="font-weight:600;color:var(--blue)">Trials:</span> '+trialM+' monthly · '+trialY+' yearly</div>';
+    html+='<div><span style="font-weight:600;color:var(--green)">Subs:</span> '+subM+' monthly · '+subY+' yearly'+(subL?' · '+subL+' lifetime':'')+'</div>';
+    html+='</div>';
     html+='<div style="font-size:9px;color:var(--muted);margin-top:6px;line-height:1.5"><strong>Active Trials:</strong> Users on a free trial who have NOT cancelled. If they cancelled but the trial hasn\'t expired yet, they are excluded.<br><strong>Active Subscribers:</strong> Paying users who have NOT cancelled. If they cancelled but still have time left on their plan, they are excluded.</div>';
     html+='</div>';
   }
