@@ -515,6 +515,9 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS invite_tokens (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, token TEXT UNIQUE NOT NULL, circle_code TEXT NOT NULL, inviter_user_id TEXT NOT NULL, inviter_name TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', accepted_by_user_id TEXT, created_at TIMESTAMPTZ DEFAULT NOW(), accepted_at TIMESTAMPTZ)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_invite_token ON invite_tokens(token)`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_reflections (date DATE PRIMARY KEY, verse TEXT NOT NULL, reference TEXT NOT NULL, reflection TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    // v5.15.0 — daily circle prayers + who prayed them
+    await client.query(`CREATE TABLE IF NOT EXISTS circle_daily_prayers (circle_code TEXT NOT NULL, date DATE NOT NULL, prayer_text TEXT NOT NULL, topic TEXT, prayed_by TEXT[] DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (circle_code, date))`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_circle_daily_prayers_date ON circle_daily_prayers(date)`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS seasonal_verses (date DATE NOT NULL, lang TEXT NOT NULL DEFAULT 'en', verse TEXT NOT NULL, reference TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (date, lang))`);
     await client.query(`CREATE TABLE IF NOT EXISTS favorites (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, title TEXT, source TEXT NOT NULL DEFAULT 'app', prayer_text TEXT, prayer_id TEXT, media_url TEXT, media_type TEXT, media_filename TEXT, transcript TEXT, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, is_deleted, created_at DESC)`);
@@ -643,6 +646,61 @@ async function computeConsecutiveGoldDays(circleCode: string, circle: StoredCirc
     }
     return consecutive;
   } catch { return 0; }
+}
+
+// ─── Daily Circle Prayers (v5.15.0) ──────────────────────────────────
+const COMMUNITY_CIRCLE_TOPICS: Record<string, string> = {
+  "DS8RSY": "night prayers and evening peace",
+  "LE2AA4": "morning prayers and starting the day with God",
+  "Z4KTHN": "prayers for hard days and difficult seasons",
+  "NGZX5G": "stillness, rest, and finding peace in God's presence",
+  "TW6HHP": "praying for each other and intercession"
+};
+
+function getCirclePrayerTopic(circle: StoredCircle): string {
+  const communityTopic = COMMUNITY_CIRCLE_TOPICS[circle.code];
+  if (communityTopic) return communityTopic;
+  // Personal circles: derive from name + active requests
+  const recentRequests = circle.prayerRequests.filter(r => r.status === "active").slice(0, 3).map(r => r.text).join("; ");
+  if (recentRequests) return `the circle "${circle.name}" where members are praying about: ${recentRequests}`;
+  return `the prayer circle "${circle.name}"`;
+}
+
+async function generateCircleDailyPrayers(): Promise<void> {
+  if (!GEMINI_API_KEY || !isGeminiAvailable()) return;
+  const today = new Date().toISOString().split("T")[0];
+  let generated = 0;
+  for (const [code, circle] of circles) {
+    if (circle.members.length === 0) continue;
+    // Skip if already generated today
+    const existing = await pool.query("SELECT 1 FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
+    if (existing.rows.length > 0) continue;
+    const topic = getCirclePrayerTopic(circle);
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: "You write short, heartfelt prayers (40-60 words) for prayer groups. Write in second person addressing God. Never use dashes or hyphens as punctuation. Be warm, scriptural, personal. The prayer should feel like something a group would pray together. Return ONLY the prayer text, nothing else. No quotes around it." }] },
+            contents: [{ role: "user", parts: [{ text: `Write today's shared prayer for a prayer circle focused on: ${topic}. It should feel fresh and specific to today, not generic.` }] }]
+          })
+        }
+      );
+      if (!res.ok) { if (res.status === 429) { markGeminiRateLimited(); return; } continue; }
+      const data = (await res.json()) as any;
+      const prayer = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+      if (prayer && prayer.length > 20) {
+        await pool.query(
+          "INSERT INTO circle_daily_prayers (circle_code, date, prayer_text, topic) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+          [code, today, prayer, topic]
+        );
+        generated++;
+      }
+    } catch (err: any) { console.error(`[CirclePrayer] Error for ${code}:`, err.message); }
+  }
+  if (generated > 0) console.log(`[CirclePrayer] Generated ${generated} daily circle prayers`);
 }
 
 // ─── Plausible Pull ──────────────────────────────────────────────────
@@ -2014,6 +2072,69 @@ app.post("/api/referrals/invite-batch", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE ACTIVITY FEED ───────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
+// v5.15.0 — Daily circle prayer endpoints
+app.get("/api/circles/:code/daily-prayer", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const code = c.req.param("code").toUpperCase();
+  const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
+  const today = new Date().toISOString().split("T")[0];
+  const r = await pool.query("SELECT prayer_text, topic, prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
+  if (r.rows.length === 0) {
+    // Try generating on-the-fly if not yet generated
+    await generateCircleDailyPrayers();
+    const retry = await pool.query("SELECT prayer_text, topic, prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
+    if (retry.rows.length === 0) return c.json({ prayer: null });
+    const row = retry.rows[0];
+    const prayedBy = row.prayed_by || [];
+    const userId = u.id;
+    const hasPrayed = prayedBy.includes(userId);
+    // Get names for prayed_by user IDs
+    let prayedByNames: { userId: string; name: string }[] = [];
+    if (prayedBy.length > 0) {
+      try {
+        const names = await pool.query("SELECT id, name FROM users WHERE id = ANY($1)", [prayedBy]);
+        prayedByNames = names.rows.map((n: any) => ({ userId: n.id, name: n.name || "Someone" }));
+      } catch {}
+    }
+    return c.json({ prayer: { text: row.prayer_text, topic: row.topic, prayedCount: prayedBy.length, hasPrayed, prayedBy: prayedByNames, totalMembers: ci.members.length } });
+  }
+  const row = r.rows[0];
+  const prayedBy = row.prayed_by || [];
+  const userId = u.id;
+  const hasPrayed = prayedBy.includes(userId);
+  let prayedByNames: { userId: string; name: string }[] = [];
+  if (prayedBy.length > 0) {
+    try {
+      const names = await pool.query("SELECT id, name FROM users WHERE id = ANY($1)", [prayedBy]);
+      prayedByNames = names.rows.map((n: any) => ({ userId: n.id, name: n.name || "Someone" }));
+    } catch {}
+  }
+  return c.json({ prayer: { text: row.prayer_text, topic: row.topic, prayedCount: prayedBy.length, hasPrayed, prayedBy: prayedByNames, totalMembers: ci.members.length } });
+});
+
+app.post("/api/circles/:code/daily-prayer/pray", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const code = c.req.param("code").toUpperCase();
+  const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
+  const today = new Date().toISOString().split("T")[0];
+  const userId = u.id;
+  // Add user to prayed_by array
+  await pool.query(
+    "UPDATE circle_daily_prayers SET prayed_by = array_append(prayed_by, $1) WHERE circle_code=$2 AND date=$3 AND NOT ($1 = ANY(prayed_by))",
+    [userId, code, today]
+  );
+  // Record as circle engagement
+  await recordCircleEngagement(code, userId, "prayed_daily_prayer");
+  trackEvent(userId, "circle_daily_prayer_prayed", { circle_code: code, circle_name: ci.name });
+  // Get updated count
+  const r = await pool.query("SELECT prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
+  const prayedBy = r.rows[0]?.prayed_by || [];
+  // Check if tier changed — notify circle
+  const activeCount = ci.members.filter(m => getMemberLastSeen(m).isActive).length;
+  const tier = computeCircleTier(prayedBy.length, activeCount);
+  return c.json({ success: true, prayedCount: prayedBy.length, tier });
+});
+
 // v5.15.0 — Circle engagement + health endpoint (hybrid prayer model)
 app.get("/api/circles/:code/engagement", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
@@ -3057,6 +3178,9 @@ async function start() {
   // Scheduled posts interval removed (FIX #8)
   setTimeout(() => { generateDailyReflection().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { generateDailyReflection().catch(() => {}); }, 6 * 60 * 60 * 1000);
+  // v5.15.0 — generate daily circle prayers
+  setTimeout(() => { generateCircleDailyPrayers().catch(() => {}); }, 6 * 60 * 1000);
+  setInterval(() => { generateCircleDailyPrayers().catch(() => {}); }, 6 * 60 * 60 * 1000);
   // v5.10.5 — Auto-pull Meta Ads spend data every 6 hours
   async function pullMetaAdSpend(): Promise<void> {
     if (!META_CAPI_ACCESS_TOKEN) return;
