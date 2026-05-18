@@ -2072,6 +2072,46 @@ app.post("/api/referrals/invite-batch", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE ACTIVITY FEED ───────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
+// v5.15.0 — Personal engagement score
+function computeEngagementTier(actionCount: number): string {
+  if (actionCount >= 16) return "pillar";
+  if (actionCount >= 6) return "devoted";
+  if (actionCount >= 1) return "faithful";
+  return "none";
+}
+
+app.get("/api/user/engagement-score", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const userId = u.id;
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0];
+  try {
+    // Get all engagement actions for this user in the last 7 days
+    const r = await pool.query(
+      "SELECT day, action_count, actions FROM circle_engagement WHERE user_id=$1 AND day >= $2::date ORDER BY day DESC",
+      [userId, sevenDaysAgo]
+    );
+    let totalActions = 0;
+    let dailyPrayers = 0, prayedForRequests = 0, sentRequests = 0, sentNudges = 0;
+    for (const row of r.rows) {
+      totalActions += row.action_count || 0;
+      const actions = row.actions || [];
+      for (const a of actions) {
+        if (a.type === "prayed_daily_prayer") dailyPrayers++;
+        else if (a.type === "prayed_for_request") prayedForRequests++;
+        else if (a.type === "created_request") sentRequests++;
+        else if (a.type === "sent_nudge") sentNudges++;
+      }
+    }
+    const tier = computeEngagementTier(totalActions);
+    const nextTierAt = tier === "pillar" ? null : tier === "devoted" ? 16 : tier === "faithful" ? 6 : 1;
+    return c.json({
+      totalActions, tier, nextTierAt,
+      breakdown: { dailyPrayers, prayedForRequests, sentRequests, sentNudges },
+      daysActive: r.rows.length
+    });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
 // v5.15.0 — Daily circle prayer endpoints
 app.get("/api/circles/:code/daily-prayer", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
@@ -2126,6 +2166,28 @@ app.post("/api/circles/:code/daily-prayer/pray", async (c) => {
   // Record as circle engagement
   await recordCircleEngagement(code, userId, "prayed_daily_prayer");
   trackEvent(userId, "circle_daily_prayer_prayed", { circle_code: code, circle_name: ci.name });
+  // Update streak — daily prayer counts as a prayer
+  try {
+    const todayDate = new Date().toISOString();
+    const localDate = new Date().toISOString().split("T")[0];
+    await pool.query(
+      `UPDATE user_data SET last_prayed_date=$1, last_prayed_local_date=$2, updated_at=NOW(),
+       streak_count = CASE
+         WHEN last_prayed_date IS NULL THEN 1
+         WHEN last_prayed_date::date = CURRENT_DATE THEN streak_count
+         WHEN last_prayed_date::date = CURRENT_DATE - 1 THEN streak_count + 1
+         ELSE 1
+       END,
+       highest_streak = GREATEST(highest_streak, CASE
+         WHEN last_prayed_date IS NULL THEN 1
+         WHEN last_prayed_date::date = CURRENT_DATE THEN streak_count
+         WHEN last_prayed_date::date = CURRENT_DATE - 1 THEN streak_count + 1
+         ELSE 1
+       END)
+       WHERE user_id=$3`,
+      [todayDate, localDate, userId]
+    );
+  } catch {}
   // Get updated count
   const r = await pool.query("SELECT prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
   const prayedBy = r.rows[0]?.prayed_by || [];
@@ -2149,10 +2211,21 @@ app.get("/api/circles/:code/engagement", async (c) => {
     const r = await pool.query("SELECT id, last_seen_at FROM users WHERE id = ANY($1)", [memberIds]);
     for (const row of r.rows) { if (row.last_seen_at) lastSeenMap[row.id] = row.last_seen_at; }
   } catch {}
+  // Get 7-day engagement scores for all members
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString().split("T")[0];
+  let memberEngagementScores: Record<string, number> = {};
+  try {
+    const eScores = await pool.query(
+      "SELECT user_id, SUM(action_count) as total FROM circle_engagement WHERE user_id = ANY($1) AND day >= $2::date GROUP BY user_id",
+      [memberIds, sevenDaysAgo]
+    );
+    for (const row of eScores.rows) { memberEngagementScores[row.user_id] = parseInt(row.total) || 0; }
+  } catch {}
   const enrichedMembers = ci.members.map(m => {
     const lastSeen = lastSeenMap[m.userId] || m.lastPrayedDate || m.joinedAt;
     const daysSince = lastSeen ? Math.floor((Date.now() - new Date(lastSeen).getTime()) / 86400000) : 999;
     const isActive = daysSince <= 7;
+    const engagementScore = memberEngagementScores[m.userId] || 0;
     return {
       userId: m.userId, name: m.name, streakCount: m.streakCount,
       lastPrayedDate: m.lastPrayedDate, lastPrayedLocalDate: m.lastPrayedLocalDate,
@@ -2160,7 +2233,8 @@ app.get("/api/circles/:code/engagement", async (c) => {
       role: m.role, avatarUrl: m.avatarUrl,
       prayedToday: prayedTodayInOwnTZ(m),
       engagedToday: engagedToday.has(m.userId),
-      isActive, daysSinceLastSeen: daysSince
+      isActive, daysSinceLastSeen: daysSince,
+      engagementScore, engagementTier: computeEngagementTier(engagementScore)
     };
   });
   const activeMembers = enrichedMembers.filter(m => m.isActive);
