@@ -12,7 +12,7 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 const { Pool } = pg;
 
 // ─── Types ───────────────────────────────────────────────────────────
-interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; lastPrayedLocalDate?: string | null; lastPrayedTimezone?: string | null; joinedAt: string; canPost?: boolean; notificationsMuted?: boolean; role?: string; avatarUrl?: string; }
+interface StoredMember { userId: string; name: string; streakCount: number; lastPrayedDate: string | null; lastPrayedLocalDate?: string | null; lastPrayedTimezone?: string | null; joinedAt: string; canPost?: boolean; notificationsMuted?: boolean; role?: string; avatarUrl?: string; lastSeenAt?: string | null; }
 interface StoredPrayerRequest { id: string; requesterUserId: string; requesterName: string; text: string; timestamp: string; isAnonymous: boolean; prayedByUserIds: string[]; generatedPrayer?: string; targetUserId?: string; targetType: "circle" | "personal"; status: "active" | "prayed" | "answered"; }
 interface StoredCircle { id: string; name: string; code: string; emoji: string; avatarUrl?: string; creatorUserId: string; members: StoredMember[]; prayerRequests: StoredPrayerRequest[]; createdAt: string; }
 
@@ -492,6 +492,10 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, streak_count INTEGER DEFAULT 0, highest_streak INTEGER DEFAULT 0, total_prayers INTEGER DEFAULT 0, total_minutes INTEGER DEFAULT 0, last_prayed_date TIMESTAMPTZ, sessions JSONB DEFAULT '[]'::jsonb, preferences JSONB DEFAULT '{}'::jsonb, circle_codes TEXT[] DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_local_date TEXT`).catch(() => {});
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_timezone TEXT`).catch(() => {});
+    // v5.15.0 — circle engagement tracking for hybrid prayer model + gamification
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ`).catch(() => {});
+    await client.query(`CREATE TABLE IF NOT EXISTS circle_engagement (circle_code TEXT NOT NULL, user_id TEXT NOT NULL, day DATE NOT NULL, action_count INTEGER DEFAULT 0, actions JSONB DEFAULT '[]'::jsonb, created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (circle_code, user_id, day))`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_engagement_circle_day ON circle_engagement(circle_code, day)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_apple_user_id ON users(apple_user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_google_user_id ON users(google_user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_auth_token ON users(auth_token)`);
@@ -576,7 +580,70 @@ async function getUserByEmail(email: string) { try { const r = await pool.query(
 async function getUserData(userId: string) { try { const r = await pool.query("SELECT * FROM user_data WHERE user_id=$1", [userId]); if (r.rows[0]) { const d = r.rows[0]; let streakCount = d.streak_count || 0; if (streakCount > 0 && d.last_prayed_date) { const now = new Date(); const lastPrayed = new Date(d.last_prayed_date); const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()); const yesterday = new Date(today.getTime() - 86400000); const lastPrayedDay = new Date(lastPrayed.getFullYear(), lastPrayed.getMonth(), lastPrayed.getDate()); if (lastPrayedDay < yesterday) { streakCount = 0; await pool.query("UPDATE user_data SET streak_count=0, updated_at=NOW() WHERE user_id=$1", [userId]); } } return { streakCount, highestStreak: d.highest_streak, totalPrayers: d.total_prayers, totalMinutes: d.total_minutes, lastPrayedDate: d.last_prayed_date, sessions: d.sessions || [], preferences: d.preferences || {}, circleCodes: d.circle_codes || [] }; } return null; } catch { return null; } }
 function getUserCircleCodes(...userIds: string[]): string[] { const ids = new Set(userIds.filter(Boolean)); const codes: string[] = []; for (const [code, circle] of circles) { if (circle.members.some(m => ids.has(m.userId))) codes.push(code); } return codes; }
 async function migrateCircleMembership(oldId: string, newId: string, name: string) { for (const [, c] of circles) { const m = c.members.find(m => m.userId === oldId); if (m) { m.userId = newId; if (name) m.name = name; await saveCircleToDb(c); } if (c.creatorUserId === oldId) { c.creatorUserId = newId; await saveCircleToDb(c); } } }
-async function requireAuth(c: any): Promise<any | null> { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return null; return getUserByToken(ah.replace("Bearer ", "")); }
+async function requireAuth(c: any): Promise<any | null> { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return null; const u = await getUserByToken(ah.replace("Bearer ", "")); if (u) { pool.query("UPDATE users SET last_seen_at=NOW() WHERE id=$1", [u.id]).catch(() => {}); } return u; }
+
+// ─── Circle Engagement (v5.15.0) ─────────────────────────────────────
+async function recordCircleEngagement(circleCode: string, userId: string, actionType: string, extra?: Record<string, any>): Promise<void> {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+    const action = { type: actionType, at: new Date().toISOString(), ...extra };
+    await pool.query(
+      `INSERT INTO circle_engagement (circle_code, user_id, day, action_count, actions) VALUES ($1,$2,$3,1,$4::jsonb)
+       ON CONFLICT (circle_code, user_id, day) DO UPDATE SET action_count = circle_engagement.action_count + 1, actions = circle_engagement.actions || $4::jsonb`,
+      [circleCode, userId, today, JSON.stringify([action])]
+    );
+  } catch (err: any) { console.error("[Engagement] Record error:", err.message); }
+}
+
+function getMemberLastSeen(member: StoredMember): { isActive: boolean; daysSinceLastSeen: number } {
+  if (!member.lastSeenAt) {
+    // Fallback: use lastPrayedDate or joinedAt
+    const fallback = member.lastPrayedDate || member.joinedAt;
+    if (!fallback) return { isActive: false, daysSinceLastSeen: 999 };
+    const days = Math.floor((Date.now() - new Date(fallback).getTime()) / (86400000));
+    return { isActive: days <= 7, daysSinceLastSeen: days };
+  }
+  const days = Math.floor((Date.now() - new Date(member.lastSeenAt).getTime()) / (86400000));
+  return { isActive: days <= 7, daysSinceLastSeen: days };
+}
+
+async function getCircleEngagementForDay(circleCode: string, day: string): Promise<Set<string>> {
+  try {
+    const r = await pool.query("SELECT user_id FROM circle_engagement WHERE circle_code=$1 AND day=$2", [circleCode, day]);
+    return new Set(r.rows.map((row: any) => row.user_id));
+  } catch { return new Set(); }
+}
+
+function computeCircleTier(engagedCount: number, activeCount: number): string | null {
+  if (activeCount <= 0) return null;
+  const pct = (engagedCount / activeCount) * 100;
+  if (pct >= 75) return "gold";
+  if (pct >= 65) return "silver";
+  if (pct >= 50) return "bronze";
+  return null;
+}
+
+async function computeConsecutiveGoldDays(circleCode: string, circle: StoredCircle): Promise<number> {
+  try {
+    const today = new Date();
+    let consecutive = 0;
+    for (let i = 0; i < 7; i++) {
+      const checkDate = new Date(today.getTime() - i * 86400000);
+      const dayStr = checkDate.toISOString().split("T")[0];
+      const engaged = await getCircleEngagementForDay(circleCode, dayStr);
+      const activeMembers = circle.members.filter(m => {
+        const info = getMemberLastSeen(m);
+        return info.isActive;
+      });
+      if (activeMembers.length === 0) break;
+      const engagedActive = activeMembers.filter(m => engaged.has(m.userId)).length;
+      const tier = computeCircleTier(engagedActive, activeMembers.length);
+      if (tier === "gold") consecutive++;
+      else break;
+    }
+    return consecutive;
+  } catch { return 0; }
+}
 
 // ─── Plausible Pull ──────────────────────────────────────────────────
 async function pullPlausibleMetrics(): Promise<void> {
@@ -762,11 +829,16 @@ app.get("/api/circles/sync-check", async (c) => {
   if (userCircleCodes.length === 0) return c.json({ circles: [] });
   try {
     const result = await pool.query("SELECT code, updated_at FROM circles WHERE code = ANY($1)", [userCircleCodes]);
-    const circleStates = result.rows.map((r: any) => {
+    const today = new Date().toISOString().split("T")[0];
+    const circleStates = await Promise.all(result.rows.map(async (r: any) => {
       const ci = getCircle(r.code);
       const prayedToday = ci ? ci.members.filter(m => prayedTodayInOwnTZ(m)).length : 0;
-      return { code: r.code, updatedAt: r.updated_at, prayedToday, totalMembers: ci?.members.length || 0 };
-    });
+      const engaged = await getCircleEngagementForDay(r.code, today);
+      const activeCount = ci ? ci.members.filter(m => getMemberLastSeen(m).isActive).length : 0;
+      const engagedActive = ci ? ci.members.filter(m => getMemberLastSeen(m).isActive && engaged.has(m.userId)).length : 0;
+      const tier = computeCircleTier(engagedActive, activeCount);
+      return { code: r.code, updatedAt: r.updated_at, prayedToday, totalMembers: ci?.members.length || 0, activeMembers: activeCount, engagedToday: engagedActive, tier };
+    }));
     return c.json({ circles: circleStates, serverTime: new Date().toISOString() });
   } catch (err: any) { return c.json({ error: err.message }, 500); }
 });
@@ -1377,6 +1449,7 @@ app.post("/api/circles/:code/prayer-requests", async (c) => {
     try { await pool.query("INSERT INTO prayer_ask_log (circle_code, asker_user_id, target_user_id, day) VALUES ($1,$2,$3,$4)", [codeUpper, b.userId, targetUserId, today]); } catch (err: any) { /* unique conflict race — safe to ignore */ }
   }
   trackEvent(b.userId, "prayer_request_created", { circle_code: c.req.param("code").toUpperCase(), is_anonymous: b.isAnonymous || false, target_type: targetType });
+  recordCircleEngagement(c.req.param("code").toUpperCase(), b.userId, targetType === "personal" ? "sent_nudge" : "created_request");
   if (targetType === "personal" && targetUserId) {
     // Personal request — only notify the target
     const targetMember = ci.members.find(m => m.userId === targetUserId);
@@ -1431,6 +1504,7 @@ app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => {
     // Update status for personal requests
     if (req.targetType === "personal" && req.targetUserId === b.userId) { req.status = "prayed"; }
     trackEvent(b.userId, "prayer_request_prayed", { circle_code: c.req.param("code").toUpperCase(), target_type: req.targetType || "circle" });
+    recordCircleEngagement(c.req.param("code").toUpperCase(), b.userId, "prayed_for_request");
     if (req.requesterUserId !== b.userId) {
       const prayerName = ci.members.find(m => m.userId === b.userId)?.name || "Someone";
       // Notify the requester with read receipt
@@ -1940,6 +2014,49 @@ app.post("/api/referrals/invite-batch", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 // ─── CIRCLE ACTIVITY FEED ───────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
+// v5.15.0 — Circle engagement + health endpoint (hybrid prayer model)
+app.get("/api/circles/:code/engagement", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const code = c.req.param("code").toUpperCase(); const ci = getCircle(code);
+  if (!ci) return c.json({ error: "Not found" }, 404);
+  const today = new Date().toISOString().split("T")[0];
+  const engagedToday = await getCircleEngagementForDay(code, today);
+  // Get last_seen_at for all members
+  const memberIds = ci.members.map(m => m.userId).filter(Boolean);
+  let lastSeenMap: Record<string, string> = {};
+  try {
+    const r = await pool.query("SELECT id, last_seen_at FROM users WHERE id = ANY($1)", [memberIds]);
+    for (const row of r.rows) { if (row.last_seen_at) lastSeenMap[row.id] = row.last_seen_at; }
+  } catch {}
+  const enrichedMembers = ci.members.map(m => {
+    const lastSeen = lastSeenMap[m.userId] || m.lastPrayedDate || m.joinedAt;
+    const daysSince = lastSeen ? Math.floor((Date.now() - new Date(lastSeen).getTime()) / 86400000) : 999;
+    const isActive = daysSince <= 7;
+    return {
+      userId: m.userId, name: m.name, streakCount: m.streakCount,
+      lastPrayedDate: m.lastPrayedDate, lastPrayedLocalDate: m.lastPrayedLocalDate,
+      lastPrayedTimezone: m.lastPrayedTimezone, joinedAt: m.joinedAt,
+      role: m.role, avatarUrl: m.avatarUrl,
+      prayedToday: prayedTodayInOwnTZ(m),
+      engagedToday: engagedToday.has(m.userId),
+      isActive, daysSinceLastSeen: daysSince
+    };
+  });
+  const activeMembers = enrichedMembers.filter(m => m.isActive);
+  const engagedActive = activeMembers.filter(m => m.engagedToday).length;
+  const healthPercent = activeMembers.length > 0 ? Math.round((engagedActive / activeMembers.length) * 100) : 0;
+  const tier = computeCircleTier(engagedActive, activeMembers.length);
+  const consecutiveGoldDays = tier === "gold" ? await computeConsecutiveGoldDays(code, ci) : 0;
+  return c.json({
+    members: enrichedMembers,
+    circleHealth: {
+      activeMembers: activeMembers.length, totalMembers: ci.members.length,
+      engagedToday: engagedActive, healthPercent, tier,
+      consecutiveGoldDays, wePrayedTogetherBadge: consecutiveGoldDays >= 7
+    }
+  });
+});
+
 app.get("/api/circles/:code/activity", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   const code = c.req.param("code").toUpperCase(); const ci = getCircle(code);
