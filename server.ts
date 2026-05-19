@@ -618,11 +618,25 @@ async function getCircleEngagementForDay(circleCode: string, day: string): Promi
 }
 
 function computeCircleTier(engagedCount: number, activeCount: number): string | null {
-  if (activeCount <= 0) return null;
+  if (activeCount <= 0 || engagedCount <= 0) return null;
   const pct = (engagedCount / activeCount) * 100;
-  if (pct >= 75) return "gold";
-  if (pct >= 65) return "silver";
-  if (pct >= 50) return "bronze";
+  // Scale thresholds by circle size
+  if (activeCount <= 5) {
+    // Small circles: 50/65/75
+    if (pct >= 75) return "gold";
+    if (pct >= 65) return "silver";
+    if (pct >= 50) return "bronze";
+  } else if (activeCount <= 15) {
+    // Medium circles: 30/50/65
+    if (pct >= 65) return "gold";
+    if (pct >= 50) return "silver";
+    if (pct >= 30) return "bronze";
+  } else {
+    // Large circles (16+): 20/40/60
+    if (pct >= 60) return "gold";
+    if (pct >= 40) return "silver";
+    if (pct >= 20) return "bronze";
+  }
   return null;
 }
 
