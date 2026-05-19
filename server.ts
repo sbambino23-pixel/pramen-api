@@ -2237,8 +2237,8 @@ app.get("/api/circles/:code/engagement", async (c) => {
   } catch {}
   const enrichedMembers = ci.members.map(m => {
     const lastSeen = lastSeenMap[m.userId] || m.lastPrayedDate || m.joinedAt;
-    const daysSince = lastSeen ? Math.floor((Date.now() - new Date(lastSeen).getTime()) / 86400000) : 999;
-    const isActive = daysSince <= 7;
+    const daysSince = lastSeen ? Math.floor((Date.now() - new Date(lastSeen).getTime()) / 86400000) : 0;
+    const isActive = daysSince <= 14;
     const engagementScore = memberEngagementScores[m.userId] || 0;
     return {
       userId: m.userId, name: m.name, streakCount: m.streakCount,
