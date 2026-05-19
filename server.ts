@@ -1431,7 +1431,8 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
   if (prayedStateChanged) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); }
   if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) {
     trackEvent(c.req.param("userId"), "streak_milestone", { streak_count: b.streakCount, circle_code: c.req.param("code").toUpperCase() });
-    pushToCircleMembersLocalized(ci, c.req.param("userId"), { titleKey: "streak_milestone_title", titleParams: { name: m.name, count: b.streakCount }, bodyKey: "streak_milestone_body", bodyParams: { circle: ci.name }, type: "streak_milestone", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { memberName: m.name, streakCount: b.streakCount } });
+    // v5.15.0 — removed push notification for other members' streak milestones (spam for multi-circle users)
+    // Milestones are still tracked as events and visible in the circle activity feed
   }
   return c.json({ circle: ci });
 });
