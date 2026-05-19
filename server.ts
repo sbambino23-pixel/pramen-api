@@ -2602,12 +2602,13 @@ app.get("/api/dashboard/revenuecat", async (c) => {
     for (const user of usersResult.rows) {
       const ids = [user.id, user.device_user_id].filter(Boolean);
       for (const uid of ids) {
+        if (uid.startsWith("$RCAnonymous")) continue;
         if (!checkedIds.has(uid)) { checkedIds.add(uid); allCandidates.push({ uid, name: user.name, email: user.email, db_status: user.subscription_status }); }
       }
     }
     // Add revenue event user IDs not already in the set
     for (const row of revEventUsers.rows) {
-      if (row.user_id && !checkedIds.has(row.user_id)) { checkedIds.add(row.user_id); allCandidates.push({ uid: row.user_id, name: null, email: null, db_status: null }); }
+      if (row.user_id && !row.user_id.startsWith("$RCAnonymous") && !checkedIds.has(row.user_id)) { checkedIds.add(row.user_id); allCandidates.push({ uid: row.user_id, name: null, email: null, db_status: null }); }
     }
 
     // v5.10.6 — deduplicate by subscription fingerprint (product + expires_date = same subscription)
