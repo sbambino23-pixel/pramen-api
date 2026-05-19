@@ -893,7 +893,7 @@ app.get("/api/circles/sync-check", async (c) => {
       const prayedToday = ci ? ci.members.filter(m => prayedTodayInOwnTZ(m)).length : 0;
       const engaged = await getCircleEngagementForDay(r.code, today);
       const activeCount = ci ? ci.members.filter(m => getMemberLastSeen(m).isActive).length : 0;
-      const engagedActive = ci ? ci.members.filter(m => getMemberLastSeen(m).isActive && engaged.has(m.userId)).length : 0;
+      const engagedActive = ci ? ci.members.filter(m => getMemberLastSeen(m).isActive && (engaged.has(m.userId) || prayedTodayInOwnTZ(m))).length : 0;
       const tier = computeCircleTier(engagedActive, activeCount);
       return { code: r.code, updatedAt: r.updated_at, prayedToday, totalMembers: ci?.members.length || 0, activeMembers: activeCount, engagedToday: engagedActive, tier };
     }));
@@ -2232,7 +2232,7 @@ app.get("/api/circles/:code/engagement", async (c) => {
       lastPrayedTimezone: m.lastPrayedTimezone, joinedAt: m.joinedAt,
       role: m.role, avatarUrl: m.avatarUrl,
       prayedToday: prayedTodayInOwnTZ(m),
-      engagedToday: engagedToday.has(m.userId),
+      engagedToday: engagedToday.has(m.userId) || prayedTodayInOwnTZ(m),
       isActive, daysSinceLastSeen: daysSince,
       engagementScore, engagementTier: computeEngagementTier(engagementScore)
     };
