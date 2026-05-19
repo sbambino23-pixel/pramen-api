@@ -2353,6 +2353,11 @@ async function checkStreakAtRisk(): Promise<void> {
           }
         }
         if (prayedInLocalTZ) continue; // Skip — they DID pray today in their timezone
+        // Check 3: did they have any circle engagement today? (catches daily prayer pray)
+        try {
+          const engCheck = await pool.query("SELECT 1 FROM circle_engagement WHERE user_id=$1 AND day=$2 LIMIT 1", [row.user_id, today]);
+          if (engCheck.rows.length > 0) continue;
+        } catch {}
         pushToUserLocalized(row.user_id, {
           titleKey: "streak_at_risk_title",
           titleParams: { count: row.streak_count },
