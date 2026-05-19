@@ -602,12 +602,12 @@ function getMemberLastSeen(member: StoredMember): { isActive: boolean; daysSince
   if (!member.lastSeenAt) {
     // Fallback: use lastPrayedDate or joinedAt
     const fallback = member.lastPrayedDate || member.joinedAt;
-    if (!fallback) return { isActive: false, daysSinceLastSeen: 999 };
+    if (!fallback) return { isActive: true, daysSinceLastSeen: 0 }; // New members default to active
     const days = Math.floor((Date.now() - new Date(fallback).getTime()) / (86400000));
-    return { isActive: days <= 7, daysSinceLastSeen: days };
+    return { isActive: days <= 14, daysSinceLastSeen: days };
   }
   const days = Math.floor((Date.now() - new Date(member.lastSeenAt).getTime()) / (86400000));
-  return { isActive: days <= 7, daysSinceLastSeen: days };
+  return { isActive: days <= 14, daysSinceLastSeen: days };
 }
 
 async function getCircleEngagementForDay(circleCode: string, day: string): Promise<Set<string>> {
