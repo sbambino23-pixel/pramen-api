@@ -840,7 +840,22 @@ app.get("/auth/tiktok/callback", async (c) => {
   } catch (err: any) { return c.html(`<h2>Error</h2><pre>${err.message}</pre><p><a href="/auth/tiktok">Try again</a></p>`); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.7", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+// Admin video upload for Buffer scheduling
+app.post("/api/admin/upload-video", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  if (!s3) return c.json({ error: "Storage not configured" }, 500);
+  const body = await c.req.parseBody();
+  const file = body["file"];
+  if (!file || !(file instanceof File)) return c.json({ error: "No file provided" }, 400);
+  if (file.size > 100 * 1024 * 1024) return c.json({ error: "File too large (100MB max)" }, 400);
+  const key = `videos/${Date.now()}-${file.name}`;
+  await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await file.arrayBuffer()), ContentType: file.type || "video/mp4" }));
+  const url = `${R2_PUBLIC_URL}/${key}`;
+  return c.json({ url, key, size: file.size });
+});
+
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.8", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
