@@ -845,14 +845,18 @@ app.post("/api/admin/upload-video", async (c) => {
   const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
   if (!s3) return c.json({ error: "Storage not configured" }, 500);
-  const body = await c.req.parseBody();
-  const file = body["file"];
-  if (!file || !(file instanceof File)) return c.json({ error: "No file provided" }, 400);
-  if (file.size > 100 * 1024 * 1024) return c.json({ error: "File too large (100MB max)" }, 400);
-  const key = `videos/${Date.now()}-${file.name}`;
-  await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(await file.arrayBuffer()), ContentType: file.type || "video/mp4" }));
-  const url = `${R2_PUBLIC_URL}/${key}`;
-  return c.json({ url, key, size: file.size });
+  try {
+    const body = await c.req.parseBody();
+    const file = body["file"] as any;
+    if (!file || typeof file === "string") return c.json({ error: "No file provided. Send as multipart form with field name 'file'." }, 400);
+    const arrayBuffer = await file.arrayBuffer();
+    if (arrayBuffer.byteLength > 100 * 1024 * 1024) return c.json({ error: "File too large (100MB max)" }, 400);
+    const fileName = file.name || `upload-${Date.now()}.mp4`;
+    const key = `videos/${Date.now()}-${fileName}`;
+    await s3.send(new PutObjectCommand({ Bucket: R2_BUCKET_NAME, Key: key, Body: Buffer.from(arrayBuffer), ContentType: file.type || "video/mp4" }));
+    const url = `${R2_PUBLIC_URL}/${key}`;
+    return c.json({ url, key, size: arrayBuffer.byteLength });
+  } catch (err: any) { return c.json({ error: "Internal error", detail: err.message }, 500); }
 });
 
 app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.8", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
