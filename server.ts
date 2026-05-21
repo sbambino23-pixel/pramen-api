@@ -2658,7 +2658,9 @@ app.get("/api/dashboard/revenuecat", async (c) => {
         // RC counts trial users as "active subscriptions" if they have an auto-renewing plan
         // and as "trials" only for the trial-specific metric
         const hasActiveNonTrial = Object.values(subscriptions).some((s: any) => new Date(s.expires_date) > nowPlusBuffer && s.period_type !== "trial" && !s.unsubscribe_detected_at && !s.billing_issues_detected_at);
-        const hasActiveTrial = Object.values(subscriptions).some((s: any) => new Date(s.expires_date) > nowPlusBuffer && s.period_type === "trial" && !s.unsubscribe_detected_at);
+        // For trials, don't filter by unsubscribe_detected_at — Apple sets it when auto-renew is off,
+        // which is the default for most trial users. A trial is active if it hasn't expired.
+        const hasActiveTrial = Object.values(subscriptions).some((s: any) => new Date(s.expires_date) > nowPlusBuffer && s.period_type === "trial");
         const isLifetime = Object.keys(subscriptions).some((pid) => pid.includes("lifetime"));
         // Active subs: both non-trial renewers AND trial users (RC counts trials as active subs)
         if (hasActiveNonTrial || hasActiveTrial || isLifetime) activeCount++;
@@ -2696,13 +2698,14 @@ app.get("/api/dashboard/revenuecat", async (c) => {
 
     // v5.14.1 — net counts: prefer RC v2 overview (authoritative), fall back to subscriber scan
     // The subscriber scan misses $RCAnonymous users which causes undercounting
-    const computedNetTrials = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && !sub.unsubscribe_detected_at)).length;
+    // For trials, don't filter by unsubscribe_detected_at — Apple sets it when auto-renew is off by default
+    const computedNetTrials = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial")).length;
     const computedNetSubs = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type !== "trial" && !sub.unsubscribe_detected_at)).length;
     const netActiveTrials = ovMetrics?.active_trials ?? computedNetTrials;
     const netActiveSubscribers = ovMetrics?.active_subscriptions != null ? Math.max((ovMetrics.active_subscriptions || 0) - (ovMetrics?.active_trials || 0), computedNetSubs) : computedNetSubs;
     // v5.15.0 — monthly vs yearly breakdown for trials and subscribers
-    const netTrialMonthly = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && !sub.unsubscribe_detected_at && (sub.product || "").includes("monthly"))).length;
-    const netTrialYearly = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && !sub.unsubscribe_detected_at && (sub.product || "").includes("yearly"))).length;
+    const netTrialMonthly = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && (sub.product || "").includes("monthly"))).length;
+    const netTrialYearly = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && (sub.product || "").includes("yearly"))).length;
     const netSubMonthly = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type !== "trial" && !sub.unsubscribe_detected_at && (sub.product || "").includes("monthly"))).length;
     const netSubYearly = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type !== "trial" && !sub.unsubscribe_detected_at && (sub.product || "").includes("yearly"))).length;
     const netSubLifetime = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type !== "trial" && !sub.unsubscribe_detected_at && (sub.product || "").includes("lifetime"))).length;
