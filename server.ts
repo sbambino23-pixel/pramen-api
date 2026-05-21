@@ -2694,10 +2694,12 @@ app.get("/api/dashboard/revenuecat", async (c) => {
     const summaryMrr = ovMetrics?.mrr ? ovMetrics.mrr / 100 : Math.max(adjustedMrr, 0);
     const summaryNetMrr = ovMetrics?.mrr ? Math.round(ovMetrics.mrr / 100 * (1 - APPLE_CUT) * 100) / 100 : Math.round(Math.max(adjustedMrr, 0) * (1 - APPLE_CUT) * 100) / 100;
 
-    // v5.14.1 — net counts: only users who haven't cancelled and are still active
-    // These are the "real" numbers — excluding users who cancelled but haven't expired yet
-    const netActiveTrials = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && !sub.unsubscribe_detected_at)).length;
-    const netActiveSubscribers = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type !== "trial" && !sub.unsubscribe_detected_at)).length;
+    // v5.14.1 — net counts: prefer RC v2 overview (authoritative), fall back to subscriber scan
+    // The subscriber scan misses $RCAnonymous users which causes undercounting
+    const computedNetTrials = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && !sub.unsubscribe_detected_at)).length;
+    const computedNetSubs = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type !== "trial" && !sub.unsubscribe_detected_at)).length;
+    const netActiveTrials = ovMetrics?.active_trials ?? computedNetTrials;
+    const netActiveSubscribers = ovMetrics?.active_subscriptions != null ? Math.max((ovMetrics.active_subscriptions || 0) - (ovMetrics?.active_trials || 0), computedNetSubs) : computedNetSubs;
     // v5.15.0 — monthly vs yearly breakdown for trials and subscribers
     const netTrialMonthly = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && !sub.unsubscribe_detected_at && (sub.product || "").includes("monthly"))).length;
     const netTrialYearly = subscribers.filter((s: any) => s.subscriptions.some((sub: any) => sub.is_active && sub.period_type === "trial" && !sub.unsubscribe_detected_at && (sub.product || "").includes("yearly"))).length;
