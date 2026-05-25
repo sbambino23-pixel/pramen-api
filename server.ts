@@ -500,6 +500,8 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_google_user_id ON users(google_user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_auth_token ON users(auth_token)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_device_user_id ON users(device_user_id)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS link_clicks (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, utm_source TEXT, utm_medium TEXT, utm_campaign TEXT, utm_content TEXT, referrer TEXT, user_agent TEXT, clicked_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_link_clicks_date ON link_clicks(clicked_at)`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_web_metrics (date DATE PRIMARY KEY, visitors INT DEFAULT 0, pageviews INT DEFAULT 0, bounce_rate REAL DEFAULT 0, visit_duration_avg REAL DEFAULT 0, app_store_clicks INT DEFAULT 0, top_sources JSONB DEFAULT '[]', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_revenue (date DATE PRIMARY KEY, new_subscribers INT DEFAULT 0, renewals INT DEFAULT 0, cancellations INT DEFAULT 0, revenue_gross REAL DEFAULT 0, revenue_net REAL DEFAULT 0, mrr REAL DEFAULT 0, plan_breakdown JSONB DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_product_metrics (date DATE PRIMARY KEY, dau INT DEFAULT 0, new_users INT DEFAULT 0, prayers_logged INT DEFAULT 0, circles_created INT DEFAULT 0, invites_accepted INT DEFAULT 0, encouragements_sent INT DEFAULT 0, paywall_views INT DEFAULT 0, plan_taps INT DEFAULT 0, scripture_views INT DEFAULT 0, signups INT DEFAULT 0, account_deletions INT DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW())`);
@@ -3243,6 +3245,52 @@ app.get("/api/dashboard", async (c) => {
     }));
     return c.json({ generated_at: new Date().toISOString(), kpis: { total_users: parseInt(uc.rows[0]?.count||"0"), active_subscribers: (sb["active"]||0)+(sb["lifetime"]||0), mrr_net: tn, revenue_gross_30d: tg, revenue_net_30d: tn, active_circles: circles.size, total_circle_members: tm, landing_visitors_7d: tv, landing_app_store_clicks_7d: tc, landing_conversion: tv > 0 ? ((tc/tv)*100).toFixed(1)+"%" : "0%" }, subscription_breakdown: sb, revenue: { daily: rv.rows, recent_events: re.rows, total_subscribers_30d: rv.rows.reduce((s: number, r: any) => s+(r.new_subscribers||0), 0), total_cancellations_30d: rv.rows.reduce((s: number, r: any) => s+(r.cancellations||0), 0) }, web: { daily: wd.rows }, app_store: { daily: ad.rows }, circles: { total: circles.size, total_members: tm, total_prayer_requests: tp, total_encouragements: encTotal, circles: circleData } });
   } catch (e: any) { return c.json({ error: "Dashboard failed", detail: e.message }, 500); }
+});
+
+// ─── UTM Link Redirect ──────────────────────────────────────────
+// All social bio links point here: pramen.app/go?utm_source=...
+// Logs the click with UTM params, then redirects to App Store
+app.get("/go", async (c) => {
+  const utm_source = c.req.query("utm_source") || null;
+  const utm_medium = c.req.query("utm_medium") || null;
+  const utm_campaign = c.req.query("utm_campaign") || null;
+  const utm_content = c.req.query("utm_content") || null;
+  const referrer = c.req.header("referer") || null;
+  const user_agent = c.req.header("user-agent") || null;
+
+  // Log click async — don't block the redirect
+  pool.query(
+    `INSERT INTO link_clicks (utm_source, utm_medium, utm_campaign, utm_content, referrer, user_agent) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [utm_source, utm_medium, utm_campaign, utm_content, referrer, user_agent]
+  ).catch(e => console.error("[LinkClick] Failed to log:", e.message));
+
+  // Build App Store URL with UTM passthrough
+  const appStoreBase = "https://apps.apple.com/app/pramen/id6759958354";
+  const params = new URLSearchParams();
+  if (utm_source) params.set("utm_source", utm_source);
+  if (utm_medium) params.set("utm_medium", utm_medium);
+  if (utm_campaign) params.set("utm_campaign", utm_campaign);
+  if (utm_content) params.set("utm_content", utm_content);
+  const qs = params.toString();
+  const destination = qs ? `${appStoreBase}?${qs}` : appStoreBase;
+
+  return c.redirect(destination, 302);
+});
+
+// ─── UTM Link Click Stats (dashboard) ───────────────────────────
+app.get("/api/dashboard/link-clicks", async (c) => {
+  if (c.req.query("key") !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  const days = parseInt(c.req.query("days") || "30");
+  try {
+    const total = await pool.query(`SELECT COUNT(*) as total FROM link_clicks WHERE clicked_at >= NOW() - INTERVAL '${days} days'`);
+    const bySource = await pool.query(`SELECT utm_source, utm_medium, utm_campaign, COUNT(*) as clicks FROM link_clicks WHERE clicked_at >= NOW() - INTERVAL '${days} days' GROUP BY utm_source, utm_medium, utm_campaign ORDER BY clicks DESC`);
+    const byDay = await pool.query(`SELECT DATE(clicked_at) as date, COUNT(*) as clicks FROM link_clicks WHERE clicked_at >= NOW() - INTERVAL '${days} days' GROUP BY DATE(clicked_at) ORDER BY date DESC`);
+    return c.json({
+      total_clicks: parseInt(total.rows[0]?.total || "0"),
+      by_source: bySource.rows,
+      by_day: byDay.rows
+    });
+  } catch (e: any) { return c.json({ error: e.message }, 500); }
 });
 
 app.get("/dashboard", (c) => {
