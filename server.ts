@@ -1050,7 +1050,24 @@ app.get("/api/admin/recent-users", async (c) => { const key = c.req.query("key")
 app.get("/api/admin/email-list", async (c) => { if (c.req.header("X-Admin-Secret") !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const r = await pool.query("SELECT email,name,auth_provider,created_at FROM users WHERE email_opt_in=true AND email IS NOT NULL AND email NOT LIKE '%privaterelay.appleid.com' ORDER BY created_at DESC"); return c.json({ count: r.rows.length, emails: r.rows }); });
 app.post("/api/auth/verify", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ valid: false }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ valid: false }, 401); return c.json({ valid: true, user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id) }); });
 app.post("/api/auth/logout", async (c) => { const ah = c.req.header("Authorization"); if (!ah) return c.json({ success: true }); await pool.query("UPDATE users SET auth_token=$1,updated_at=NOW() WHERE auth_token=$2", [generateAuthToken(), ah.replace("Bearer ", "")]); return c.json({ success: true }); });
-app.delete("/api/auth/account", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Not found" }, 404); await pool.query("DELETE FROM user_data WHERE user_id=$1", [u.id]); await pool.query("DELETE FROM users WHERE id=$1", [u.id]); trackEvent(u.id, "account_deleted", {}); return c.json({ success: true }); });
+app.delete("/api/auth/account", async (c) => {
+  const ah = c.req.header("Authorization");
+  if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401);
+  const u = await getUserByToken(ah.replace("Bearer ", ""));
+  if (!u) return c.json({ error: "Not found" }, 404);
+  // Remove user from ALL circles before deleting account
+  for (const [code, ci] of circles.entries()) {
+    const memberIdx = ci.members.findIndex(m => m.userId === u.id);
+    if (memberIdx !== -1) {
+      ci.members.splice(memberIdx, 1);
+      await saveCircleToDb(ci);
+    }
+  }
+  await pool.query("DELETE FROM user_data WHERE user_id=$1", [u.id]);
+  await pool.query("DELETE FROM users WHERE id=$1", [u.id]);
+  trackEvent(u.id, "account_deleted", {});
+  return c.json({ success: true });
+});
 
 // v5.13.1 — admin push notification endpoint
 app.post("/api/admin/push", async (c) => {
