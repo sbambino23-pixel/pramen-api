@@ -124,7 +124,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 var B=location.origin,K=new URLSearchParams(location.search).get("key")||"",
     D=null,PH=null,AP=null,RC=null,TAB="overview",SU=null,
     RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",CUSTOM_FROM=null,CUSTOM_TO=null,USR_SEARCH="",USR_VIEW="list",YT_SORT="views",YT_SORT_DIR="desc",IG_SORT="likes",IG_SORT_DIR="desc",IG_TYPE_FILTER="all",TT_SORT="views",TT_SORT_DIR="desc",
-    GR=null,OG=null;
+    GR=null,OG=null,LC=null;
 
 // Event colors & labels
 var C={app_opened:"#6B6E52",prayer_logged:"#D4845A",paywall_viewed:"#A84F3E",paywall_plan_selected:"#B89E82",onboarding_completed:"#7A8A68",circle_created:"#88A8BC",circle_left:"#8A8C74",prayer_request_created:"#7A4F32",share_tapped:"#7F835F",scripture_viewed:"#9A6848",circle_invite_accepted:"#88A8BC",circle_member_joined:"#88A8BC",encouragement_sent:"#7F835F",user_signed_up:"#7A8A68",account_deleted:"#A84F3E",email_opt_in:"#7A8A68",streak_milestone:"#D4845A",subscription_started:"#7A8A68",subscription_cancelled:"#A84F3E",subscription_renewed:"#7F835F",subscription_expired:"#A84F3E",lifetime_purchased:"#9A6848",billing_issue_detected:"#D4845A"};
@@ -183,9 +183,10 @@ function loadAll(){
     fetch(B+"/api/dashboard/appstore?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
     fetch(B+"/api/dashboard/revenuecat?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
     fetch(B+"/api/dashboard/growth?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
-    fetch(B+"/api/dashboard/organic?key="+K).then(function(r){return r.json()}).catch(function(){return null})
+    fetch(B+"/api/dashboard/organic?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
+    fetch(B+"/api/dashboard/link-clicks?key="+K+"&days=30").then(function(r){return r.json()}).catch(function(){return null})
   ]).then(function(r){
-    D=r[0];PH=r[1]&&!r[1].error?r[1]:null;AP=r[2];RC=r[3]&&!r[3].error?r[3]:null;GR=r[4];OG=r[5];
+    D=r[0];PH=r[1]&&!r[1].error?r[1]:null;AP=r[2];RC=r[3]&&!r[3].error?r[3]:null;GR=r[4];OG=r[5];LC=r[6];
     var rc=RC?.summary||{};
     document.getElementById("ts").textContent=new Date().toLocaleString()+" · "+(PH?PH.total_events+" events · "+PH.total_users+" users":"PH: connecting...")+(rc.net_mrr?" · MRR: $"+rc.net_mrr.toFixed(2):"");
     var ab=document.getElementById("asc-status");if(AP&&AP.connected){ab.className="asc-badge asc-ok";ab.textContent="Apple: OK"}else{ab.className="asc-badge asc-no";ab.textContent="Apple: --"}
@@ -1033,7 +1034,61 @@ function rWb(){
   '<div class="note" style="margin-bottom:8px">'+(an.status==="ok"?"Data parsed. Refresh to see.":an.status==="generating"?"Apple is generating reports. Data will appear within 24 hours.":"Reports requested. Apple is processing. Check back soon.")+
   (an.reports_available?' <br>Reports found: '+an.reports_available.join(", "):"")+
   '</div>'+
-  '<div style="padding:8px;font-size:10px;color:var(--muted)">Numbers will auto-populate once Apple finishes generating report instances.</div></div>')+'</div>'}
+  '<div style="padding:8px;font-size:10px;color:var(--muted)">Numbers will auto-populate once Apple finishes generating report instances.</div></div>')+
+  rLinkClicks()+
+  rTrafficSources(d)+
+  '</div>'}
+
+function rLinkClicks(){
+  if(!LC)return'';
+  var total=LC.total_clicks||0;
+  var bySource=LC.by_source||[];
+  var byDay=LC.by_day||[];
+  var html='<div class="cd"><h3>UTM Link Clicks (30d)</h3>';
+  html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(120px,1fr));margin-bottom:10px">'+kpi("Total Clicks",total,"var(--gold)")+'</div>';
+  if(bySource.length){
+    html+='<table class="tbl"><tr><th>Source</th><th>Medium</th><th>Campaign</th><th>Clicks</th></tr>';
+    bySource.forEach(function(s){
+      html+='<tr><td style="font-weight:600">'+(s.utm_source||'direct')+'</td><td class="mono">'+(s.utm_medium||'—')+'</td><td class="mono">'+(s.utm_campaign||'—')+'</td><td class="mono" style="color:var(--gold);font-weight:700">'+s.clicks+'</td></tr>';
+    });
+    html+='</table>';
+  }else{
+    html+='<div class="note">No UTM link clicks recorded yet. Bio links need to go through pramen.app with UTM parameters.</div>';
+  }
+  if(byDay.length){
+    html+='<div style="margin-top:10px"><h3 style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px">Daily Clicks</h3>';
+    html+='<div class="spark" style="height:40px">';
+    var maxC=Math.max.apply(null,byDay.map(function(d){return d.clicks}));
+    byDay.slice(0,30).reverse().forEach(function(d){
+      var h=maxC>0?Math.max(2,(d.clicks/maxC)*40):2;
+      html+='<div class="spark-bar" style="height:'+h+'px" title="'+d.date+': '+d.clicks+' clicks"></div>';
+    });
+    html+='</div></div>';
+  }
+  html+='</div>';
+  return html;
+}
+
+function rTrafficSources(webDaily){
+  var sources={};
+  (webDaily||[]).forEach(function(d){
+    var ts=[];try{ts=typeof d.top_sources==='string'?JSON.parse(d.top_sources):d.top_sources||[]}catch(e){}
+    ts.forEach(function(s){
+      var name=s.source||s.name||'Direct';
+      sources[name]=(sources[name]||0)+(s.visitors||s.value||1);
+    });
+  });
+  var sorted=Object.entries(sources).sort(function(a,b){return b[1]-a[1]});
+  if(!sorted.length)return'';
+  var maxV=sorted[0][1];
+  var html='<div class="cd"><h3>Traffic Sources (Plausible, 30d)</h3>';
+  sorted.forEach(function(s){
+    var pct=maxV>0?Math.round(s[1]/maxV*100):0;
+    html+='<div class="br"><div class="bl"><span class="bn">'+s[0]+'</span><span class="bc">'+s[1]+' visitors</span></div><div class="bt"><div class="bf" style="width:'+pct+'%;background:var(--gold)"></div></div></div>';
+  });
+  html+='</div>';
+  return html;
+}
 
 // ═══════════════════════════════════════════════════════════════
 // ─── CIRCLES TAB ───────────────────────────────────────────────
