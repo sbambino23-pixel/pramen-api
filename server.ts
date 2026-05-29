@@ -3657,6 +3657,151 @@ async function start() {
   // Run daily at 9am (check every hour)
   setInterval(() => { const h = new Date().getHours(); if (h === 9) nudgeCancelledTrials().catch(() => {}); }, 60 * 60 * 1000);
 
+  // ═══════════════════════════════════════════════════════════════════
+  // v4.0.14 — Day 1-7 circle-aware notifications for new users
+  // Rules: max 2 push/day, circle-aware replaces generic, skip active non-cancelled subscribers who prayed today
+  // ═══════════════════════════════════════════════════════════════════
+
+  async function getDailyPushCount(userId: string): Promise<number> {
+    const today = new Date().toISOString().split("T")[0];
+    const result = await pool.query("SELECT COUNT(*) as cnt FROM push_throttle WHERE throttle_key LIKE $1 AND sent_date = $2", [`daily_push_${userId}_%`, today]);
+    return parseInt(result.rows[0]?.cnt || "0");
+  }
+
+  async function recordDailyPush(userId: string, pushType: string): Promise<void> {
+    const today = new Date().toISOString().split("T")[0];
+    const key = `daily_push_${userId}_${pushType}_${today}`;
+    await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [key, today]);
+  }
+
+  function userPrayedToday(userId: string): boolean {
+    for (const [, circle] of circles) {
+      const member = circle.members.find(m => m.userId === userId);
+      if (member && prayedTodayInOwnTZ(member)) return true;
+    }
+    return false;
+  }
+
+  async function nudgeNewUsers(): Promise<void> {
+    try {
+      // Find users created in the last 7 days with device tokens
+      const newUsers = await pool.query(`
+        SELECT u.id, u.name, u.device_token, u.created_at, u.subscription_status,
+               ud.total_prayers, ud.streak_count, ud.circle_codes
+        FROM users u
+        LEFT JOIN user_data ud ON ud.user_id = u.id
+        WHERE u.device_token IS NOT NULL
+        AND u.created_at > NOW() - INTERVAL '7 days'
+      `);
+      if (newUsers.rows.length === 0) return;
+
+      let sent = 0;
+      for (const user of newUsers.rows) {
+        // Rule 6: Never nudge active non-cancelled subscribers who prayed today
+        if (user.subscription_status === 'active' && userPrayedToday(user.id)) continue;
+
+        // Rule 4: If user prayed today, skip
+        if (userPrayedToday(user.id)) continue;
+
+        // Rule 1: Max 2 push per day
+        const dailyCount = await getDailyPushCount(user.id);
+        if (dailyCount >= 2) continue;
+
+        const hoursOld = (Date.now() - new Date(user.created_at).getTime()) / (1000 * 60 * 60);
+        const daysOld = Math.floor(hoursOld / 24);
+        const totalPrayers = user.total_prayers || 0;
+
+        // Find user's auto-enrolled community circle
+        let circleName = "";
+        let circleMemberCount = 0;
+        let prayedTodayCount = 0;
+        for (const [, circle] of circles) {
+          const isMember = circle.members.some(m => m.userId === user.id);
+          if (isMember && circle.members.length >= 10) {
+            circleName = circle.name;
+            circleMemberCount = circle.members.length;
+            prayedTodayCount = circle.members.filter(m => prayedTodayInOwnTZ(m)).length;
+            break;
+          }
+        }
+
+        let title = "";
+        let body = "";
+        let pushType = "";
+
+        if (daysOld === 0 && hoursOld >= 6 && totalPrayers <= 1) {
+          // Day 1 evening — streak nudge
+          pushType = "day1_evening";
+          const throttleKey = `new_user_day1_${user.id}`;
+          const exists = await pool.query("SELECT throttle_key FROM push_throttle WHERE throttle_key=$1", [throttleKey]);
+          if (exists.rows.length > 0) continue;
+          title = "You started something today";
+          body = totalPrayers > 0
+            ? "You prayed once today. 36 seconds keeps the streak alive."
+            : "Your first prayer is waiting. It only takes 36 seconds.";
+          await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
+
+        } else if (daysOld === 1 && circleName) {
+          // Day 2 morning — circle-aware
+          pushType = "day2_circle";
+          const throttleKey = `new_user_day2_circle_${user.id}`;
+          const exists = await pool.query("SELECT throttle_key FROM push_throttle WHERE throttle_key=$1", [throttleKey]);
+          if (exists.rows.length > 0) continue;
+          title = circleName;
+          body = prayedTodayCount > 0
+            ? `${prayedTodayCount} people already prayed today. Join them.`
+            : `${circleMemberCount} people are in your circle. Show up today.`;
+          await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
+
+        } else if (daysOld === 1 && hoursOld >= 30) {
+          // Day 2 evening — "someone prayed for you" (ONE TIME)
+          pushType = "day2_prayed_for_you";
+          const throttleKey = `new_user_prayed_for_you_${user.id}`;
+          const exists = await pool.query("SELECT throttle_key FROM push_throttle WHERE throttle_key=$1", [throttleKey]);
+          if (exists.rows.length > 0) continue;
+          if (!circleName) continue; // Only send if in a circle
+          // Find a real member who prayed today
+          let prayerName = "";
+          for (const [, circle] of circles) {
+            if (!circle.members.some(m => m.userId === user.id)) continue;
+            const prayedMember = circle.members.find(m => m.userId !== user.id && prayedTodayInOwnTZ(m));
+            if (prayedMember) { prayerName = prayedMember.name; break; }
+          }
+          if (!prayerName) continue; // Only send if someone actually prayed
+          title = `${prayerName} prayed for you`;
+          body = `Someone in ${circleName} showed up for you today.`;
+          await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
+
+        } else if (daysOld === 2 && circleName) {
+          // Day 3 morning — accountability
+          pushType = "day3_accountability";
+          const throttleKey = `new_user_day3_${user.id}`;
+          const exists = await pool.query("SELECT throttle_key FROM push_throttle WHERE throttle_key=$1", [throttleKey]);
+          if (exists.rows.length > 0) continue;
+          title = "Day 3";
+          body = totalPrayers > 0
+            ? `Your circle sees when you pray. ${prayedTodayCount > 0 ? prayedTodayCount + " already showed up today." : "Be the first today."}`
+            : "Your circle is waiting. 36 seconds. That's all it takes.";
+          await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
+
+        } else {
+          continue;
+        }
+
+        // Send the push
+        await pushToUser(user.id, { title, body, type: "streak_reminders" });
+        await recordDailyPush(user.id, pushType);
+        trackEvent(user.id, `new_user_nudge_${pushType}`, { days_old: daysOld, total_prayers: totalPrayers, circle: circleName });
+        sent++;
+      }
+      if (sent > 0) console.log(`[Nudge] New user circle-aware nudge sent to ${sent} users`);
+    } catch (err: any) { console.error("[Nudge] New user:", err.message); }
+  }
+
+  // Run every 3 hours — checks which day each user is on and sends appropriate nudge
+  setInterval(() => { nudgeNewUsers().catch(() => {}); }, 3 * 60 * 60 * 1000);
+  setTimeout(() => { nudgeNewUsers().catch(() => {}); }, 8 * 60 * 1000);
+
   // v5.12.6 — Sync user segments to Loops.so for email campaigns (every 6 hours)
   const LOOPS_API_KEY = process.env.LOOPS_API_KEY || "";
   async function syncToLoops(): Promise<void> {
