@@ -100,7 +100,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 <div class="c">
   <div class="hdr"><div><h1>prAmen</h1><p class="sub" id="ts">Loading...</p></div>
   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div class="live"><span class="dot"></span>LIVE</div><span id="asc-status" class="asc-badge asc-no">Apple: ...</span><button class="rbtn" onclick="loadAll()">Refresh</button>
-  <div class="tabs"><button class="tab active" onclick="go('overview',this)">Overview</button><button class="tab" onclick="go('funnel',this)">Funnel</button><button class="tab" onclick="go('users',this)">Users</button><button class="tab" onclick="go('events',this)">Events</button><button class="tab" onclick="go('revenue',this)">Revenue</button><button class="tab" onclick="go('web',this)">Web</button><button class="tab" onclick="go('circles',this)">Circles</button><button class="tab" onclick="go('growth',this)">Growth</button><button class="tab" onclick="go('organic',this)">Organic</button><button class="tab" onclick="go('admin',this)">Admin</button></div></div></div>
+  <div class="tabs"><button class="tab active" onclick="go('overview',this)">Overview</button><button class="tab" onclick="go('funnel',this)">Funnel</button><button class="tab" onclick="go('users',this)">Users</button><button class="tab" onclick="go('events',this)">Events</button><button class="tab" onclick="go('revenue',this)">Revenue</button><button class="tab" onclick="go('web',this)">Web</button><button class="tab" onclick="go('circles',this)">Circles</button><button class="tab" onclick="go('growth',this)">Growth</button><button class="tab" onclick="go('organic',this)">Organic</button><button class="tab" onclick="go('costs',this)">Costs</button><button class="tab" onclick="go('admin',this)">Admin</button></div></div></div>
   <!-- Date Range Bar -->
   <div class="dr-bar">
     <span class="dr-label">Range</span>
@@ -297,7 +297,7 @@ function metaRowCells(r){
   var tc=r.trials>0?'color:var(--gold);font-weight:700':'color:var(--muted)';
   return'<td>$'+(r.spend||0).toFixed(2)+'</td><td>'+(r.impressions||0).toLocaleString()+'</td><td>'+(r.clicks||0)+'</td><td style="'+ic+'">'+(r.installs||0)+'</td><td style="'+tc+'">'+(r.trials||0)+'</td><td>'+cpiStr+'</td><td>'+ctrStr+'</td>';
 }
-function render(){if(!D)return;var el=document.getElementById("main");var alerts=renderChurnAlerts();switch(TAB){case"overview":el.innerHTML=alerts+rOv();break;case"funnel":el.innerHTML=alerts+rFn();break;case"users":el.innerHTML=alerts+rUs();break;case"events":el.innerHTML=alerts+rEv();break;case"revenue":el.innerHTML=alerts+rRv();break;case"web":el.innerHTML=alerts+rWb();break;case"circles":el.innerHTML=alerts+rCr();break;case"growth":el.innerHTML=alerts+rGr();setTimeout(initAsaCsvDrop,0);break;case"organic":el.innerHTML=alerts+rOg();break;case"admin":el.innerHTML=alerts+rAd();break}}
+function render(){if(!D)return;var el=document.getElementById("main");var alerts=renderChurnAlerts();switch(TAB){case"overview":el.innerHTML=alerts+rOv();break;case"funnel":el.innerHTML=alerts+rFn();break;case"users":el.innerHTML=alerts+rUs();break;case"events":el.innerHTML=alerts+rEv();break;case"revenue":el.innerHTML=alerts+rRv();break;case"web":el.innerHTML=alerts+rWb();break;case"circles":el.innerHTML=alerts+rCr();break;case"growth":el.innerHTML=alerts+rGr();setTimeout(initAsaCsvDrop,0);break;case"organic":el.innerHTML=alerts+rOg();break;case"costs":el.innerHTML=alerts+rCosts();break;case"admin":el.innerHTML=alerts+rAd();break}}
 
 // ─── KPI helper with delta ────────────────────────────────────
 function kpi(l,v,c,delta){return'<div class="k"><div class="l">'+l+'</div><div class="v" style="color:'+c+'">'+v+'</div>'+deltaHtml(delta)+'</div>'}
@@ -1278,6 +1278,117 @@ function rGr(){
 // ═══════════════════════════════════════════════════════════════
 // ─── ORGANIC TAB ───────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// ─── COSTS TAB ────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+function rCosts(){
+  // Monthly subscriptions — update these as subscriptions change
+  var subs=[
+    {name:"Rork (app builder)",cost:700,currency:"USD",eur:644,owner:"Samy",status:"active",essential:true,note:"Core dev tool — app is built on this"},
+    {name:"Railway (backend hosting)",cost:5,currency:"USD",eur:5,owner:"Samy",status:"active",essential:true,note:"Backend server — cannot cut"},
+    {name:"HeyGen (Father John)",cost:85,currency:"EUR",eur:85,owner:"Samy",status:"active",essential:false,note:"Video generation for FJ reels. Consider: batch produce and cancel"},
+    {name:"Canva (Elias)",cost:34,currency:"EUR",eur:34,owner:"Elias",status:"active",essential:false,note:"Design tool — free tier available"},
+    {name:"Canva (Alex faceless)",cost:21,currency:"CAD",eur:14,owner:"Alex",status:"active",essential:false,note:"Duplicate Canva sub — consolidate with Elias?"},
+    {name:"CapCut (Alex)",cost:15,currency:"CAD",eur:10,owner:"Alex",status:"active",essential:false,note:"Video editing — free tier available"},
+    {name:"Shopify",cost:44,currency:"CAD",eur:30,owner:"Alex",status:"active",essential:false,note:"E-commerce — is the store generating revenue?"},
+    {name:"LinkTree",cost:15,currency:"USD",eur:14,owner:"Alex",status:"active",essential:false,note:"Link in bio — free tier works. Consider cutting."},
+    {name:"Gemini API",cost:95,currency:"CAD",eur:65,owner:"Alex",status:"active",essential:false,note:"AI API — check actual usage. Cut if low."},
+    {name:"Higgsfield",cost:0,currency:"USD",eur:0,owner:"Alex",status:"paused",essential:false,note:"Credits purchased as needed, not monthly"},
+    {name:"Plausible (web analytics)",cost:9,currency:"USD",eur:8,owner:"Samy",status:"active",essential:true,note:"Landing page analytics — needed for UTM tracking"},
+    {name:"RevenueCat",cost:0,currency:"USD",eur:0,owner:"—",status:"active",essential:true,note:"Free tier ($2,500 MTR limit). Currently at $122 MTR."},
+    {name:"PostHog",cost:0,currency:"USD",eur:0,owner:"—",status:"active",essential:true,note:"Free tier. Analytics."},
+    {name:"ManyChat",cost:0,currency:"USD",eur:0,owner:"Samy",status:"active",essential:false,note:"Free tier. Pro ($15/mo) unlocks auto-DM on follow."},
+    {name:"Claude Code (3 seats)",cost:0,currency:"USD",eur:0,owner:"—",status:"tbd",essential:true,note:"TBD — discuss team pricing"},
+    {name:"Buffer",cost:0,currency:"USD",eur:0,owner:"—",status:"active",essential:true,note:"Free tier. YouTube scheduling."},
+    {name:"Apple Developer",cost:99,currency:"USD",eur:91,owner:"Samy",status:"active",essential:true,note:"Annual ($99/yr = ~$8/mo). Required for App Store."}
+  ];
+
+  var activeSubs=subs.filter(function(s){return s.status==='active'});
+  var totalMonthlyEur=activeSubs.reduce(function(t,s){return t+s.eur},0);
+  var essentialEur=activeSubs.filter(function(s){return s.essential}).reduce(function(t,s){return t+s.eur},0);
+  var cuttableEur=totalMonthlyEur-essentialEur;
+
+  // Revenue from RC
+  var rc=RC?.summary||{};
+  var mrr=rc.net_mrr||0;
+  var mrrEur=mrr*0.92; // USD to EUR
+  var netMonthly=mrrEur-totalMonthlyEur;
+
+  // By owner
+  var byOwner={};
+  activeSubs.forEach(function(s){
+    if(!byOwner[s.owner])byOwner[s.owner]=0;
+    byOwner[s.owner]+=s.eur;
+  });
+
+  var html='';
+
+  // KPIs
+  html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">';
+  html+=kpi("Monthly Burn","€"+totalMonthlyEur.toFixed(0),"var(--red)");
+  html+=kpi("Essential Only","€"+essentialEur.toFixed(0),"var(--green)");
+  html+=kpi("Cuttable","€"+cuttableEur.toFixed(0),"var(--orange)");
+  html+=kpi("MRR (€)","€"+mrrEur.toFixed(0),"var(--gold)");
+  html+=kpi("Net Monthly","€"+netMonthly.toFixed(0),netMonthly>=0?"var(--green)":"var(--red)");
+  html+='</div>';
+
+  // Net position insight
+  if(netMonthly<0){
+    html+='<div class="insight insight-warn"><span class="insight-icon">⚠️</span>Spending €'+Math.abs(netMonthly).toFixed(0)+'/month more than revenue. Cut €'+cuttableEur.toFixed(0)+' in non-essential subs to break even at €'+essentialEur.toFixed(0)+'/month.</div>';
+  } else {
+    html+='<div class="insight insight-good"><span class="insight-icon">✅</span>Revenue covers monthly costs with €'+netMonthly.toFixed(0)+' room.</div>';
+  }
+
+  // Subscriptions table
+  html+='<div class="cd"><h3>Monthly Subscriptions</h3>';
+  html+='<table class="tbl"><tr><th>Service</th><th>Monthly (€)</th><th>Owner</th><th>Essential</th><th>Status</th><th>Notes</th></tr>';
+  subs.forEach(function(s){
+    var statusColor=s.status==='active'?'var(--green)':s.status==='paused'?'var(--muted)':'var(--orange)';
+    var essIcon=s.essential?'<span style="color:var(--green);font-weight:700">✓</span>':'<span style="color:var(--muted)">—</span>';
+    var costStyle=s.eur>0?(s.essential?'color:var(--text)':'color:var(--orange);font-weight:600'):'color:var(--muted)';
+    html+='<tr><td style="font-weight:600">'+s.name+'</td><td class="mono" style="'+costStyle+'">€'+s.eur+'</td><td>'+s.owner+'</td><td style="text-align:center">'+essIcon+'</td><td><span style="color:'+statusColor+';font-weight:600;font-size:9px;text-transform:uppercase">'+s.status+'</span></td><td style="font-size:9px;color:var(--muted)">'+s.note+'</td></tr>';
+  });
+  html+='</table></div>';
+
+  // By owner
+  html+='<div class="cd"><h3>Monthly Cost by Owner</h3>';
+  var owners=Object.entries(byOwner).sort(function(a,b){return b[1]-a[1]});
+  var maxOwner=owners.length?owners[0][1]:1;
+  owners.forEach(function(o){
+    var pct=maxOwner>0?Math.round(o[1]/maxOwner*100):0;
+    html+='<div class="br"><div class="bl"><span class="bn">'+o[0]+'</span><span class="bc">€'+o[1].toFixed(0)+'/mo</span></div><div class="bt"><div class="bf" style="width:'+pct+'%;background:var(--gold)"></div></div></div>';
+  });
+  html+='</div>';
+
+  // Cut recommendations
+  html+='<div class="cd"><h3>Optimization Opportunities</h3>';
+  var cuts=subs.filter(function(s){return s.status==='active'&&!s.essential&&s.eur>0});
+  if(cuts.length){
+    cuts.sort(function(a,b){return b.eur-a.eur});
+    cuts.forEach(function(s){
+      html+='<div class="insight insight-info" style="margin-bottom:4px"><span class="insight-icon">💡</span><strong>'+s.name+' (€'+s.eur+'/mo)</strong> — '+s.note+'</div>';
+    });
+    var totalCuts=cuts.reduce(function(t,s){return t+s.eur},0);
+    html+='<div style="margin-top:8px;padding:8px 12px;font-size:11px;color:var(--gold);font-weight:600">Cutting all non-essential subs saves €'+totalCuts+'/month</div>';
+  } else {
+    html+='<div class="note">All active subscriptions are marked as essential.</div>';
+  }
+  html+='</div>';
+
+  // Historical spend summary
+  html+='<div class="cd"><h3>Historical Spend (All-Time)</h3>';
+  html+='<div class="kg" style="grid-template-columns:repeat(auto-fill,minmax(130px,1fr))">';
+  html+=kpi("Total Spent","€5,699","var(--red)");
+  html+=kpi("CAPEX","€557","var(--blue)");
+  html+=kpi("OPEX","€5,142","var(--orange)");
+  html+=kpi("Total Revenue","€191","var(--green)");
+  html+='</div>';
+  html+='<div style="padding:8px;font-size:10px;color:var(--muted)">Data from prAmen Financial Model (Jan-May 2026). Top vendors: Apple (€1,748), Rork (€644), Lovable (€679), Higgsfield (€597), GoDaddy (€768).</div>';
+  html+='</div>';
+
+  return html;
+}
+
 function rOg(){
   if(!OG)return'<div class="note">Organic data loading...</div>';
   var yt=OG.youtube||{};
