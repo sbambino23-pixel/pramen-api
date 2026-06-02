@@ -1548,6 +1548,7 @@ function rOutreach(){
   // KPIs
   var igContacts=contacts.filter(function(c){return c.platform==='instagram'});
   var ttContacts=contacts.filter(function(c){return c.platform==='tiktok'});
+  var fbContacts=contacts.filter(function(c){return c.platform==='facebook'});
   var replied=contacts.filter(function(c){return c.their_response&&c.their_response.length>0});
   var negotiating=contacts.filter(function(c){return c.status==='negotiating'});
   var promoRedeemed=promos.filter(function(p){return p.status==='redeemed'});
@@ -1556,6 +1557,7 @@ function rOutreach(){
   h+=kpi('Total Contacts',contacts.length,'var(--gold)');
   h+=kpi('Instagram',igContacts.length,'var(--blue)');
   h+=kpi('TikTok',ttContacts.length,'var(--purple)');
+  h+=kpi('Facebook',fbContacts.length,'var(--blue)');
   h+=kpi('Replied',replied.length,'var(--green)');
   h+=kpi('Response Rate',(summary.response_rate||0)+'%','var(--orange)');
   h+=kpi('Negotiating',negotiating.length,'var(--yellow)');
@@ -1569,6 +1571,7 @@ function rOutreach(){
   h+='<button class="filter-chip'+(OUTREACH_FILTER==='all'?' on':'')+'" onclick="setOutreachFilter(\'all\')">All</button>';
   h+='<button class="filter-chip'+(OUTREACH_FILTER==='instagram'?' on':'')+'" onclick="setOutreachFilter(\'instagram\')">Instagram</button>';
   h+='<button class="filter-chip'+(OUTREACH_FILTER==='tiktok'?' on':'')+'" onclick="setOutreachFilter(\'tiktok\')">TikTok</button>';
+  h+='<button class="filter-chip'+(OUTREACH_FILTER==='facebook'?' on':'')+'" onclick="setOutreachFilter(\'facebook\')">Facebook</button>';
   h+='<button class="filter-chip'+(OUTREACH_FILTER==='replied'?' on':'')+'" onclick="setOutreachFilter(\'replied\')">Replied</button>';
   h+='<button class="filter-chip'+(OUTREACH_FILTER==='negotiating'?' on':'')+'" onclick="setOutreachFilter(\'negotiating\')">Negotiating</button>';
   h+='<button class="rbtn" onclick="loadOutreach()" style="margin-left:auto">Refresh</button>';
@@ -1599,7 +1602,7 @@ function rOutreach(){
   h+='<div class="cd"><h3>Add Contact</h3>';
   h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">';
   h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Platform</label>';
-  h+='<select id="oc-platform" class="search-input" style="width:100%;padding:7px 10px"><option value="instagram">Instagram</option><option value="tiktok">TikTok</option></select></div>';
+  h+='<select id="oc-platform" class="search-input" style="width:100%;padding:7px 10px"><option value="instagram">Instagram</option><option value="tiktok">TikTok</option><option value="facebook">Facebook</option></select></div>';
   h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Handle</label>';
   h+='<input type="text" id="oc-handle" placeholder="@username" class="search-input" style="width:100%"></div>';
   h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Name</label>';
@@ -1647,6 +1650,7 @@ function buildOutreachTable(contacts){
   var filtered=contacts.filter(function(c){
     if(OUTREACH_FILTER==='instagram'&&c.platform!=='instagram')return false;
     if(OUTREACH_FILTER==='tiktok'&&c.platform!=='tiktok')return false;
+    if(OUTREACH_FILTER==='facebook'&&c.platform!=='facebook')return false;
     if(OUTREACH_FILTER==='replied'&&(!c.their_response||c.their_response.length===0))return false;
     if(OUTREACH_FILTER==='negotiating'&&c.status!=='negotiating')return false;
     if(search){
@@ -1662,8 +1666,8 @@ function buildOutreachTable(contacts){
   h+='<table class="tbl"><tr><th>Platform</th><th>Handle</th><th>Name</th><th>Followers</th><th>Category</th><th>Contact</th><th>Rate</th><th>Code</th><th>Status</th><th>Response</th><th>Date</th></tr>';
   for(var i=0;i<filtered.length;i++){
     var c=filtered[i];
-    var platIcon=c.platform==='instagram'?'IG':'TT';
-    var platColor=c.platform==='instagram'?'var(--pink)':'var(--text)';
+    var platIcon=c.platform==='instagram'?'IG':c.platform==='facebook'?'FB':'TT';
+    var platColor=c.platform==='instagram'?'var(--pink)':c.platform==='facebook'?'var(--blue)':'var(--text)';
     var stColor=c.status==='replied'||c.status==='negotiating'?'var(--green)':c.status==='converted'?'var(--gold)':c.status==='declined'?'var(--red)':'var(--muted)';
     var resp=c.their_response||'';
     if(resp.length>40)resp=resp.substring(0,40)+'...';
