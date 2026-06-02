@@ -1489,6 +1489,20 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
     pushSilentSyncToCircle(ci, targetUserId).catch(() => {});
   }
 
+  // v5.15.2 — sync prayer state to user_data so checkStreakAtRisk sees current data.
+  // Previously only daily-prayer endpoint updated user_data, leaving regular prayers invisible
+  // to the streak-at-risk check, causing false "streak at risk" notifications.
+  if (prayedStateChanged && b.lastPrayedDate) {
+    try {
+      await pool.query(
+        `UPDATE user_data SET last_prayed_date=$1, last_prayed_local_date=$2, last_prayed_timezone=$3, updated_at=NOW(),
+         streak_count = CASE WHEN $4::int > streak_count THEN $4::int ELSE streak_count END,
+         highest_streak = GREATEST(highest_streak, COALESCE($4::int, streak_count))
+         WHERE user_id=$5`,
+        [b.lastPrayedDate, b.lastPrayedLocalDate || null, b.lastPrayedTimezone || null, b.streakCount || 0, c.req.param("userId")]
+      );
+    } catch {}
+  }
   // v5.8.3 — only check last-one-standing on real prayer transitions, not idempotent re-PUTs
   if (prayedStateChanged) { checkLastOneStanding(ci, c.req.param("userId")).catch(() => {}); }
   if (b.streakCount !== undefined && b.streakCount > old && [3,7,14,30,60,90,180,365].includes(b.streakCount)) {
@@ -2503,6 +2517,11 @@ async function checkStreakAtRisk(): Promise<void> {
         try {
           const engCheck = await pool.query("SELECT 1 FROM circle_engagement WHERE user_id=$1 AND day=$2 LIMIT 1", [row.user_id, today]);
           if (engCheck.rows.length > 0) continue;
+        } catch {}
+        // Check 4: re-read user_data to catch race with status PUT sync (belt-and-suspenders)
+        try {
+          const freshCheck = await pool.query("SELECT last_prayed_date FROM user_data WHERE user_id=$1 AND last_prayed_date::date >= $2::date", [row.user_id, today]);
+          if (freshCheck.rows.length > 0) continue;
         } catch {}
         pushToUserLocalized(row.user_id, {
           titleKey: "streak_at_risk_title",
