@@ -100,7 +100,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 <div class="c">
   <div class="hdr"><div><h1>prAmen</h1><p class="sub" id="ts">Loading...</p></div>
   <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><div class="live"><span class="dot"></span>LIVE</div><span id="asc-status" class="asc-badge asc-no">Apple: ...</span><button class="rbtn" onclick="loadAll()">Refresh</button>
-  <div class="tabs"><button class="tab active" onclick="go('overview',this)">Overview</button><button class="tab" onclick="go('funnel',this)">Funnel</button><button class="tab" onclick="go('users',this)">Users</button><button class="tab" onclick="go('events',this)">Events</button><button class="tab" onclick="go('revenue',this)">Revenue</button><button class="tab" onclick="go('web',this)">Web</button><button class="tab" onclick="go('circles',this)">Circles</button><button class="tab" onclick="go('growth',this)">Growth</button><button class="tab" onclick="go('organic',this)">Organic</button><button class="tab" onclick="go('costs',this)">Costs</button><button class="tab" onclick="go('admin',this)">Admin</button></div></div></div>
+  <div class="tabs"><button class="tab active" onclick="go('overview',this)">Overview</button><button class="tab" onclick="go('funnel',this)">Funnel</button><button class="tab" onclick="go('users',this)">Users</button><button class="tab" onclick="go('events',this)">Events</button><button class="tab" onclick="go('revenue',this)">Revenue</button><button class="tab" onclick="go('web',this)">Web</button><button class="tab" onclick="go('circles',this)">Circles</button><button class="tab" onclick="go('growth',this)">Growth</button><button class="tab" onclick="go('organic',this)">Organic</button><button class="tab" onclick="go('costs',this)">Costs</button><button class="tab" onclick="go('outreach',this)">Outreach</button><button class="tab" onclick="go('admin',this)">Admin</button></div></div></div>
   <!-- Date Range Bar -->
   <div class="dr-bar">
     <span class="dr-label">Range</span>
@@ -124,7 +124,7 @@ body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,
 var B=location.origin,K=new URLSearchParams(location.search).get("key")||"",
     D=null,PH=null,AP=null,RC=null,TAB="overview",SU=null,
     RANGE=14,COMPARE=false,EVT_SEARCH="",EVT_TYPE="all",CUSTOM_FROM=null,CUSTOM_TO=null,USR_SEARCH="",USR_VIEW="list",YT_SORT="views",YT_SORT_DIR="desc",IG_SORT="likes",IG_SORT_DIR="desc",IG_TYPE_FILTER="all",TT_SORT="views",TT_SORT_DIR="desc",
-    GR=null,OG=null,LC=null;
+    GR=null,OG=null,LC=null,OUTREACH=null;
 
 // Event colors & labels
 var C={app_opened:"#6B6E52",prayer_logged:"#D4845A",paywall_viewed:"#A84F3E",paywall_plan_selected:"#B89E82",onboarding_completed:"#7A8A68",circle_created:"#88A8BC",circle_left:"#8A8C74",prayer_request_created:"#7A4F32",share_tapped:"#7F835F",scripture_viewed:"#9A6848",circle_invite_accepted:"#88A8BC",circle_member_joined:"#88A8BC",encouragement_sent:"#7F835F",user_signed_up:"#7A8A68",account_deleted:"#A84F3E",email_opt_in:"#7A8A68",streak_milestone:"#D4845A",subscription_started:"#7A8A68",subscription_cancelled:"#A84F3E",subscription_renewed:"#7F835F",subscription_expired:"#A84F3E",lifetime_purchased:"#9A6848",billing_issue_detected:"#D4845A"};
@@ -184,9 +184,10 @@ function loadAll(){
     fetch(B+"/api/dashboard/revenuecat?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
     fetch(B+"/api/dashboard/growth?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
     fetch(B+"/api/dashboard/organic?key="+K).then(function(r){return r.json()}).catch(function(){return null}),
-    fetch(B+"/api/dashboard/link-clicks?key="+K+"&days=30").then(function(r){return r.json()}).catch(function(){return null})
+    fetch(B+"/api/dashboard/link-clicks?key="+K+"&days=30").then(function(r){return r.json()}).catch(function(){return null}),
+    fetch(B+"/api/dashboard/outreach?key="+K).then(function(r){return r.json()}).catch(function(){return null})
   ]).then(function(r){
-    D=r[0];PH=r[1]&&!r[1].error?r[1]:null;AP=r[2];RC=r[3]&&!r[3].error?r[3]:null;GR=r[4];OG=r[5];LC=r[6];
+    D=r[0];PH=r[1]&&!r[1].error?r[1]:null;AP=r[2];RC=r[3]&&!r[3].error?r[3]:null;GR=r[4];OG=r[5];LC=r[6];OUTREACH=r[7];
     var rc=RC?.summary||{};
     document.getElementById("ts").textContent=new Date().toLocaleString()+" · "+(PH?PH.total_events+" events · "+PH.total_users+" users":"PH: connecting...")+(rc.net_mrr?" · MRR: $"+rc.net_mrr.toFixed(2):"");
     var ab=document.getElementById("asc-status");if(AP&&AP.connected){ab.className="asc-badge asc-ok";ab.textContent="Apple: OK"}else{ab.className="asc-badge asc-no";ab.textContent="Apple: --"}
@@ -297,7 +298,7 @@ function metaRowCells(r){
   var tc=r.trials>0?'color:var(--gold);font-weight:700':'color:var(--muted)';
   return'<td>$'+(r.spend||0).toFixed(2)+'</td><td>'+(r.impressions||0).toLocaleString()+'</td><td>'+(r.clicks||0)+'</td><td style="'+ic+'">'+(r.installs||0)+'</td><td style="'+tc+'">'+(r.trials||0)+'</td><td>'+cpiStr+'</td><td>'+ctrStr+'</td>';
 }
-function render(){if(!D)return;var el=document.getElementById("main");var alerts=renderChurnAlerts();switch(TAB){case"overview":el.innerHTML=alerts+rOv();break;case"funnel":el.innerHTML=alerts+rFn();break;case"users":el.innerHTML=alerts+rUs();break;case"events":el.innerHTML=alerts+rEv();break;case"revenue":el.innerHTML=alerts+rRv();break;case"web":el.innerHTML=alerts+rWb();break;case"circles":el.innerHTML=alerts+rCr();break;case"growth":el.innerHTML=alerts+rGr();setTimeout(initAsaCsvDrop,0);break;case"organic":el.innerHTML=alerts+rOg();break;case"costs":el.innerHTML=alerts+rCosts();break;case"admin":el.innerHTML=alerts+rAd();break}}
+function render(){if(!D)return;var el=document.getElementById("main");var alerts=renderChurnAlerts();switch(TAB){case"overview":el.innerHTML=alerts+rOv();break;case"funnel":el.innerHTML=alerts+rFn();break;case"users":el.innerHTML=alerts+rUs();break;case"events":el.innerHTML=alerts+rEv();break;case"revenue":el.innerHTML=alerts+rRv();break;case"web":el.innerHTML=alerts+rWb();break;case"circles":el.innerHTML=alerts+rCr();break;case"growth":el.innerHTML=alerts+rGr();setTimeout(initAsaCsvDrop,0);break;case"organic":el.innerHTML=alerts+rOg();break;case"costs":el.innerHTML=alerts+rCosts();break;case"outreach":el.innerHTML=alerts+rOutreach();break;case"admin":el.innerHTML=alerts+rAd();break}}
 
 // ─── KPI helper with delta ────────────────────────────────────
 function kpi(l,v,c,delta){return'<div class="k"><div class="l">'+l+'</div><div class="v" style="color:'+c+'">'+v+'</div>'+deltaHtml(delta)+'</div>'}
@@ -1537,6 +1538,191 @@ function rOg(){
 var GRANT_LOG = [];
 var PROMO_GENERATED = [];
 var PROMO_ALL = [];
+// ─── Outreach Tab ───────────────────────────────────────────
+function rOutreach(){
+  var h='';
+  var contacts=OUTREACH&&OUTREACH.contacts?OUTREACH.contacts:[];
+  var summary=OUTREACH&&OUTREACH.summary?OUTREACH.summary:{};
+  var promos=PROMO_ALL||[];
+
+  // KPIs
+  var igContacts=contacts.filter(function(c){return c.platform==='instagram'});
+  var ttContacts=contacts.filter(function(c){return c.platform==='tiktok'});
+  var replied=contacts.filter(function(c){return c.their_response&&c.their_response.length>0});
+  var negotiating=contacts.filter(function(c){return c.status==='negotiating'});
+  var promoRedeemed=promos.filter(function(p){return p.status==='redeemed'});
+
+  h+='<div class="kg">';
+  h+=kpi('Total Contacts',contacts.length,'var(--gold)');
+  h+=kpi('Instagram',igContacts.length,'var(--blue)');
+  h+=kpi('TikTok',ttContacts.length,'var(--purple)');
+  h+=kpi('Replied',replied.length,'var(--green)');
+  h+=kpi('Response Rate',(summary.response_rate||0)+'%','var(--orange)');
+  h+=kpi('Negotiating',negotiating.length,'var(--yellow)');
+  h+=kpi('Codes Redeemed',promoRedeemed.length,'var(--green)');
+  h+=kpi('Codes Active',promos.filter(function(p){return p.status==='active'}).length,'var(--muted)');
+  h+='</div>';
+
+  // Platform filter
+  h+='<div class="search-bar">';
+  h+='<input type="text" class="search-input" id="outreach-search" placeholder="Search by name, handle, or notes..." oninput="renderOutreachTable()" style="max-width:300px">';
+  h+='<button class="filter-chip'+(OUTREACH_FILTER==='all'?' on':'')+'" onclick="setOutreachFilter(\'all\')">All</button>';
+  h+='<button class="filter-chip'+(OUTREACH_FILTER==='instagram'?' on':'')+'" onclick="setOutreachFilter(\'instagram\')">Instagram</button>';
+  h+='<button class="filter-chip'+(OUTREACH_FILTER==='tiktok'?' on':'')+'" onclick="setOutreachFilter(\'tiktok\')">TikTok</button>';
+  h+='<button class="filter-chip'+(OUTREACH_FILTER==='replied'?' on':'')+'" onclick="setOutreachFilter(\'replied\')">Replied</button>';
+  h+='<button class="filter-chip'+(OUTREACH_FILTER==='negotiating'?' on':'')+'" onclick="setOutreachFilter(\'negotiating\')">Negotiating</button>';
+  h+='<button class="rbtn" onclick="loadOutreach()" style="margin-left:auto">Refresh</button>';
+  h+='</div>';
+
+  // Contacts table
+  h+='<div class="cd"><h3>Outreach Contacts</h3>';
+  h+='<div id="outreach-table">';
+  h+=buildOutreachTable(contacts);
+  h+='</div></div>';
+
+  // Promo code redemption status
+  h+='<div class="cd"><h3>Promo Code Redemptions</h3>';
+  if(promoRedeemed.length>0){
+    h+='<table class="tbl"><tr><th>Code</th><th>Campaign</th><th>Redeemed By</th><th>Date</th></tr>';
+    for(var i=0;i<promoRedeemed.length;i++){
+      var p=promoRedeemed[i];
+      var rb=p.redeemed_by_name?(p.redeemed_by_name+(p.redeemed_by_email?' ('+p.redeemed_by_email+')':'')):(p.redeemed_by_user_id||'unknown');
+      h+='<tr><td class="mono" style="font-weight:700">'+p.code+'</td><td>'+(p.campaign||'-')+'</td><td>'+rb+'</td><td class="mono">'+(p.redeemed_at?new Date(p.redeemed_at).toLocaleDateString():'-')+'</td></tr>';
+    }
+    h+='</table>';
+  } else {
+    h+='<p style="font-size:11px;color:var(--muted)">No promo codes redeemed yet.</p>';
+  }
+  h+='</div>';
+
+  // Add contact form
+  h+='<div class="cd"><h3>Add Contact</h3>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Platform</label>';
+  h+='<select id="oc-platform" class="search-input" style="width:100%;padding:7px 10px"><option value="instagram">Instagram</option><option value="tiktok">TikTok</option></select></div>';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Handle</label>';
+  h+='<input type="text" id="oc-handle" placeholder="@username" class="search-input" style="width:100%"></div>';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Name</label>';
+  h+='<input type="text" id="oc-name" placeholder="Display name" class="search-input" style="width:100%"></div>';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Followers</label>';
+  h+='<input type="text" id="oc-followers" placeholder="e.g. 50K" class="search-input" style="width:100%"></div>';
+  h+='</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:10px">';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Category</label>';
+  h+='<input type="text" id="oc-category" placeholder="e.g. Faith Creator" class="search-input" style="width:100%"></div>';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Contact Method</label>';
+  h+='<select id="oc-method" class="search-input" style="width:100%;padding:7px 10px"><option value="DM">DM</option><option value="Email">Email</option></select></div>';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Email</label>';
+  h+='<input type="text" id="oc-email" placeholder="Optional" class="search-input" style="width:100%"></div>';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Promo Code</label>';
+  h+='<input type="text" id="oc-promo" placeholder="e.g. PRAY2FQW" class="search-input" style="width:100%"></div>';
+  h+='</div>';
+  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px">';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Status</label>';
+  h+='<select id="oc-status" class="search-input" style="width:100%;padding:7px 10px"><option value="sent">Sent</option><option value="replied">Replied</option><option value="negotiating">Negotiating</option><option value="converted">Converted</option><option value="skipped">Skipped</option><option value="declined">Declined</option></select></div>';
+  h+='<div><label style="font-size:9px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:4px">Notes</label>';
+  h+='<input type="text" id="oc-notes" placeholder="Any notes" class="search-input" style="width:100%"></div>';
+  h+='</div>';
+  h+='<div style="display:flex;gap:8px;align-items:center">';
+  h+='<button onclick="addOutreachContact()" style="background:var(--gold);color:#F2EDD8;border:none;padding:8px 20px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:system-ui,sans-serif">Add Contact</button>';
+  h+='<span id="oc-status-msg" style="font-size:11px;color:var(--muted)"></span>';
+  h+='</div></div>';
+
+  return h;
+}
+
+var OUTREACH_FILTER='all';
+function setOutreachFilter(f){OUTREACH_FILTER=f;renderOutreachTable()}
+
+function renderOutreachTable(){
+  var el=document.getElementById('outreach-table');
+  if(!el)return;
+  var contacts=OUTREACH&&OUTREACH.contacts?OUTREACH.contacts:[];
+  el.innerHTML=buildOutreachTable(contacts);
+}
+
+function buildOutreachTable(contacts){
+  var search=(document.getElementById('outreach-search')||{}).value||'';
+  search=search.toLowerCase();
+  var filtered=contacts.filter(function(c){
+    if(OUTREACH_FILTER==='instagram'&&c.platform!=='instagram')return false;
+    if(OUTREACH_FILTER==='tiktok'&&c.platform!=='tiktok')return false;
+    if(OUTREACH_FILTER==='replied'&&(!c.their_response||c.their_response.length===0))return false;
+    if(OUTREACH_FILTER==='negotiating'&&c.status!=='negotiating')return false;
+    if(search){
+      var hay=(c.name+' '+c.handle+' '+c.notes+' '+c.category+' '+c.contact_email).toLowerCase();
+      if(hay.indexOf(search)===-1)return false;
+    }
+    return true;
+  });
+
+  if(filtered.length===0)return'<p style="font-size:11px;color:var(--muted)">No contacts found.</p>';
+
+  var h='<div style="font-size:10px;color:var(--muted);margin-bottom:8px">Showing '+filtered.length+' of '+contacts.length+' contacts</div>';
+  h+='<table class="tbl"><tr><th>Platform</th><th>Handle</th><th>Name</th><th>Followers</th><th>Category</th><th>Contact</th><th>Rate</th><th>Code</th><th>Status</th><th>Response</th><th>Date</th></tr>';
+  for(var i=0;i<filtered.length;i++){
+    var c=filtered[i];
+    var platIcon=c.platform==='instagram'?'IG':'TT';
+    var platColor=c.platform==='instagram'?'var(--pink)':'var(--text)';
+    var stColor=c.status==='replied'||c.status==='negotiating'?'var(--green)':c.status==='converted'?'var(--gold)':c.status==='declined'?'var(--red)':'var(--muted)';
+    var resp=c.their_response||'';
+    if(resp.length>40)resp=resp.substring(0,40)+'...';
+    h+='<tr>';
+    h+='<td style="color:'+platColor+';font-weight:700;font-size:9px">'+platIcon+'</td>';
+    h+='<td class="mono" style="font-size:10px">'+c.handle+'</td>';
+    h+='<td>'+c.name+'</td>';
+    h+='<td class="mono">'+(c.followers||'-')+'</td>';
+    h+='<td style="font-size:9px">'+(c.category||'-')+'</td>';
+    h+='<td style="font-size:9px">'+(c.contact_email||c.contact_method||'-')+'</td>';
+    h+='<td class="mono">'+(c.rate||'-')+'</td>';
+    h+='<td class="mono" style="font-size:9px">'+(c.promo_code||'-')+'</td>';
+    h+='<td style="color:'+stColor+';font-weight:700;font-size:9px">'+c.status+'</td>';
+    h+='<td style="font-size:9px" title="'+(c.their_response||'').replace(/"/g,'&quot;')+'">'+resp+'</td>';
+    h+='<td class="mono" style="font-size:9px">'+(c.outreach_date?new Date(c.outreach_date).toLocaleDateString():'')+'</td>';
+    h+='</tr>';
+  }
+  h+='</table>';
+  return h;
+}
+
+async function addOutreachContact(){
+  var status=document.getElementById('oc-status-msg');
+  var body={
+    platform:document.getElementById('oc-platform').value,
+    handle:document.getElementById('oc-handle').value.trim(),
+    name:document.getElementById('oc-name').value.trim(),
+    followers:document.getElementById('oc-followers').value.trim(),
+    category:document.getElementById('oc-category').value.trim(),
+    contact_method:document.getElementById('oc-method').value,
+    contact_email:document.getElementById('oc-email').value.trim(),
+    promo_code:document.getElementById('oc-promo').value.trim(),
+    status:document.getElementById('oc-status').value,
+    notes:document.getElementById('oc-notes').value.trim()
+  };
+  if(!body.handle){status.textContent='Handle is required';status.style.color='var(--red)';return}
+  status.textContent='Saving...';status.style.color='var(--muted)';
+  try{
+    var res=await fetch(B+'/api/dashboard/outreach?key='+K,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    var data=await res.json();
+    if(res.ok&&data.success){
+      status.textContent='Contact added!';status.style.color='var(--green)';
+      document.getElementById('oc-handle').value='';document.getElementById('oc-name').value='';
+      document.getElementById('oc-followers').value='';document.getElementById('oc-category').value='';
+      document.getElementById('oc-email').value='';document.getElementById('oc-promo').value='';
+      document.getElementById('oc-notes').value='';
+      await loadOutreach();
+    }else{status.textContent=data.error||'Failed';status.style.color='var(--red)'}
+  }catch(e){status.textContent='Network error';status.style.color='var(--red)'}
+}
+
+async function loadOutreach(){
+  try{
+    var res=await fetch(B+'/api/dashboard/outreach?key='+K);
+    var data=await res.json();
+    if(res.ok){OUTREACH=data;render()}
+  }catch(e){}
+}
+
 function rAd(){
   var h = '<div class="cd"><h3>Grant Free Trial</h3>';
   h += '<p style="font-size:11px;color:var(--muted);margin-bottom:10px">Grant premium access to influencers, partners, or anyone. Uses RevenueCat promotional entitlements.</p>';
@@ -1808,7 +1994,7 @@ function parseCsvRow(line){
 }
 
 // ─── Init ────────────────────────────────────────────────────
-updateDateLabel();loadAll();setInterval(loadAll,5*60*1000);loadPromoCodes();
+updateDateLabel();loadAll();setInterval(loadAll,5*60*1000);loadPromoCodes();loadOutreach();
 </script>
 </body>
 </html>

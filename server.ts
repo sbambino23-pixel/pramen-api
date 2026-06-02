@@ -564,7 +564,29 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS promo_codes (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, code TEXT UNIQUE NOT NULL, duration TEXT NOT NULL DEFAULT 'monthly', campaign TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL DEFAULT 'admin', redeemed_by_user_id TEXT, redeemed_at TIMESTAMPTZ, expires_at TIMESTAMPTZ, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_promo_codes_campaign ON promo_codes(campaign)`);
-    console.log("DB initialized (v5.12.0 — promo codes for influencer outreach)");
+    // v5.15.0 — outreach contacts tracking
+    await client.query(`CREATE TABLE IF NOT EXISTS outreach_contacts (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      platform TEXT NOT NULL,
+      handle TEXT NOT NULL,
+      name TEXT NOT NULL DEFAULT '',
+      followers TEXT DEFAULT '',
+      category TEXT DEFAULT '',
+      contact_method TEXT DEFAULT '',
+      contact_email TEXT DEFAULT '',
+      rate TEXT DEFAULT '',
+      promo_code TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'sent',
+      outreach_date DATE DEFAULT CURRENT_DATE,
+      their_response TEXT DEFAULT '',
+      our_reply TEXT DEFAULT '',
+      next_step TEXT DEFAULT '',
+      notes TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_outreach_platform ON outreach_contacts(platform)`);
+    console.log("DB initialized (v5.15.0 — outreach contacts tracking)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -2097,6 +2119,68 @@ app.post("/api/promo-codes/redeem", async (c) => {
     trackEvent(u.id, "promo_code_redeemed", { code: normalized, campaign: promo.campaign, duration: promo.duration });
     return c.json({ success: true, duration: promo.duration, durationLabel: durationLabel[promo.duration], message: `You now have ${durationLabel[promo.duration]} of premium access!` });
   } catch (err: any) { return c.json({ error: "Could not activate promo. Please try again." }, 500); }
+});
+
+// ─── Outreach Contacts API ──────────────────────────────────────
+app.get("/api/dashboard/outreach", async (c) => {
+  if (c.req.query("key") !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const platform = c.req.query("platform");
+    let q = "SELECT * FROM outreach_contacts";
+    const params: string[] = [];
+    if (platform) { q += " WHERE platform=$1"; params.push(platform); }
+    q += " ORDER BY outreach_date DESC, created_at DESC";
+    const result = await pool.query(q, params);
+    const contacts = result.rows;
+    const summary = {
+      total: contacts.length,
+      by_platform: {} as Record<string, number>,
+      by_status: {} as Record<string, number>,
+      replied: contacts.filter((c: any) => c.their_response).length,
+      response_rate: contacts.length > 0 ? Math.round(contacts.filter((c: any) => c.their_response).length / contacts.length * 100) : 0
+    };
+    contacts.forEach((c: any) => {
+      summary.by_platform[c.platform] = (summary.by_platform[c.platform] || 0) + 1;
+      summary.by_status[c.status] = (summary.by_status[c.status] || 0) + 1;
+    });
+    return c.json({ contacts, summary });
+  } catch (err: any) { return c.json({ error: "Outreach fetch failed", detail: err.message }, 500); }
+});
+
+app.post("/api/dashboard/outreach", async (c) => {
+  if (c.req.query("key") !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const body = await c.req.json();
+    const contacts = Array.isArray(body) ? body : [body];
+    let stored = 0;
+    for (const ct of contacts) {
+      await pool.query(`INSERT INTO outreach_contacts (platform, handle, name, followers, category, contact_method, contact_email, rate, promo_code, status, outreach_date, their_response, our_reply, next_step, notes)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        ON CONFLICT DO NOTHING`,
+        [ct.platform||'', ct.handle||'', ct.name||'', ct.followers||'', ct.category||'', ct.contact_method||'', ct.contact_email||'', ct.rate||'', ct.promo_code||'', ct.status||'sent', ct.outreach_date||new Date().toISOString().slice(0,10), ct.their_response||'', ct.our_reply||'', ct.next_step||'', ct.notes||'']);
+      stored++;
+    }
+    return c.json({ success: true, stored });
+  } catch (err: any) { return c.json({ error: "Outreach save failed", detail: err.message }, 500); }
+});
+
+app.put("/api/dashboard/outreach/:id", async (c) => {
+  if (c.req.query("key") !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const id = c.req.param("id");
+    const body = await c.req.json();
+    const fields: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+    for (const key of ['status', 'their_response', 'our_reply', 'next_step', 'notes', 'rate', 'contact_email']) {
+      if (body[key] !== undefined) { fields.push(`${key}=$${idx}`); values.push(body[key]); idx++; }
+    }
+    if (fields.length === 0) return c.json({ error: "No fields to update" }, 400);
+    fields.push(`updated_at=NOW()`);
+    values.push(id);
+    await pool.query(`UPDATE outreach_contacts SET ${fields.join(',')} WHERE id=$${idx}`, values);
+    return c.json({ success: true });
+  } catch (err: any) { return c.json({ error: "Update failed", detail: err.message }, 500); }
 });
 
 app.get("/api/referrals/circle/:code", async (c) => { const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401); const code = c.req.param("code").toUpperCase(); const ci = getCircle(code); if (!ci) return c.json({ count: 0 }); const memberIds = ci.members.map(m => m.userId); const result = await pool.query("SELECT COUNT(*) as count FROM referrals WHERE referrer_user_id=$1 AND referred_user_id = ANY($2) AND status='confirmed'", [u.id, memberIds]); return c.json({ count: parseInt(result.rows[0]?.count || "0") }); });
