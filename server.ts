@@ -2511,6 +2511,11 @@ async function checkStreakAtRisk(): Promise<void> {
           type: "streak_at_risk"
         });
         trackEvent(row.user_id, "streak_at_risk_push", { streak_count: row.streak_count });
+        // v5.15.1 — fire Loops event for streak-at-risk email
+        try {
+          const emailRow = await pool.query("SELECT email FROM users WHERE id=$1 AND email IS NOT NULL AND email NOT LIKE '%privaterelay.appleid.com'", [row.user_id]);
+          if (emailRow.rows[0]?.email) sendLoopsEvent(emailRow.rows[0].email, "streak_at_risk_24h", { streakCount: row.streak_count });
+        } catch {}
         sent++;
       }
     }
@@ -3688,6 +3693,11 @@ async function start() {
         await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
         sent++;
         trackEvent(user.id, "inactive_trial_nudge_sent", { has_circle: hasCircle });
+        // v5.15.1 — fire Loops event for inactive trial email
+        try {
+          const emailRow = await pool.query("SELECT email FROM users WHERE id=$1 AND email IS NOT NULL AND email NOT LIKE '%privaterelay.appleid.com'", [user.id]);
+          if (emailRow.rows[0]?.email) sendLoopsEvent(emailRow.rows[0].email, "inactive_trial_2days", { hasCircle, firstName: (user.name || "").split(" ")[0] || undefined });
+        } catch {}
       }
       if (sent > 0) console.log(`[Nudge] Sent inactive trial nudge to ${sent} users`);
     } catch (err: any) { console.error("[InactiveNudge]", err.message); }
@@ -3886,8 +3896,22 @@ async function start() {
   setInterval(() => { nudgeNewUsers().catch(() => {}); }, 3 * 60 * 60 * 1000);
   setTimeout(() => { nudgeNewUsers().catch(() => {}); }, 8 * 60 * 1000);
 
-  // v5.12.6 — Sync user segments to Loops.so for email campaigns (every 6 hours)
+  // v5.15.1 — Loops event sender for lifecycle triggers
   const LOOPS_API_KEY = process.env.LOOPS_API_KEY || "";
+  async function sendLoopsEvent(email: string, eventName: string, properties?: Record<string, any>): Promise<void> {
+    if (!LOOPS_API_KEY || !email) return;
+    try {
+      const res = await fetch("https://app.loops.so/api/v1/events/send", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${LOOPS_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ email, eventName, ...(properties || {}) })
+      });
+      if (res.ok) console.log(`[Loops] Event '${eventName}' sent to ${email}`);
+      else console.error(`[Loops] Event '${eventName}' failed: ${res.status}`);
+    } catch (err: any) { console.error(`[Loops] Event error: ${err.message}`); }
+  }
+
+  // v5.12.6 — Sync user segments to Loops.so for email campaigns (every 6 hours)
   async function syncToLoops(): Promise<void> {
     if (!LOOPS_API_KEY || !REVENUECAT_SECRET_KEY) { console.log("[Loops] No LOOPS_API_KEY or REVENUECAT_SECRET_KEY"); return; }
     try {
@@ -3933,7 +3957,13 @@ async function start() {
               else if (pid.includes("monthly")) plan = plan || "monthly";
               else if (pid.includes("lifetime")) plan = "lifetime";
             }
-            if (hasActivePaid) category = "active_subscriber";
+            // v5.15.1 — detect billing issues for payment_failed userGroup
+            let hasBillingIssue = false;
+            for (const [, s3] of Object.entries(subscriptions) as any[]) {
+              if (s3.billing_issues_detected_at) hasBillingIssue = true;
+            }
+            if (hasBillingIssue && !hasActivePaid && !hasActiveTrial) category = "payment_failed";
+            else if (hasActivePaid) category = "active_subscriber";
             else if (hasActiveTrial) category = "active_trial";
             else if (hasCancelledTrial) category = "cancelled_before_trial_end";
             else if (hasCancelledAfterTrial) category = "cancelled_after_trial";
