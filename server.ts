@@ -1514,7 +1514,7 @@ app.put("/api/circles/:code/members/:userId/status", async (c) => {
     try {
       await pool.query(
         `UPDATE user_data SET last_prayed_date=$1, last_prayed_local_date=$2, last_prayed_timezone=$3, updated_at=NOW(),
-         streak_count = CASE WHEN $4::int > streak_count THEN $4::int ELSE streak_count END,
+         streak_count = $4::int,
          highest_streak = GREATEST(highest_streak, COALESCE($4::int, streak_count))
          WHERE user_id=$5`,
         [b.lastPrayedDate, b.lastPrayedLocalDate || null, b.lastPrayedTimezone || null, b.streakCount || 0, c.req.param("userId")]
@@ -1564,9 +1564,23 @@ app.get("/api/circles/:code/member-status", async (c) => {
   const memberIds = ci.members.map(m => m.userId).filter(Boolean);
   let avatarMap: Record<string, string | null> = {};
   try { const av = await pool.query("SELECT id, device_user_id, avatar_url FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); for (const r of av.rows) { avatarMap[r.id] = r.avatar_url; if (r.device_user_id) avatarMap[r.device_user_id] = r.avatar_url; } } catch {}
+  // v5.15.3 — show ALL members in Circle Today, not just visible ones.
+  // Previously members with visible=false (expired subscriptions) were hidden even if they prayed recently.
+  // This caused confusion: prayers showed in feed but members were missing from Circle Today.
   const members = ci.members.map(m => {
     const prayedToday = prayedTodayInOwnTZ(m);
-    return { userId: m.userId, name: m.name, avatarUrl: avatarMap[m.userId] || m.avatarUrl || null, prayedToday, prayedAt: prayedToday ? m.lastPrayedDate : null, streakCount: m.streakCount || 0, role: m.role || "member" };
+    // v5.15.3 — compute real streak: if lastPrayedDate is 2+ days ago, streak is 0
+    let effectiveStreak = m.streakCount || 0;
+    if (effectiveStreak > 0 && m.lastPrayedDate) {
+      const lastPrayed = new Date(m.lastPrayedDate);
+      const now = new Date();
+      const diffMs = now.getTime() - lastPrayed.getTime();
+      const diffDays = diffMs / (1000 * 60 * 60 * 24);
+      if (diffDays > 2) effectiveStreak = 0;
+    } else if (effectiveStreak > 0 && !m.lastPrayedDate) {
+      effectiveStreak = 0;
+    }
+    return { userId: m.userId, name: m.name, avatarUrl: avatarMap[m.userId] || m.avatarUrl || null, prayedToday, prayedAt: prayedToday ? m.lastPrayedDate : null, streakCount: effectiveStreak, role: m.role || "member" };
   });
   return c.json({ members, totalMembers: ci.members.length, prayedToday: members.filter(m => m.prayedToday).length });
 });
@@ -2557,6 +2571,25 @@ async function checkStreakAtRisk(): Promise<void> {
       }
     }
     console.log(`[Streak] Checked ${result.rows.length} at risk, sent ${sent} nudges`);
+    // v5.15.3 — streak decay: reset streaks in user_data for users who missed 2+ days
+    try {
+      const decayResult = await pool.query(
+        `UPDATE user_data SET streak_count = 0 WHERE streak_count > 0 AND last_prayed_date IS NOT NULL AND last_prayed_date::date < (CURRENT_DATE - INTERVAL '1 day')::date RETURNING user_id, streak_count`
+      );
+      if (decayResult.rows.length > 0) {
+        console.log(`[Streak] Decayed ${decayResult.rows.length} stale streaks in user_data`);
+        // Also reset streaks in circle member data
+        for (const row of decayResult.rows) {
+          for (const [, circle] of circles) {
+            const member = circle.members.find(m => m.userId === row.user_id);
+            if (member && member.streakCount > 0) {
+              member.streakCount = 0;
+              saveCircleToDb(circle).catch(() => {});
+            }
+          }
+        }
+      }
+    } catch (decayErr: any) { console.error("[Streak] Decay error:", decayErr.message); }
   } catch (err: any) { console.error("[Streak] At-risk check error:", err.message); }
 }
 
