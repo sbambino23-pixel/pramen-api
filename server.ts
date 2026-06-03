@@ -1,3 +1,4 @@
+// v5.15.3
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
