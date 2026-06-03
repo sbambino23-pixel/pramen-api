@@ -4094,6 +4094,84 @@ async function start() {
   }
   setTimeout(() => { syncToLoops().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { syncToLoops().catch(() => {}); }, 6 * 60 * 60 * 1000);
+
+  // v5.15.5 — Periodic subscription visibility sync
+  // Fixes the systemic issue where RC anonymous ID linkage fails during sign-in,
+  // leaving active subscribers with visible=false in community circles.
+  // Two-pass approach:
+  //   Pass 1: Users with subscription_status='active'/'lifetime' in DB → ensure visible=true in all circles
+  //   Pass 2: Users with subscription_status='none' who are in circles → check RC API to see if they actually have an active sub
+  async function syncSubscriptionVisibility(): Promise<void> {
+    if (!REVENUECAT_SECRET_KEY) { console.log("[VisibilitySync] No RC secret key"); return; }
+    try {
+      let fixedFromDb = 0;
+      let fixedFromRc = 0;
+
+      // Pass 1: DB says active/lifetime → make visible in all circles
+      const activeUsers = await pool.query("SELECT id FROM users WHERE subscription_status IN ('active', 'lifetime')");
+      for (const row of activeUsers.rows) {
+        for (const [, circle] of circles) {
+          const member = circle.members.find(m => m.userId === row.id);
+          if (member && member.visible === false) {
+            member.visible = true;
+            saveCircleToDb(circle).catch(() => {});
+            fixedFromDb++;
+          }
+        }
+      }
+
+      // Pass 2: Users in circles with visible=false → check RC API for active entitlement
+      const invisibleMembers = new Set<string>();
+      for (const [, circle] of circles) {
+        for (const member of circle.members) {
+          if (member.visible === false) invisibleMembers.add(member.userId);
+        }
+      }
+
+      for (const userId of invisibleMembers) {
+        try {
+          const rcRes = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}`, {
+            headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }
+          });
+          if (!rcRes.ok) continue;
+          const rcData = (await rcRes.json()) as any;
+          const subs = rcData.subscriber?.subscriptions || {};
+          const entitlements = rcData.subscriber?.entitlements || {};
+          const now = new Date();
+
+          // Check if user has active premium entitlement
+          const hasPremium = entitlements.premium && new Date(entitlements.premium.expires_date) > now;
+          // Check for lifetime (no expiry or far-future expiry)
+          const hasLifetime = Object.entries(subs).some(([pid, s]: [string, any]) => pid.includes("lifetime") && (!s.expires_date || new Date(s.expires_date) > now));
+
+          if (hasPremium || hasLifetime) {
+            // Update DB subscription status
+            await pool.query("UPDATE users SET subscription_status=$1, updated_at=NOW() WHERE id=$2", [hasLifetime ? "lifetime" : "active", userId]).catch(() => {});
+            // Make visible in all circles
+            for (const [, circle] of circles) {
+              const member = circle.members.find(m => m.userId === userId);
+              if (member && member.visible === false) {
+                member.visible = true;
+                saveCircleToDb(circle).catch(() => {});
+                fixedFromRc++;
+              }
+            }
+            console.log(`[VisibilitySync] Fixed ${userId} — RC says active, was invisible`);
+          }
+        } catch {}
+      }
+
+      if (fixedFromDb > 0 || fixedFromRc > 0) {
+        console.log(`[VisibilitySync] Fixed ${fixedFromDb} from DB status, ${fixedFromRc} from RC API check`);
+      } else {
+        console.log("[VisibilitySync] All visibility consistent");
+      }
+    } catch (err: any) { console.error("[VisibilitySync]", err.message); }
+  }
+  // Run 3 min after start, then every 2 hours
+  setTimeout(() => { syncSubscriptionVisibility().catch(() => {}); }, 3 * 60 * 1000);
+  setInterval(() => { syncSubscriptionVisibility().catch(() => {}); }, 2 * 60 * 60 * 1000);
+
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API v5.10.9 on port ${info.port}`);
     console.log(`   PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"} | Read: ${POSTHOG_PERSONAL_KEY ? "✓" : "✗"} | Plausible: ${PLAUSIBLE_API_KEY ? "✓" : "✗"}`);
