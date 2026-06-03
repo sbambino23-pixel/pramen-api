@@ -1426,16 +1426,9 @@ app.post("/webhooks/loops", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const code = generateCircleCode(); const ci: StoredCircle = { id: randomUUID(), name: b.name || "Prayer Circle", code, emoji: b.emoji || "cross.fill", creatorUserId: b.userId, members: [{ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString(), role: "creator" }], prayerRequests: [], createdAt: new Date().toISOString() }; await saveCircleToDb(ci); trackEvent(b.userId, "circle_created", { circle_id: ci.id, circle_code: code, circle_name: ci.name }); return c.json({ circle: ci }, 201); });
 app.get("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); try { const memberIds = ci.members.map(m => m.userId).filter(Boolean); if (memberIds.length > 0) { const avatars = await pool.query("SELECT id, device_user_id, avatar_url, name FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); const avatarMap: Record<string, { avatar_url: string | null; name: string }> = {}; for (const row of avatars.rows) { avatarMap[row.id] = { avatar_url: row.avatar_url, name: row.name }; if (row.device_user_id) avatarMap[row.device_user_id] = { avatar_url: row.avatar_url, name: row.name }; }
-  // v5.15.3 — visibility logic: community circles show all members, private circles show
-  // visible members + anyone who prayed in last 48h (prevents hiding active users whose subscription lapsed)
-  const isCommunity = !!COMMUNITY_CIRCLE_TOPICS[c.req.param("code").toUpperCase()];
-  const now = Date.now();
-  const visibleMembers = isCommunity ? ci.members : ci.members.filter(m => {
-    if (m.visible !== false) return true;
-    if (m.userId === ci.creatorUserId) return true;
-    if (m.lastPrayedDate) { const diff = now - new Date(m.lastPrayedDate).getTime(); if (diff < 48 * 60 * 60 * 1000) return true; }
-    return false;
-  });
+  // v5.15.4 — visibility: only show subscribers (visible !== false) + circle creator.
+  // Non-subscribers are hidden from both Circle Today and Circle Feed for consistency.
+  const visibleMembers = ci.members.filter(m => m.visible !== false || m.userId === ci.creatorUserId);
   const enriched = { ...ci, members: visibleMembers.map(m => ({ ...m, avatarUrl: avatarMap[m.userId]?.avatar_url || m.avatarUrl || null, name: avatarMap[m.userId]?.name || m.name })) }; return c.json({ circle: enriched }); } } catch (err: any) { console.error("[Circle] Avatar enrich error:", err.message); } return c.json({ circle: ci }); });
 const joinNotifCooldowns = new Map<string, number>(); // creatorId:code -> last notif timestamp
 app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); const userRow = await pool.query("SELECT subscription_status FROM users WHERE id=$1", [b.userId]).then(r => r.rows[0]).catch(() => null); const hasAccess = userRow && userRow.subscription_status && userRow.subscription_status !== "none"; ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString(), visible: hasAccess ? true : false }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); const isCommunity = !!COMMUNITY_CIRCLE_TOPICS[code]; if (!isCommunity) { const cooldownKey = `${ci.creatorUserId}:${code}`; const lastNotif = joinNotifCooldowns.get(cooldownKey) || 0; const now = Date.now(); if (now - lastNotif > 5 * 60 * 1000) { joinNotifCooldowns.set(cooldownKey, now); pushToUserLocalized(ci.creatorUserId, { titleKey: "member_joined_title", titleParams: { name: b.userName || "Someone", circle: ci.name }, bodyKey: "member_joined_body", bodyParams: { count: ci.members.length }, type: "member_joined", circleCode: code, circleName: ci.name }); } } return c.json({ circle: ci }); });
@@ -1576,10 +1569,9 @@ app.get("/api/circles/:code/member-status", async (c) => {
   const memberIds = ci.members.map(m => m.userId).filter(Boolean);
   let avatarMap: Record<string, string | null> = {};
   try { const av = await pool.query("SELECT id, device_user_id, avatar_url FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); for (const r of av.rows) { avatarMap[r.id] = r.avatar_url; if (r.device_user_id) avatarMap[r.device_user_id] = r.avatar_url; } } catch {}
-  // v5.15.3 — show ALL members in Circle Today, not just visible ones.
-  // Previously members with visible=false (expired subscriptions) were hidden even if they prayed recently.
-  // This caused confusion: prayers showed in feed but members were missing from Circle Today.
-  const members = ci.members.map(m => {
+  // v5.15.4 — respect visibility filter: only show subscribers in Circle Today
+  const visibleOnly = ci.members.filter(m => m.visible !== false || m.userId === ci.creatorUserId);
+  const members = visibleOnly.map(m => {
     const prayedToday = prayedTodayInOwnTZ(m);
     // v5.15.3 — compute real streak: if lastPrayedDate is 2+ days ago, streak is 0
     let effectiveStreak = m.streakCount || 0;
@@ -2467,8 +2459,11 @@ app.get("/api/circles/:code/activity", async (c) => {
   const memberIds = ci.members.map(m => m.userId).filter(Boolean);
   let avatarMap: Record<string, string | null> = {};
   try { const av = await pool.query("SELECT id, device_user_id, avatar_url FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); for (const r of av.rows) { avatarMap[r.id] = r.avatar_url; if (r.device_user_id) avatarMap[r.device_user_id] = r.avatar_url; } } catch {}
+  // v5.15.4 — only show visible members in feed (consistent with Circle Today)
+  const visibleMemberIds = new Set(ci.members.filter(m => m.visible !== false || m.userId === ci.creatorUserId).map(m => m.userId));
   // Recent prayers (from member status updates)
   for (const m of ci.members) {
+    if (!visibleMemberIds.has(m.userId)) continue;
     if (m.lastPrayedDate) {
       const prayedAt = new Date(m.lastPrayedDate);
       const now = new Date();
@@ -2484,8 +2479,9 @@ app.get("/api/circles/:code/activity", async (c) => {
     // Skip personal requests not meant for this user (unless they're the requester)
     if (req.targetType === "personal" && req.targetUserId && req.targetUserId !== userId && req.requesterUserId !== userId) continue;
     activities.push({ id: `request-${req.id}`, memberName: req.requesterName, memberAvatarUrl: avatarMap[req.requesterUserId] || null, action: req.targetType === "personal" ? "prayer_request_personal" : "prayer_request", detail: req.text.length > 80 ? req.text.substring(0, 80) + "..." : req.text, timestamp: req.timestamp, targetUserId: req.targetUserId || null, status: req.status || "active", prayedCount: req.prayedByUserIds.length });
-    // "Prayed for" activity
+    // "Prayed for" activity (only visible members)
     for (const uid of req.prayedByUserIds) {
+      if (!visibleMemberIds.has(uid)) continue;
       const prayerMember = ci.members.find(m => m.userId === uid);
       if (prayerMember) {
         activities.push({ id: `prayed-for-${req.id}-${uid}`, memberName: prayerMember.name, memberAvatarUrl: avatarMap[uid] || null, action: "prayed_for_request", detail: req.requesterName, timestamp: req.timestamp });
