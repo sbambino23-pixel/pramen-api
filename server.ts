@@ -710,6 +710,8 @@ const COMMUNITY_CIRCLE_TOPICS: Record<string, string> = {
   "TW6HHP": "praying for each other and intercession"
 };
 
+function isCommunityCircle(code: string): boolean { return !!COMMUNITY_CIRCLE_TOPICS[code]; }
+
 function getCirclePrayerTopic(circle: StoredCircle): string {
   const communityTopic = COMMUNITY_CIRCLE_TOPICS[circle.code];
   if (communityTopic) return communityTopic;
@@ -1285,11 +1287,19 @@ app.post("/webhooks/revenuecat", async (c) => {
     if (resolvedUid.startsWith("$RCAnonymous")) { try { const match = await pool.query("SELECT id FROM users WHERE device_user_id=$1 LIMIT 1", [rcUid]); if (match.rows.length > 0) resolvedUid = match.rows[0].id; } catch {} }
     await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, resolvedUid]).catch(() => {});
     if (resolvedUid !== rcUid) await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, rcUid]).catch(() => {});
-    // v5.15.0 — mark circle memberships visible when user subscribes
+    // v5.15.5 — sync circle visibility on subscription changes
     if (["active", "lifetime"].includes(status)) {
+      // Subscribe → make visible in all circles
       for (const [, circle] of circles) {
         const member = circle.members.find(m => m.userId === resolvedUid || m.userId === rcUid);
         if (member && !member.visible) { member.visible = true; saveCircleToDb(circle).catch(() => {}); }
+      }
+    } else if (["cancelled", "expired"].includes(status)) {
+      // Cancel/expire → hide in community circles only (private circle members stay visible)
+      for (const [, circle] of circles) {
+        if (!isCommunityCircle(circle.code)) continue;
+        const member = circle.members.find(m => m.userId === resolvedUid || m.userId === rcUid);
+        if (member && member.visible !== false) { member.visible = false; saveCircleToDb(circle).catch(() => {}); }
       }
     }
     trackEvent(resolvedUid, name, { plan, product_id: pid, price: ev.price, currency: ev.currency, store: ev.store, environment: ev.environment, rc_original_id: rcUid, $revenue: ev.price || 0, $currency: ev.currency || "USD" });
@@ -1426,12 +1436,11 @@ app.post("/webhooks/loops", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 app.post("/api/circles", async (c) => { const b = await c.req.json(); if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const code = generateCircleCode(); const ci: StoredCircle = { id: randomUUID(), name: b.name || "Prayer Circle", code, emoji: b.emoji || "cross.fill", creatorUserId: b.userId, members: [{ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString(), role: "creator" }], prayerRequests: [], createdAt: new Date().toISOString() }; await saveCircleToDb(ci); trackEvent(b.userId, "circle_created", { circle_id: ci.id, circle_code: code, circle_name: ci.name }); return c.json({ circle: ci }, 201); });
 app.get("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); try { const memberIds = ci.members.map(m => m.userId).filter(Boolean); if (memberIds.length > 0) { const avatars = await pool.query("SELECT id, device_user_id, avatar_url, name FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); const avatarMap: Record<string, { avatar_url: string | null; name: string }> = {}; for (const row of avatars.rows) { avatarMap[row.id] = { avatar_url: row.avatar_url, name: row.name }; if (row.device_user_id) avatarMap[row.device_user_id] = { avatar_url: row.avatar_url, name: row.name }; }
-  // v5.15.4 — visibility: only show subscribers (visible !== false) + circle creator.
-  // Non-subscribers are hidden from both Circle Today and Circle Feed for consistency.
-  const visibleMembers = ci.members.filter(m => m.visible !== false || m.userId === ci.creatorUserId);
+  // v5.15.5 — visibility: community circles hide non-subscribers, private circles show everyone.
+  const visibleMembers = isCommunityCircle(ci.code) ? ci.members.filter(m => m.visible !== false || m.userId === ci.creatorUserId) : ci.members;
   const enriched = { ...ci, members: visibleMembers.map(m => ({ ...m, avatarUrl: avatarMap[m.userId]?.avatar_url || m.avatarUrl || null, name: avatarMap[m.userId]?.name || m.name })) }; return c.json({ circle: enriched }); } } catch (err: any) { console.error("[Circle] Avatar enrich error:", err.message); } return c.json({ circle: ci }); });
 const joinNotifCooldowns = new Map<string, number>(); // creatorId:code -> last notif timestamp
-app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); const userRow = await pool.query("SELECT subscription_status FROM users WHERE id=$1", [b.userId]).then(r => r.rows[0]).catch(() => null); const hasAccess = userRow && userRow.subscription_status && userRow.subscription_status !== "none"; ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString(), visible: hasAccess ? true : false }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); const isCommunity = !!COMMUNITY_CIRCLE_TOPICS[code]; if (!isCommunity) { const cooldownKey = `${ci.creatorUserId}:${code}`; const lastNotif = joinNotifCooldowns.get(cooldownKey) || 0; const now = Date.now(); if (now - lastNotif > 5 * 60 * 1000) { joinNotifCooldowns.set(cooldownKey, now); pushToUserLocalized(ci.creatorUserId, { titleKey: "member_joined_title", titleParams: { name: b.userName || "Someone", circle: ci.name }, bodyKey: "member_joined_body", bodyParams: { count: ci.members.length }, type: "member_joined", circleCode: code, circleName: ci.name }); } } return c.json({ circle: ci }); });
+app.post("/api/circles/:code/join", async (c) => { const code = c.req.param("code").toUpperCase(); let b; try { b = await c.req.json(); } catch { return c.json({ error: "Invalid body" }, 400); } if (!b.userId || !b.userName) return c.json({ error: "userId and userName required" }, 400); const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404); if (ci.members.find(m => m.userId === b.userId)) return c.json({ circle: ci }); const community = isCommunityCircle(code); let memberVisible = true; if (community) { const userRow = await pool.query("SELECT subscription_status FROM users WHERE id=$1", [b.userId]).then(r => r.rows[0]).catch(() => null); const hasAccess = userRow && userRow.subscription_status && userRow.subscription_status !== "none"; memberVisible = !!hasAccess; } ci.members.push({ userId: b.userId, name: b.userName, streakCount: b.streakCount||0, lastPrayedDate: b.lastPrayedDate||null, joinedAt: new Date().toISOString(), visible: memberVisible }); await saveCircleToDb(ci); trackEvent(b.userId, "circle_invite_accepted", { circle_code: code, circle_size: ci.members.length }); trackEvent(ci.creatorUserId, "circle_member_joined", { circle_code: code, circle_size: ci.members.length, new_member_name: b.userName }); if (!community) { const cooldownKey = `${ci.creatorUserId}:${code}`; const lastNotif = joinNotifCooldowns.get(cooldownKey) || 0; const now = Date.now(); if (now - lastNotif > 5 * 60 * 1000) { joinNotifCooldowns.set(cooldownKey, now); pushToUserLocalized(ci.creatorUserId, { titleKey: "member_joined_title", titleParams: { name: b.userName || "Someone", circle: ci.name }, bodyKey: "member_joined_body", bodyParams: { count: ci.members.length }, type: "member_joined", circleCode: code, circleName: ci.name }); } } return c.json({ circle: ci }); });
 app.put("/api/circles/:code", async (c) => { const ci = getCircle(c.req.param("code")); if (!ci) return c.json({ error: "Not found" }, 404); const b = await c.req.json(); if (b.name) ci.name = b.name; if (b.emoji) ci.emoji = b.emoji; await saveCircleToDb(ci); return c.json({ circle: ci }); });
 
 // C4: Circle avatar upload
@@ -1569,8 +1578,8 @@ app.get("/api/circles/:code/member-status", async (c) => {
   const memberIds = ci.members.map(m => m.userId).filter(Boolean);
   let avatarMap: Record<string, string | null> = {};
   try { const av = await pool.query("SELECT id, device_user_id, avatar_url FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); for (const r of av.rows) { avatarMap[r.id] = r.avatar_url; if (r.device_user_id) avatarMap[r.device_user_id] = r.avatar_url; } } catch {}
-  // v5.15.4 — respect visibility filter: only show subscribers in Circle Today
-  const visibleOnly = ci.members.filter(m => m.visible !== false || m.userId === ci.creatorUserId);
+  // v5.15.5 — visibility: community circles hide non-subscribers, private circles show everyone
+  const visibleOnly = isCommunityCircle(ci.code) ? ci.members.filter(m => m.visible !== false || m.userId === ci.creatorUserId) : ci.members;
   const members = visibleOnly.map(m => {
     const prayedToday = prayedTodayInOwnTZ(m);
     // v5.15.3 — compute real streak: if lastPrayedDate is 2+ days ago, streak is 0
@@ -1586,7 +1595,7 @@ app.get("/api/circles/:code/member-status", async (c) => {
     }
     return { userId: m.userId, name: m.name, avatarUrl: avatarMap[m.userId] || m.avatarUrl || null, prayedToday, prayedAt: prayedToday ? m.lastPrayedDate : null, streakCount: effectiveStreak, role: m.role || "member" };
   });
-  return c.json({ members, totalMembers: ci.members.length, prayedToday: members.filter(m => m.prayedToday).length });
+  return c.json({ members, totalMembers: visibleOnly.length, prayedToday: members.filter(m => m.prayedToday).length });
 });
 
 // ─── Ask status: which targets has this user already asked today? ────────
@@ -1832,7 +1841,13 @@ app.post("/api/invites/:token/accept", async (c) => {
   const ci = getCircle(inv.circle_code); if (!ci) return c.json({ error: "This circle no longer exists." }, 404);
   const alreadyMember = ci.members.some(m => m.userId === u.id);
   if (!alreadyMember) {
-    ci.members.push({ userId: u.id, name: u.name || "", streakCount: 0, lastPrayedDate: null, joinedAt: new Date().toISOString() });
+    // v5.15.5 — set visibility based on circle type (community = sub required, private = always visible)
+    let inviteVisible = true;
+    if (isCommunityCircle(inv.circle_code)) {
+      const userRow = await pool.query("SELECT subscription_status FROM users WHERE id=$1", [u.id]).then(r => r.rows[0]).catch(() => null);
+      inviteVisible = !!(userRow && userRow.subscription_status && userRow.subscription_status !== "none");
+    }
+    ci.members.push({ userId: u.id, name: u.name || "", streakCount: 0, lastPrayedDate: null, joinedAt: new Date().toISOString(), visible: inviteVisible });
     await saveCircleToDb(ci);
     trackEvent(u.id, "circle_invite_accepted", { circle_code: inv.circle_code, circle_name: ci.name, invite_token: token });
     pushToUserLocalized(ci.creatorUserId, { titleKey: "member_joined_title", titleParams: { name: u.name || "Someone", circle: ci.name }, bodyKey: "member_joined_body", bodyParams: { count: ci.members.length }, type: "member_joined", circleCode: inv.circle_code, circleName: ci.name, extra: { memberName: u.name || "Someone" } });
@@ -2459,8 +2474,10 @@ app.get("/api/circles/:code/activity", async (c) => {
   const memberIds = ci.members.map(m => m.userId).filter(Boolean);
   let avatarMap: Record<string, string | null> = {};
   try { const av = await pool.query("SELECT id, device_user_id, avatar_url FROM users WHERE id = ANY($1) OR device_user_id = ANY($1)", [memberIds]); for (const r of av.rows) { avatarMap[r.id] = r.avatar_url; if (r.device_user_id) avatarMap[r.device_user_id] = r.avatar_url; } } catch {}
-  // v5.15.4 — only show visible members in feed (consistent with Circle Today)
-  const visibleMemberIds = new Set(ci.members.filter(m => m.visible !== false || m.userId === ci.creatorUserId).map(m => m.userId));
+  // v5.15.5 — only filter visibility in community circles (private circles show everyone)
+  const visibleMemberIds = new Set(
+    isCommunityCircle(ci.code) ? ci.members.filter(m => m.visible !== false || m.userId === ci.creatorUserId).map(m => m.userId) : ci.members.map(m => m.userId)
+  );
   // Recent prayers (from member status updates)
   for (const m of ci.members) {
     if (!visibleMemberIds.has(m.userId)) continue;
@@ -4095,34 +4112,36 @@ async function start() {
   setTimeout(() => { syncToLoops().catch(() => {}); }, 5 * 60 * 1000);
   setInterval(() => { syncToLoops().catch(() => {}); }, 6 * 60 * 60 * 1000);
 
-  // v5.15.5 — Periodic subscription visibility sync
-  // Fixes the systemic issue where RC anonymous ID linkage fails during sign-in,
-  // leaving active subscribers with visible=false in community circles.
-  // Two-pass approach:
-  //   Pass 1: Users with subscription_status='active'/'lifetime' in DB → ensure visible=true in all circles
-  //   Pass 2: Users with subscription_status='none' who are in circles → check RC API to see if they actually have an active sub
+  // v5.15.5 — Periodic subscription visibility sync (community-circle-aware)
+  // Three-pass approach:
+  //   Pass 1: Active/lifetime users in DB → ensure visible=true in all circles
+  //   Pass 2: Invisible members in community circles → check RC API, fix if actually subscribed
+  //   Pass 3: Visible members in community circles whose DB says cancelled/expired/none → hide them
   async function syncSubscriptionVisibility(): Promise<void> {
     if (!REVENUECAT_SECRET_KEY) { console.log("[VisibilitySync] No RC secret key"); return; }
     try {
-      let fixedFromDb = 0;
+      let fixedVisible = 0;
+      let fixedHidden = 0;
       let fixedFromRc = 0;
 
       // Pass 1: DB says active/lifetime → make visible in all circles
       const activeUsers = await pool.query("SELECT id FROM users WHERE subscription_status IN ('active', 'lifetime')");
-      for (const row of activeUsers.rows) {
+      const activeUserIds = new Set(activeUsers.rows.map((r: any) => r.id));
+      for (const uid of activeUserIds) {
         for (const [, circle] of circles) {
-          const member = circle.members.find(m => m.userId === row.id);
+          const member = circle.members.find(m => m.userId === uid);
           if (member && member.visible === false) {
             member.visible = true;
             saveCircleToDb(circle).catch(() => {});
-            fixedFromDb++;
+            fixedVisible++;
           }
         }
       }
 
-      // Pass 2: Users in circles with visible=false → check RC API for active entitlement
+      // Pass 2: Invisible members in community circles → check RC API for active entitlement
       const invisibleMembers = new Set<string>();
       for (const [, circle] of circles) {
+        if (!isCommunityCircle(circle.code)) continue;
         for (const member of circle.members) {
           if (member.visible === false) invisibleMembers.add(member.userId);
         }
@@ -4139,15 +4158,11 @@ async function start() {
           const entitlements = rcData.subscriber?.entitlements || {};
           const now = new Date();
 
-          // Check if user has active premium entitlement
           const hasPremium = entitlements.premium && new Date(entitlements.premium.expires_date) > now;
-          // Check for lifetime (no expiry or far-future expiry)
           const hasLifetime = Object.entries(subs).some(([pid, s]: [string, any]) => pid.includes("lifetime") && (!s.expires_date || new Date(s.expires_date) > now));
 
           if (hasPremium || hasLifetime) {
-            // Update DB subscription status
             await pool.query("UPDATE users SET subscription_status=$1, updated_at=NOW() WHERE id=$2", [hasLifetime ? "lifetime" : "active", userId]).catch(() => {});
-            // Make visible in all circles
             for (const [, circle] of circles) {
               const member = circle.members.find(m => m.userId === userId);
               if (member && member.visible === false) {
@@ -4161,8 +4176,22 @@ async function start() {
         } catch {}
       }
 
-      if (fixedFromDb > 0 || fixedFromRc > 0) {
-        console.log(`[VisibilitySync] Fixed ${fixedFromDb} from DB status, ${fixedFromRc} from RC API check`);
+      // Pass 3: Visible members in community circles who are NOT active subscribers → hide them
+      const nonActiveUsers = await pool.query("SELECT id FROM users WHERE subscription_status NOT IN ('active', 'lifetime', 'trial') OR subscription_status IS NULL");
+      const nonActiveIds = new Set(nonActiveUsers.rows.map((r: any) => r.id));
+      for (const [, circle] of circles) {
+        if (!isCommunityCircle(circle.code)) continue;
+        for (const member of circle.members) {
+          if (member.visible !== false && nonActiveIds.has(member.userId) && member.userId !== circle.creatorUserId) {
+            member.visible = false;
+            saveCircleToDb(circle).catch(() => {});
+            fixedHidden++;
+          }
+        }
+      }
+
+      if (fixedVisible > 0 || fixedHidden > 0 || fixedFromRc > 0) {
+        console.log(`[VisibilitySync] Made visible: ${fixedVisible} (DB) + ${fixedFromRc} (RC API). Hidden: ${fixedHidden} (non-subscribers in community)`);
       } else {
         console.log("[VisibilitySync] All visibility consistent");
       }
