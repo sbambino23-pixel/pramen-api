@@ -2529,6 +2529,23 @@ app.get("/api/circles/:code/streak", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// ─── LOOPS EVENT HELPER (module-level for access from scheduled functions) ──
+// ═══════════════════════════════════════════════════════════════════
+async function sendLoopsEvent(email: string, eventName: string, properties?: Record<string, any>): Promise<void> {
+  const loopsKey = process.env.LOOPS_API_KEY || "";
+  if (!loopsKey || !email) return;
+  try {
+    const res = await fetch("https://app.loops.so/api/v1/events/send", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${loopsKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ email, eventName, ...(properties || {}) })
+    });
+    if (res.ok) console.log(`[Loops] Event '${eventName}' sent to ${email}`);
+    else console.error(`[Loops] Event '${eventName}' failed: ${res.status}`);
+  } catch (err: any) { console.error(`[Loops] Event error: ${err.message}`); }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // ─── STREAK AT RISK PUSH (scheduled) ────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 async function checkStreakAtRisk(): Promise<void> {
@@ -3980,18 +3997,7 @@ async function start() {
 
   // v5.15.1 — Loops event sender for lifecycle triggers
   const LOOPS_API_KEY = process.env.LOOPS_API_KEY || "";
-  async function sendLoopsEvent(email: string, eventName: string, properties?: Record<string, any>): Promise<void> {
-    if (!LOOPS_API_KEY || !email) return;
-    try {
-      const res = await fetch("https://app.loops.so/api/v1/events/send", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${LOOPS_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ email, eventName, ...(properties || {}) })
-      });
-      if (res.ok) console.log(`[Loops] Event '${eventName}' sent to ${email}`);
-      else console.error(`[Loops] Event '${eventName}' failed: ${res.status}`);
-    } catch (err: any) { console.error(`[Loops] Event error: ${err.message}`); }
-  }
+  // sendLoopsEvent is now at module level (moved for scope access from checkStreakAtRisk)
 
   // v5.12.6 — Sync user segments to Loops.so for email campaigns (every 6 hours)
   async function syncToLoops(): Promise<void> {
