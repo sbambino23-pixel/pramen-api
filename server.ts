@@ -355,6 +355,20 @@ const PUSH_STRINGS: Record<string, Record<Lang, string>> = {
     pt: "Você não orou hoje. Não deixe sua sequência quebrar.",
   },
 
+  // Billing issue
+  billing_issue_title: {
+    en: "Your prayer subscription needs attention",
+    fr: "Votre abonnement de prière nécessite votre attention",
+    es: "Tu suscripción de oración necesita atención",
+    pt: "Sua assinatura de oração precisa de atenção",
+  },
+  billing_issue_body: {
+    en: "There was a problem with your payment. Update your payment method to keep your Prayer Circles and streak going.",
+    fr: "Un problème est survenu avec votre paiement. Mettez à jour votre moyen de paiement pour garder vos Cercles de Prière et votre série.",
+    es: "Hubo un problema con tu pago. Actualiza tu método de pago para mantener tus Círculos de Oración y tu racha.",
+    pt: "Houve um problema com seu pagamento. Atualize seu método de pagamento para manter seus Círculos de Oração e sua sequência.",
+  },
+
   // Last one standing
   last_one_standing_title: {
     en: "Everyone in {circle} prayed today",
@@ -1329,6 +1343,10 @@ app.post("/webhooks/revenuecat", async (c) => {
           trackEvent(resolvedUid, "referral_30d_granted_referred", { referrer_user_id: referrerId });
         }
       } catch {}
+    }
+    // v5.15.3 — push notification on billing issue to recover failed payments
+    if (ev.type === "BILLING_ISSUE" && !resolvedUid.startsWith("$RCAnonymous")) {
+      pushToUserLocalized(resolvedUid, { titleKey: "billing_issue_title", bodyKey: "billing_issue_body", type: "billing_issue" }).catch(() => {});
     }
     console.log(`[RC] ${ev.type} → ${name} | rc:${rcUid.substring(0,12)} → resolved:${resolvedUid.substring(0,12)} ${plan}`); return c.json({ status: "ok" });
   } catch (e) { console.error("[RC]", e); return c.json({ error: "Error" }, 500); }
