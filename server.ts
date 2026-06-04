@@ -712,12 +712,12 @@ const COMMUNITY_CIRCLE_TOPICS: Record<string, string> = {
 
 function isCommunityCircle(code: string): boolean { return !!COMMUNITY_CIRCLE_TOPICS[code]; }
 
-// v5.15.6 — check if a community circle member is inactive (14+ days since last activity)
+// v5.15.6 — check if a community circle member is inactive (21+ days since last activity)
 function isCommunityMemberActive(m: StoredMember): boolean {
   const lastActivity = m.lastPrayedDate || m.joinedAt;
   if (!lastActivity) return false;
   const daysSince = (Date.now() - new Date(lastActivity).getTime()) / (1000 * 60 * 60 * 24);
-  return daysSince <= 14;
+  return daysSince <= 21;
 }
 
 function getCirclePrayerTopic(circle: StoredCircle): string {
