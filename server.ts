@@ -1086,6 +1086,42 @@ app.get("/api/admin/user-deep", async (c) => {
   return c.json({ user: u, referral_code: referralCode.rows[0] || null, referrals: referrals.rows, invite_tokens: inviteTokens.rows, invite_emails: inviteEmails.rows, circles, user_data: userData, promo_codes: promoCodes.rows });
 });
 app.get("/api/admin/recent-users", async (c) => { const key = c.req.query("key") || c.req.header("X-Admin-Secret"); if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403); const days = parseInt(c.req.query("days") || "3"); const r = await pool.query("SELECT id, name, email, auth_provider, created_at, subscription_status, trial_start_date, trial_end_date, device_user_id, device_token IS NOT NULL as has_push_token FROM users WHERE created_at > NOW() - INTERVAL '1 day' * $1 ORDER BY created_at DESC", [days]); return c.json({ count: r.rows.length, users: r.rows }); });
+// v5.15.5 — One-time nudge for billing zombie users (lapsed trials with push tokens)
+app.post("/api/admin/nudge-billing-zombies", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
+  try {
+    // Find users created in the last 20 days with status none/expired/cancelled who have push tokens
+    const zombies = await pool.query(`
+      SELECT u.id, u.name, u.email, u.subscription_status, u.created_at
+      FROM users u
+      WHERE u.device_token IS NOT NULL
+      AND u.subscription_status IN ('none', 'expired', 'cancelled', 'billing_issue')
+      AND u.created_at > NOW() - INTERVAL '20 days'
+      ORDER BY u.created_at DESC
+    `);
+    if (zombies.rows.length === 0) return c.json({ sent: 0, message: "No zombie users found" });
+    let sent = 0;
+    const results: any[] = [];
+    for (const user of zombies.rows) {
+      const throttleKey = `billing_zombie_nudge_${user.id}`;
+      const existing = await pool.query("SELECT throttle_key FROM push_throttle WHERE throttle_key=$1", [throttleKey]);
+      if (existing.rows.length > 0) { results.push({ id: user.id, name: user.name, status: "already_sent" }); continue; }
+      // Check if user is in any circle
+      const inCircle = Array.from(circles.values()).some(ci => ci.members.some(m => m.userId === user.id));
+      const title = inCircle ? "Your Prayer Circle misses you" : "Your prayer journey is waiting";
+      const body = inCircle
+        ? "Your circle is still praying together. Come back and join them. Your free trial is ready when you are."
+        : "You started something beautiful. Open prAmen and pray with your community today. Your free trial is ready.";
+      await pushToUser(user.id, { title, body, type: "billing_issue" });
+      await pool.query("INSERT INTO push_throttle (throttle_key, sent_date) VALUES ($1, $2) ON CONFLICT DO NOTHING", [throttleKey, new Date().toISOString().split("T")[0]]);
+      sent++;
+      trackEvent(user.id, "billing_zombie_nudge_sent", { subscription_status: user.subscription_status, in_circle: inCircle });
+      results.push({ id: user.id, name: user.name, email: user.email, status: "sent", in_circle: inCircle });
+    }
+    return c.json({ sent, total_candidates: zombies.rows.length, results });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
 app.get("/api/admin/email-list", async (c) => { if (c.req.header("X-Admin-Secret") !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const r = await pool.query("SELECT email,name,auth_provider,created_at FROM users WHERE email_opt_in=true AND email IS NOT NULL AND email NOT LIKE '%privaterelay.appleid.com' ORDER BY created_at DESC"); return c.json({ count: r.rows.length, emails: r.rows }); });
 app.post("/api/auth/verify", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ valid: false }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ valid: false }, 401); return c.json({ valid: true, user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id) }); });
 app.post("/api/auth/logout", async (c) => { const ah = c.req.header("Authorization"); if (!ah) return c.json({ success: true }); await pool.query("UPDATE users SET auth_token=$1,updated_at=NOW() WHERE auth_token=$2", [generateAuthToken(), ah.replace("Bearer ", "")]); return c.json({ success: true }); });
