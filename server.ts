@@ -509,6 +509,9 @@ async function initDb(): Promise<void> {
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_timezone TEXT`).catch(() => {});
     // v5.15.0 — circle engagement tracking for hybrid prayer model + gamification
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ`).catch(() => {});
+    // v5.15.6 — store RevenueCat customer ID for webhook resolution
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS rc_customer_id TEXT`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_users_rc_customer_id ON users(rc_customer_id) WHERE rc_customer_id IS NOT NULL`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS circle_engagement (circle_code TEXT NOT NULL, user_id TEXT NOT NULL, day DATE NOT NULL, action_count INTEGER DEFAULT 0, actions JSONB DEFAULT '[]'::jsonb, created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (circle_code, user_id, day))`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_engagement_circle_day ON circle_engagement(circle_code, day)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_users_apple_user_id ON users(apple_user_id)`);
@@ -1186,6 +1189,19 @@ app.put("/api/user/language", async (c) => {
   return c.json({ success: true, language: lang });
 });
 
+// v5.15.6 — iOS sends its RC customer ID after successful Purchases.shared.logIn()
+app.put("/api/user/rc-id", async (c) => {
+  const ah = c.req.header("Authorization");
+  if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401);
+  const u = await getUserByToken(ah.replace("Bearer ", ""));
+  if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const { rcCustomerId } = await c.req.json();
+  if (!rcCustomerId) return c.json({ error: "rcCustomerId required" }, 400);
+  await pool.query("UPDATE users SET rc_customer_id=$1, updated_at=NOW() WHERE id=$2", [rcCustomerId, u.id]);
+  console.log(`[RC-ID] Linked rc_customer_id=${rcCustomerId.substring(0,12)}… to user ${u.id.substring(0,8)}…`);
+  return c.json({ success: true });
+});
+
 app.put("/api/user/avatar", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   if (!s3) return c.json({ error: "Storage not configured" }, 500);
@@ -1329,6 +1345,8 @@ app.post("/webhooks/revenuecat", async (c) => {
     let resolvedUid = rcUid; const candidateIds = [rcUid, ev.original_app_user_id, ...(ev.aliases || [])].filter(Boolean);
     for (const candidateId of candidateIds) { if (!candidateId || candidateId.startsWith("$RCAnonymous")) continue; try { const match = await pool.query("SELECT id FROM users WHERE id=$1 OR device_user_id=$1 LIMIT 1", [candidateId]); if (match.rows.length > 0) { resolvedUid = match.rows[0].id; break; } } catch {} }
     if (resolvedUid.startsWith("$RCAnonymous")) { try { const match = await pool.query("SELECT id FROM users WHERE device_user_id=$1 LIMIT 1", [rcUid]); if (match.rows.length > 0) resolvedUid = match.rows[0].id; } catch {} }
+    // v5.15.6 — resolve via rc_customer_id column (set by iOS after successful RC login)
+    if (resolvedUid.startsWith("$RCAnonymous")) { for (const cid of candidateIds) { if (!cid) continue; try { const match = await pool.query("SELECT id FROM users WHERE rc_customer_id=$1 LIMIT 1", [cid]); if (match.rows.length > 0) { resolvedUid = match.rows[0].id; break; } } catch {} } }
     await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, resolvedUid]).catch(() => {});
     if (resolvedUid !== rcUid) await pool.query("UPDATE users SET subscription_status=$1,updated_at=NOW() WHERE id=$2 OR device_user_id=$2", [status, rcUid]).catch(() => {});
     // v5.15.5 — sync circle visibility on subscription changes
