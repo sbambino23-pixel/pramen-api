@@ -612,6 +612,16 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_deleted, created_at DESC)`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_push_status TEXT`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_push_at TIMESTAMPTZ`).catch(() => {});
+    // v5 Phase 5 — Live Room. Config-driven bands (NEVER hardcode times in
+    // logic). Launch: single Americas band, 21:00 America/New_York.
+    await client.query(`CREATE TABLE IF NOT EXISTS live_bands (band_key TEXT PRIMARY KEY, tz TEXT NOT NULL, time_local TEXT NOT NULL, enabled BOOLEAN DEFAULT true)`);
+    await client.query(`INSERT INTO live_bands (band_key, tz, time_local, enabled) VALUES ('americas','America/New_York','21:00',true) ON CONFLICT (band_key) DO NOTHING`);
+    // BRIGHT LINE: presence/counts derive ONLY from live_participants rows,
+    // which are ONLY written by the authenticated /live/join + heartbeat +
+    // prayed endpoints. No seed path, no synthetic attendees, ever.
+    await client.query(`CREATE TABLE IF NOT EXISTS live_prayer_sessions (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, band_key TEXT NOT NULL, scheduled_for TIMESTAMPTZ NOT NULL, window_end TIMESTAMPTZ NOT NULL, status TEXT NOT NULL DEFAULT 'live', together BOOLEAN DEFAULT false, present_count INT DEFAULT 0, nudged BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE (circle_code, band_key, scheduled_for))`);
+    await client.query(`CREATE TABLE IF NOT EXISTS live_prayer_participants (session_id TEXT NOT NULL, user_id TEXT NOT NULL, user_name TEXT, joined_at TIMESTAMPTZ DEFAULT NOW(), last_seen TIMESTAMPTZ DEFAULT NOW(), praying BOOLEAN DEFAULT false, prayed_at TIMESTAMPTZ, left_at TIMESTAMPTZ, PRIMARY KEY (session_id, user_id))`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_live_sessions_status ON live_prayer_sessions(status, window_end)`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS volley_events (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, by_user_id TEXT NOT NULL, by_name TEXT NOT NULL, recipient_user_id TEXT NOT NULL, context TEXT NOT NULL, request_id TEXT, circle_code TEXT, prayed_back BOOLEAN DEFAULT false, occurred_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_volley_recipient ON volley_events(recipient_user_id, occurred_at DESC)`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS notification_preferences (user_id TEXT PRIMARY KEY, encouragements BOOLEAN DEFAULT true, prayers_shared BOOLEAN DEFAULT true, prayer_requests BOOLEAN DEFAULT true, circle_posts BOOLEAN DEFAULT true, post_replies BOOLEAN DEFAULT true, post_reactions BOOLEAN DEFAULT true, circle_members BOOLEAN DEFAULT true, streak_milestones BOOLEAN DEFAULT true, streak_freeze BOOLEAN DEFAULT true, admin_promotions BOOLEAN DEFAULT true, removed_from_circle BOOLEAN DEFAULT true, churches_shared BOOLEAN DEFAULT true, updated_at TIMESTAMPTZ DEFAULT NOW())`);
@@ -2689,6 +2699,109 @@ app.get("/api/circles/:code/engagement", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// ─── LIVE ROOM ENDPOINTS (v5 Phase 5) ───────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// Current/next room for the caller's circle. Presence = real rows only.
+app.get("/api/circles/:code/live", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const code = c.req.param("code").toUpperCase();
+  const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
+  const live = await pool.query("SELECT id, band_key, scheduled_for, window_end, status FROM live_prayer_sessions WHERE circle_code=$1 AND status='live' AND window_end > NOW() ORDER BY scheduled_for DESC LIMIT 1", [code]);
+  const band = await pool.query("SELECT band_key, tz, time_local FROM live_bands WHERE enabled=true LIMIT 1");
+  const bandInfo = band.rows[0] ? { bandKey: band.rows[0].band_key, tz: band.rows[0].tz, timeLocal: band.rows[0].time_local } : null;
+  if (live.rows.length === 0) {
+    return c.json({ status: "none", session: null, band: bandInfo, present: [], presentCount: 0, memberCount: ci.members.length });
+  }
+  const sess = live.rows[0];
+  const present = await getSessionPresence(sess.id);
+  return c.json({
+    status: "live",
+    session: { sessionId: sess.id, bandKey: sess.band_key, scheduledFor: sess.scheduled_for, windowEnd: sess.window_end },
+    band: bandInfo,
+    present,
+    presentCount: present.length,
+    memberCount: ci.members.length
+  });
+});
+
+// Join the live session. Idempotent. First REAL arrival triggers the one
+// per-session nudge to not-yet-present members (locked decision #5).
+app.post("/api/circles/:code/live/join", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const code = c.req.param("code").toUpperCase();
+  const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
+  if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "Not a member" }, 403);
+  const live = await pool.query("SELECT id, nudged FROM live_prayer_sessions WHERE circle_code=$1 AND status='live' AND window_end > NOW() ORDER BY scheduled_for DESC LIMIT 1", [code]);
+  if (live.rows.length === 0) return c.json({ error: "No live session" }, 404);
+  const sessionId = live.rows[0].id;
+  const myName = ci.members.find(m => m.userId === u.id)?.name || u.name || "Someone";
+  await pool.query(
+    `INSERT INTO live_prayer_participants (session_id, user_id, user_name) VALUES ($1,$2,$3)
+     ON CONFLICT (session_id, user_id) DO UPDATE SET last_seen=NOW(), left_at=NULL`,
+    [sessionId, u.id, myName]
+  );
+  trackEvent(u.id, "room_joined", { circle_code: code, session_id: sessionId });
+  // First-arrival nudge — ONE per session, ever (nudged flag flips atomically)
+  if (!live.rows[0].nudged) {
+    const flip = await pool.query("UPDATE live_prayer_sessions SET nudged=true WHERE id=$1 AND nudged=false RETURNING id", [sessionId]);
+    if (flip.rows.length > 0) {
+      for (const m of ci.members) {
+        if (m.userId === u.id || m.notificationsMuted) continue;
+        pushToUser(m.userId, { title: `${myName} is in the prayer room \u{1F64F}`, body: `${ci.name} is gathering — come pray together`, type: "live_prayer_starting", circleCode: code, circleName: ci.name, extra: { sessionId, firstArrival: true } }).catch(() => {});
+      }
+    }
+  }
+  await broadcastLivePresence(sessionId, code);
+  return c.json({ sessionId });
+});
+
+app.post("/api/live/:sessionId/heartbeat", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const sessionId = c.req.param("sessionId");
+  const b = await c.req.json().catch(() => ({}));
+  const praying = !!b.praying;
+  const r = await pool.query(
+    "UPDATE live_prayer_participants SET last_seen=NOW(), praying=$1 WHERE session_id=$2 AND user_id=$3 RETURNING (SELECT circle_code FROM live_prayer_sessions WHERE id=$2) AS circle_code, praying",
+    [praying, sessionId, u.id]
+  );
+  if (r.rows.length === 0) return c.json({ error: "Not in session" }, 404);
+  // fan out only when visible status could have changed
+  if (b.statusChanged === true) { await broadcastLivePresence(sessionId, r.rows[0].circle_code); }
+  return c.json({ ok: true });
+});
+
+// Amen inside the room. together flips ONLY when >=2 REAL participants prayed.
+app.post("/api/live/:sessionId/prayed", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const sessionId = c.req.param("sessionId");
+  const r = await pool.query(
+    "UPDATE live_prayer_participants SET prayed_at=NOW(), praying=false, last_seen=NOW() WHERE session_id=$1 AND user_id=$2 RETURNING session_id",
+    [sessionId, u.id]
+  );
+  if (r.rows.length === 0) return c.json({ error: "Not in session" }, 404);
+  const sess = await pool.query("SELECT circle_code FROM live_prayer_sessions WHERE id=$1", [sessionId]);
+  const circleCode = sess.rows[0]?.circle_code || "";
+  const prayedCount = await pool.query("SELECT COUNT(DISTINCT user_id)::int AS n FROM live_prayer_participants WHERE session_id=$1 AND prayed_at IS NOT NULL", [sessionId]);
+  const n = prayedCount.rows[0]?.n || 0;
+  if (n >= 2) { await pool.query("UPDATE live_prayer_sessions SET together=true WHERE id=$1", [sessionId]); }
+  trackEvent(u.id, "room_prayed", { circle_code: circleCode, session_id: sessionId, prayed_count: n });
+  await broadcastLivePresence(sessionId, circleCode);
+  return c.json({ ok: true, together: n >= 2, prayedCount: n });
+});
+
+app.post("/api/live/:sessionId/leave", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const sessionId = c.req.param("sessionId");
+  const r = await pool.query(
+    "UPDATE live_prayer_participants SET left_at=NOW() WHERE session_id=$1 AND user_id=$2 AND prayed_at IS NULL RETURNING session_id",
+    [sessionId, u.id]
+  );
+  const sess = await pool.query("SELECT circle_code FROM live_prayer_sessions WHERE id=$1", [sessionId]);
+  if (sess.rows[0]) { await broadcastLivePresence(sessionId, sess.rows[0].circle_code); }
+  return c.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // ─── VOLLEY ENDPOINTS (v5 Phase 4) ──────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 // Pray-back: called by the client AFTER the user actually prayed (Amen
@@ -2837,6 +2950,108 @@ app.get("/api/circles/:code/streak", async (c) => {
   const prayedToday = ci.members.filter(m => prayedTodayInOwnTZ(m));
   return c.json({ circleStreak: streak, prayedToday: prayedToday.length, totalMembers: ci.members.length, allPrayedToday: prayedToday.length === ci.members.length });
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// v5 Phase 5 — LIVE ROOM (the flagship)
+// Presence is REAL people only: every row in live_prayer_participants comes
+// from an authenticated join by a live client. Counts are computed, never set.
+// ═══════════════════════════════════════════════════════════════════
+
+function timeNowInTz(tz: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date());
+  } catch { return "??:??"; }
+}
+
+const PRESENCE_STALE_MS = 30 * 1000; // heartbeat every ~10s; 3 misses = gone
+
+type LivePresence = { userId: string; name: string; status: "here" | "praying" | "prayed" };
+
+async function getSessionPresence(sessionId: string): Promise<LivePresence[]> {
+  const r = await pool.query(
+    "SELECT user_id, user_name, praying, prayed_at, last_seen, left_at FROM live_prayer_participants WHERE session_id=$1 ORDER BY joined_at ASC",
+    [sessionId]
+  );
+  const now = Date.now();
+  const present: LivePresence[] = [];
+  for (const row of r.rows) {
+    if (row.left_at) continue;
+    const stale = now - new Date(row.last_seen).getTime() > PRESENCE_STALE_MS;
+    if (row.prayed_at) {
+      present.push({ userId: row.user_id, name: row.user_name || "Someone", status: "prayed" });
+    } else if (!stale) {
+      present.push({ userId: row.user_id, name: row.user_name || "Someone", status: row.praying ? "praying" : "here" });
+    }
+    // stale + never prayed = silently gone (honest counts)
+  }
+  return present;
+}
+
+async function broadcastLivePresence(sessionId: string, circleCode: string): Promise<void> {
+  const ci = getCircle(circleCode); if (!ci) return;
+  const present = await getSessionPresence(sessionId);
+  const event = { type: "live_presence_updated", sessionId, circleCode, present, presentCount: present.length };
+  for (const m of ci.members) { sendSseToUser(m.userId, event).catch(() => {}); }
+}
+
+// 1-minute scheduler tick: open rooms at the band's local time, close after
+// the 15-min window. Times computed from live_bands config — never hardcoded.
+async function liveRoomTick(): Promise<void> {
+  try {
+    const bands = await pool.query("SELECT band_key, tz, time_local FROM live_bands WHERE enabled=true");
+    for (const band of bands.rows) {
+      const nowLocal = timeNowInTz(band.tz);
+      if (nowLocal === band.time_local) {
+        const dayKey = todayInTimezone(band.tz);
+        for (const [code, circle] of circles) {
+          if (circle.members.length === 0) continue;
+          const scheduledFor = new Date();
+          const windowEnd = new Date(Date.now() + 15 * 60 * 1000);
+          let created = false;
+          try {
+            const ins = await pool.query(
+              `INSERT INTO live_prayer_sessions (circle_code, band_key, scheduled_for, window_end, status)
+               SELECT $1, $2, $3, $4, 'live'
+               WHERE NOT EXISTS (SELECT 1 FROM live_prayer_sessions WHERE circle_code=$1 AND band_key=$2 AND scheduled_for::date = $5::date)
+               RETURNING id`,
+              [code, band.band_key, scheduledFor.toISOString(), windowEnd.toISOString(), dayKey]
+            );
+            created = ins.rows.length > 0;
+            if (created) {
+              const sessionId = ins.rows[0].id;
+              const event = { type: "live_prayer_starting", circleCode: code, sessionId, bandKey: band.band_key, scheduledFor: scheduledFor.toISOString(), windowEnd: windowEnd.toISOString() };
+              for (const m of circle.members) {
+                sendSseToUser(m.userId, event).catch(() => {});
+                if (!m.notificationsMuted) {
+                  pushToUser(m.userId, { title: `${circle.name} is praying now \u{1F64F}`, body: "Join your circle", type: "live_prayer_starting", circleCode: code, circleName: circle.name, extra: { sessionId } }).catch(() => {});
+                }
+              }
+            }
+          } catch (err: any) { console.error(`[LiveRoom] open error ${code}:`, err.message); }
+        }
+      }
+    }
+    // Close expired sessions honestly: together = >=2 REAL participants who prayed
+    const expired = await pool.query("SELECT id, circle_code FROM live_prayer_sessions WHERE status='live' AND window_end < NOW()");
+    for (const row of expired.rows) {
+      const parts = await pool.query("SELECT user_id, user_name, prayed_at FROM live_prayer_participants WHERE session_id=$1", [row.id]);
+      const prayed = parts.rows.filter((p: any) => p.prayed_at);
+      const together = prayed.length >= 2;
+      await pool.query("UPDATE live_prayer_sessions SET status='completed', together=$1, present_count=$2 WHERE id=$3", [together, parts.rows.length, row.id]);
+      const ci = getCircle(row.circle_code);
+      if (ci) {
+        const event = { type: "live_prayer_completed", sessionId: row.id, circleCode: row.circle_code, together, togetherCount: prayed.length, memberNames: prayed.map((p: any) => p.user_name || "Someone") };
+        for (const m of ci.members) { sendSseToUser(m.userId, event).catch(() => {}); }
+      }
+      if (together) {
+        for (const p of prayed) {
+          trackEvent(p.user_id, "together_prayer", { context: "live_room", partner_count: prayed.length - 1 });
+        }
+      }
+      trackEvent("system", "room_session_closed", { circle_code: row.circle_code, attendee_count: parts.rows.length, prayed_count: prayed.length, together });
+    }
+  } catch (err: any) { console.error("[LiveRoom] tick error:", err.message); }
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // ─── LOOPS EVENT HELPER (module-level for access from scheduled functions) ──
@@ -3861,6 +4076,8 @@ async function start() {
   // v5.15.0 — generate daily circle prayers
   setTimeout(() => { generateCircleDailyPrayers().catch(() => {}); }, 6 * 60 * 1000);
   setInterval(() => { generateCircleDailyPrayers().catch(() => {}); }, 6 * 60 * 60 * 1000);
+  // v5 Phase 5 — Live Room scheduler: 1-min tick, band-config-driven
+  setInterval(() => { liveRoomTick().catch(() => {}); }, 60 * 1000);
   // v5.10.5 — Auto-pull Meta Ads spend data every 6 hours
   async function pullMetaAdSpend(): Promise<void> {
     if (!META_CAPI_ACCESS_TOKEN) return;
