@@ -121,15 +121,20 @@ function generateAPNsJWT(): string {
 
 interface PushPayload { title: string; body: string; type: string; circleCode?: string; circleName?: string; extra?: Record<string, any>; }
 
-function sendPush(deviceToken: string, payload: PushPayload): void {
+function recordPushResult(userId: string | undefined, status: string): void {
+  if (!userId) return;
+  pool.query("UPDATE users SET last_push_status=$1, last_push_at=NOW() WHERE id=$2", [status, userId]).catch(() => {});
+}
+
+function sendPush(deviceToken: string, payload: PushPayload, forUserId?: string): void {
   const jwt = generateAPNsJWT();
-  if (!jwt || !deviceToken) return;
+  if (!jwt || !deviceToken) { recordPushResult(forUserId, "no-jwt-or-token"); return; }
   const apnsPayload = JSON.stringify({ aps: { alert: { title: payload.title, body: payload.body }, sound: "default", badge: 1, "mutable-content": 1 }, type: payload.type, circleCode: payload.circleCode || "", circleName: payload.circleName || "", ...(payload.extra || {}) });
   try {
     const client = http2.connect(`https://${APNS_HOST}`);
-    client.on("error", (err) => { console.error("[APNs] Connection error:", err.message); client.close(); });
+    client.on("error", (err) => { console.error("[APNs] Connection error:", err.message); recordPushResult(forUserId, "conn-error"); client.close(); });
     const req = client.request({ ":method": "POST", ":path": `/3/device/${deviceToken}`, authorization: `bearer ${jwt}`, "apns-topic": APNS_BUNDLE_ID, "apns-push-type": "alert", "apns-priority": "10", "apns-expiration": "0", "content-type": "application/json" });
-    req.on("response", (headers) => { const status = headers[":status"]; if (status !== 200) { let body = ""; req.on("data", (chunk: Buffer) => { body += chunk.toString(); }); req.on("end", () => { console.log(`[APNs] Push failed status=${status} token=${deviceToken.substring(0, 8)}... body=${body}`); client.close(); }); return; } });
+    req.on("response", (headers) => { const status = headers[":status"]; if (status === 200) { recordPushResult(forUserId, "200"); } if (status !== 200) { let body = ""; req.on("data", (chunk: Buffer) => { body += chunk.toString(); }); req.on("end", () => { console.log(`[APNs] Push failed status=${status} token=${deviceToken.substring(0, 8)}... body=${body}`); recordPushResult(forUserId, `${status}:${body.substring(0, 60)}`); client.close(); }); return; } });
     req.on("error", (err) => { console.error("[APNs] Request error:", err.message); });
     req.on("end", () => { client.close(); });
     req.write(apnsPayload); req.end();
@@ -161,7 +166,7 @@ async function pushToUser(userId: string, payload: PushPayload): Promise<void> {
     const result = await pool.query("SELECT device_token FROM users WHERE id=$1 AND device_token IS NOT NULL", [userId]);
     if (result.rows[0]?.device_token) {
       console.log(`[Push] Sending ${payload.type} to ${userId.substring(0,8)}… token=${result.rows[0].device_token.substring(0,12)}…`);
-      sendPush(result.rows[0].device_token, payload);
+      sendPush(result.rows[0].device_token, payload, userId);
     } else {
       console.log(`[Push] No device_token for user ${userId.substring(0,8)}… (type=${payload.type}). User must open app with notifications enabled.`);
     }
@@ -605,6 +610,8 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, is_deleted, created_at DESC)`);
     await client.query(`CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, data JSONB DEFAULT '{}', is_read BOOLEAN DEFAULT false, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_deleted, created_at DESC)`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_push_status TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_push_at TIMESTAMPTZ`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS volley_events (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, by_user_id TEXT NOT NULL, by_name TEXT NOT NULL, recipient_user_id TEXT NOT NULL, context TEXT NOT NULL, request_id TEXT, circle_code TEXT, prayed_back BOOLEAN DEFAULT false, occurred_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_volley_recipient ON volley_events(recipient_user_id, occurred_at DESC)`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS notification_preferences (user_id TEXT PRIMARY KEY, encouragements BOOLEAN DEFAULT true, prayers_shared BOOLEAN DEFAULT true, prayer_requests BOOLEAN DEFAULT true, circle_posts BOOLEAN DEFAULT true, post_replies BOOLEAN DEFAULT true, post_reactions BOOLEAN DEFAULT true, circle_members BOOLEAN DEFAULT true, streak_milestones BOOLEAN DEFAULT true, streak_freeze BOOLEAN DEFAULT true, admin_promotions BOOLEAN DEFAULT true, removed_from_circle BOOLEAN DEFAULT true, churches_shared BOOLEAN DEFAULT true, updated_at TIMESTAMPTZ DEFAULT NOW())`);
@@ -2718,7 +2725,7 @@ app.get("/api/dashboard/volley-debug", async (c) => {
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
   const volleys = await pool.query("SELECT id, by_user_id, by_name, recipient_user_id, context, request_id, circle_code, prayed_back, occurred_at FROM volley_events ORDER BY occurred_at DESC LIMIT 20");
   const pushes = await pool.query("SELECT user_id, type, title, body, data, created_at FROM notifications ORDER BY created_at DESC LIMIT 25");
-  const tokens = await pool.query("SELECT id, name, (device_token IS NOT NULL) AS has_token, last_seen_at FROM users ORDER BY last_seen_at DESC NULLS LAST LIMIT 15");
+  const tokens = await pool.query("SELECT id, name, (device_token IS NOT NULL) AS has_token, last_push_status, last_push_at, last_seen_at FROM users ORDER BY last_seen_at DESC NULLS LAST LIMIT 15");
   // Recent requests across circles w/ requester+target identity (diagnose targeting)
   const reqs: any[] = [];
   for (const [code, circle] of circles) {
