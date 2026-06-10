@@ -1845,15 +1845,10 @@ app.post("/api/circles/:code/prayer-requests", async (c) => {
   const reqId = randomUUID();
   const targetUserId = b.targetUserId || null;
   const targetType = targetUserId ? "personal" : "circle";
-  // Enforce one ask per day per (asker, target) within this circle
+  // v5 (Jun 10): one-ask-per-day quota REMOVED per Samy — asks are unlimited.
+  // prayer_ask_log is still written below for analytics, but never blocks.
   const codeUpper = c.req.param("code").toUpperCase();
   const today = new Date().toISOString().split("T")[0];
-  if (b.userId) {
-    try {
-      const existing = await pool.query("SELECT 1 FROM prayer_ask_log WHERE circle_code=$1 AND asker_user_id=$2 AND COALESCE(target_user_id,'')=$3 AND day=$4 LIMIT 1", [codeUpper, b.userId, targetUserId || "", today]);
-      if (existing.rows.length > 0) return c.json({ error: "already_asked_today", targetType, targetUserId: targetUserId || null }, 409);
-    } catch (err: any) { console.error("[AskLog] Check error:", err.message); }
-  }
   // Auto-generate default text if user didn't type anything (unified nudge flow)
   let requestText = (b.text || "").trim();
   if (!requestText) {
