@@ -2717,9 +2717,24 @@ app.get("/api/dashboard/volley-debug", async (c) => {
   const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
   if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
   const volleys = await pool.query("SELECT id, by_user_id, by_name, recipient_user_id, context, request_id, circle_code, prayed_back, occurred_at FROM volley_events ORDER BY occurred_at DESC LIMIT 20");
-  const pushes = await pool.query("SELECT user_id, title, body, data, created_at FROM notifications WHERE type='prayed_with_you' ORDER BY created_at DESC LIMIT 20");
-  const tokens = await pool.query("SELECT id, name, (device_token IS NOT NULL) AS has_token FROM users ORDER BY last_seen_at DESC NULLS LAST LIMIT 10");
-  return c.json({ volleys: volleys.rows, pushes: pushes.rows, recentUsers: tokens.rows });
+  const pushes = await pool.query("SELECT user_id, type, title, body, data, created_at FROM notifications ORDER BY created_at DESC LIMIT 25");
+  const tokens = await pool.query("SELECT id, name, (device_token IS NOT NULL) AS has_token, last_seen_at FROM users ORDER BY last_seen_at DESC NULLS LAST LIMIT 15");
+  // Recent requests across circles w/ requester+target identity (diagnose targeting)
+  const reqs: any[] = [];
+  for (const [code, circle] of circles) {
+    for (const r of circle.prayerRequests.slice(0, 3)) {
+      reqs.push({ circle: code, id: r.id, requester: r.requesterName, requesterUserId: r.requesterUserId, targetUserId: r.targetUserId || null, targetType: r.targetType || "circle", text: r.text.substring(0, 40), at: r.timestamp });
+    }
+  }
+  reqs.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  // Members of circles w/ mute flags + ids (diagnose recipient resolution)
+  const members: any[] = [];
+  for (const [code, circle] of circles) {
+    for (const m of circle.members) {
+      members.push({ circle: code, name: m.name, userId: m.userId, muted: !!m.notificationsMuted });
+    }
+  }
+  return c.json({ volleys: volleys.rows, pushes: pushes.rows, recentUsers: tokens.rows, recentRequests: reqs.slice(0, 12), members: members.slice(0, 60) });
 });
 
 // Pending volleys for the Today feed card: real, recent, not yet prayed back
