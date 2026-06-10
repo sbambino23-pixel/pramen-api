@@ -732,41 +732,129 @@ function getCirclePrayerTopic(circle: StoredCircle): string {
   return `the prayer circle "${circle.name}"`;
 }
 
+// Seeded fallback prayers — used whenever Gemini is unavailable (missing key,
+// rate limited, API error). A circle must NEVER have a null prayer day: a
+// seeded human-written prayer is honest; a missing prayer is not.
+// Rotation is deterministic per circle+date so circles differ and days vary.
+const FALLBACK_CIRCLE_PRAYERS: Record<string, string[]> = {
+  night: [
+    "Father, as this day closes, we lay it all down before You. The things we finished and the things we could not. Quiet our minds, settle our hearts, and watch over everyone in this circle tonight. Let us rest knowing You stay awake. Amen.",
+    "Lord, the evening has come and we are tired. Thank You for carrying us through this day. Forgive what needs forgiving, heal what aches, and give each of us the deep rest that comes from trusting You. We sleep in Your hands. Amen.",
+    "God of peace, gather this circle under Your wing tonight. For everyone lying awake with worry, bring stillness. For everyone weary, bring sleep. Remind us that the world is Yours to hold, not ours. We release it and rest. Amen.",
+    "Father, before we sleep we thank You. For breath, for this circle, for mercy that met us today. Guard our homes and the people we love through the night, and wake us tomorrow with hearts ready to seek You first. Amen.",
+    "Lord, the dark does not frighten You and so it need not frighten us. Stay close to each member of this circle tonight. Quiet every anxious thought, and let Your peace, which passes understanding, keep our hearts and minds. Amen."
+  ],
+  morning: [
+    "Father, this morning is Yours before it is ours. Set our hearts in order before the day pulls at them. Give everyone in this circle clarity for the work ahead, patience for the people we meet, and eyes to notice You all day long. Amen.",
+    "Lord, thank You for waking us to a new day. Your mercies are new this morning, just as You promised. Walk ahead of this circle today. Open the right doors, close the wrong ones, and keep our feet steady on Your path. Amen.",
+    "God, before the noise begins, we come to You first. Fill each of us with what we will need today. Strength for the hard parts, gentleness for the people around us, and gratitude for it all. Lead this circle hour by hour. Amen.",
+    "Father, the day is unwritten and we trust You with the writing. Bless the work of our hands, guard our words, and let everyone in this circle carry Your peace into every room they enter today. Amen.",
+    "Lord, morning by morning You are faithful. We give You the first minutes of this day and ask You to shape the rest of it. Keep this circle close to You and close to each other until evening comes. Amen."
+  ],
+  hardDays: [
+    "Father, some of us are carrying things today that feel too heavy. You said come to Me, all who are weary. So we come. Hold the ones who are barely holding on, and let this circle be proof that no one walks through the hard days alone. Amen.",
+    "Lord, You are near to the brokenhearted, and we are counting on that today. For every burden in this circle, seen and unseen, we ask for Your strength. Not the kind that pretends everything is fine, but the kind that endures. Amen.",
+    "God, when the valley is long, You are still Shepherd. Walk with each person in this circle through what they are facing. Give grace for today only, and enough light for the next step. We trust You with the rest. Amen.",
+    "Father, You do not waste pain. For everyone here in a difficult season, bring comfort that is real and hope that does not embarrass. Teach us to carry each other's burdens, and carry the ones we cannot. Amen.",
+    "Lord, we will not pretend today is easy. But we know You are good, even now. Steady the ones who are shaking, soften the ones who have gone numb, and remind this whole circle that weeping may stay the night, but joy comes with the morning. Amen."
+  ],
+  stillness: [
+    "Father, slow us down. The world is loud and our hearts have been running. In this moment, we choose stillness. Be God, and let us stop trying to be. Fill this circle with the quiet confidence of people who know who holds them. Amen.",
+    "Lord, You said be still and know. So we are stopping, right here, to know You. Settle our racing thoughts, loosen our gripped hands, and teach everyone in this circle that rest is not laziness. It is trust. Amen.",
+    "God of the quiet waters, lead us beside them today. Restore what the rushing has worn down in each of us. Let this circle learn the unforced rhythms of grace, and find that Your yoke really is easy and Your burden light. Amen.",
+    "Father, we do not have to earn Your love today, and we needed to remember that. In the stillness, speak. We are listening. Give this circle the courage to rest in You while everything else keeps moving. Amen.",
+    "Lord, even the sea obeyed when You said peace, be still. Say it over us now. Over our minds, our schedules, our worries. Let this circle sit in Your presence and leave more whole than we came. Amen."
+  ],
+  intercession: [
+    "Father, we bring each other to You by name today. You know every need in this circle before we speak it. Strengthen the weary ones, encourage the discouraged ones, and let each of us feel the weight of being genuinely prayed for. Amen.",
+    "Lord, thank You for the people in this circle. What a grace, to not pray alone. Hear every silent request carried here today. Meet needs we have not said out loud, and knit us closer together as we lift each other up. Amen.",
+    "God, You told us to carry one another's burdens, so today we do. For every member of this circle, we ask Your provision, Your protection, and Your nearness. Let no one here wonder whether anyone is praying for them. Someone is. Amen.",
+    "Father, make us faithful intercessors. Quick to pray, slow to forget. Bless each person in this circle today in the exact place they need it most, and let them sense, somehow, that they were lifted up. Amen.",
+    "Lord, two or three are gathered here in Your name, and You promised to be among us. So be among us. Take every request in this circle, spoken and unspoken, and answer according to Your perfect wisdom and love. Amen."
+  ],
+  general: [
+    "Father, thank You for this circle and this day. Whatever each of us is walking through, meet us there. Give us grateful hearts, honest prayers, and the kind of faith that shows up tomorrow too. We are Yours. Amen.",
+    "Lord, You have been our help in days past and You will be our hope in days ahead. Bless every member of this circle today. Provide what is lacking, heal what is hurting, and keep us walking together toward You. Amen.",
+    "God, we pause together to say thank You. For family, for friendship, for mercy we did not deserve. Teach this circle to count blessings instead of problems, and to bring both back to You. Amen.",
+    "Father, give us strength for today. Not for the whole year, just today. Guard our families, guide our decisions, and let everyone in this circle end this day a little closer to You than they began it. Amen.",
+    "Lord, lead us. Where we are confused, bring clarity. Where we are afraid, bring courage. Where we are proud, bring humility. This circle belongs to You, and we trust You with everything in it. Amen.",
+    "Father, You see each person in this circle right now, exactly where they sit. Thank You that none of us is invisible to You. Draw near to every heart here, and make our prayers today honest, simple, and full of faith. Amen."
+  ]
+};
+
+function fallbackBucketForTopic(topic: string): string {
+  const t = topic.toLowerCase();
+  if (t.includes("night") || t.includes("evening")) return "night";
+  if (t.includes("morning")) return "morning";
+  if (t.includes("hard days") || t.includes("difficult")) return "hardDays";
+  if (t.includes("stillness") || t.includes("rest")) return "stillness";
+  if (t.includes("each other") || t.includes("intercession")) return "intercession";
+  return "general";
+}
+
+function seededFallbackPrayer(code: string, date: string, topic: string): string {
+  const pool = FALLBACK_CIRCLE_PRAYERS[fallbackBucketForTopic(topic)] || FALLBACK_CIRCLE_PRAYERS.general;
+  const key = code + date;
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return pool[hash % pool.length];
+}
+
 async function generateCircleDailyPrayers(): Promise<void> {
-  if (!GEMINI_API_KEY || !isGeminiAvailable()) return;
   const today = new Date().toISOString().split("T")[0];
   let generated = 0;
+  let seeded = 0;
+  // Gemini availability is checked per-pass; a 429 mid-loop downgrades the
+  // REST of the pass to seeded fallbacks instead of aborting (the old `return`
+  // left every remaining circle with no prayer for up to 6h of backoff).
+  let geminiUp = !!GEMINI_API_KEY && isGeminiAvailable();
   for (const [code, circle] of circles) {
     if (circle.members.length === 0) continue;
     // Skip if already generated today
     const existing = await pool.query("SELECT 1 FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
     if (existing.rows.length > 0) continue;
     const topic = getCirclePrayerTopic(circle);
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            system_instruction: { parts: [{ text: "You write short, heartfelt prayers (40-60 words) for prayer groups. Write in second person addressing God. Never use dashes or hyphens as punctuation. Be warm, scriptural, personal. The prayer should feel like something a group would pray together. Return ONLY the prayer text, nothing else. No quotes around it." }] },
-            contents: [{ role: "user", parts: [{ text: `Write today's shared prayer for a prayer circle focused on: ${topic}. It should feel fresh and specific to today, not generic.` }] }]
-          })
-        }
-      );
-      if (!res.ok) { if (res.status === 429) { markGeminiRateLimited(); return; } continue; }
-      const data = (await res.json()) as any;
-      const prayer = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
-      if (prayer && prayer.length > 20) {
-        await pool.query(
-          "INSERT INTO circle_daily_prayers (circle_code, date, prayer_text, topic) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-          [code, today, prayer, topic]
+    let prayer = "";
+    if (geminiUp) {
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              system_instruction: { parts: [{ text: "You write short, heartfelt prayers (40-60 words) for prayer groups. Write in second person addressing God. Never use dashes or hyphens as punctuation. Be warm, scriptural, personal. The prayer should feel like something a group would pray together. Return ONLY the prayer text, nothing else. No quotes around it." }] },
+              contents: [{ role: "user", parts: [{ text: `Write today's shared prayer for a prayer circle focused on: ${topic}. It should feel fresh and specific to today, not generic.` }] }]
+            })
+          }
         );
-        generated++;
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          prayer = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+          if (prayer.length <= 20) prayer = "";
+        } else if (res.status === 429) {
+          markGeminiRateLimited();
+          geminiUp = false;
+          console.log(`[CirclePrayer] Gemini 429 at ${code} — seeding the rest of this pass`);
+        } else {
+          console.error(`[CirclePrayer] Gemini ${res.status} for ${code} — using seeded fallback`);
+        }
+      } catch (err: any) {
+        console.error(`[CirclePrayer] Gemini error for ${code}: ${err.message} — using seeded fallback`);
       }
-    } catch (err: any) { console.error(`[CirclePrayer] Error for ${code}:`, err.message); }
+    }
+    if (prayer) {
+      generated++;
+    } else {
+      prayer = seededFallbackPrayer(code, today, topic);
+      seeded++;
+    }
+    await pool.query(
+      "INSERT INTO circle_daily_prayers (circle_code, date, prayer_text, topic) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+      [code, today, prayer, topic]
+    );
   }
-  if (generated > 0) console.log(`[CirclePrayer] Generated ${generated} daily circle prayers`);
+  if (generated > 0 || seeded > 0) console.log(`[CirclePrayer] Daily prayers: ${generated} generated, ${seeded} seeded (fallback)`);
 }
 
 // ─── Plausible Pull ──────────────────────────────────────────────────
