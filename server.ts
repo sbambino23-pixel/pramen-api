@@ -2712,6 +2712,16 @@ app.post("/api/volley/pray-back", async (c) => {
   return c.json({ success: true, volleyId: newId });
 });
 
+// Debug (dashboard-gated): did volleys fire, and were pushes stored?
+app.get("/api/dashboard/volley-debug", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  const volleys = await pool.query("SELECT id, by_user_id, by_name, recipient_user_id, context, request_id, circle_code, prayed_back, occurred_at FROM volley_events ORDER BY occurred_at DESC LIMIT 20");
+  const pushes = await pool.query("SELECT user_id, title, body, data, created_at FROM notifications WHERE type='prayed_with_you' ORDER BY created_at DESC LIMIT 20");
+  const tokens = await pool.query("SELECT id, name, (device_token IS NOT NULL) AS has_token FROM users ORDER BY last_seen_at DESC NULLS LAST LIMIT 10");
+  return c.json({ volleys: volleys.rows, pushes: pushes.rows, recentUsers: tokens.rows });
+});
+
 // Pending volleys for the Today feed card: real, recent, not yet prayed back
 app.get("/api/volley/pending", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
