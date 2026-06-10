@@ -306,6 +306,20 @@ const PUSH_STRINGS: Record<string, Record<Lang, string>> = {
     pt: "Alguém compartilhou um pedido de oração",
   },
 
+  // Volley — someone prayed WITH you, unprompted (v5 Phase 4)
+  prayed_with_you_title: {
+    en: "\u{1F64F} {name} prayed with you",
+    fr: "\u{1F64F} {name} a pri\u00e9 avec vous",
+    es: "\u{1F64F} {name} or\u00f3 contigo",
+    pt: "\u{1F64F} {name} orou com voc\u00ea",
+  },
+  prayed_with_you_body: {
+    en: "Pray for {name} back",
+    fr: "Priez pour {name} en retour",
+    es: "Ora por {name} tambi\u00e9n",
+    pt: "Ore por {name} tamb\u00e9m",
+  },
+
   // Prayer request prayed (someone prayed for your request)
   prayer_request_prayed_title: {
     en: "🙏 {name} prayed for your request",
@@ -471,6 +485,54 @@ async function broadcastCircleUpdate(circle: StoredCircle, excludeUserId: string
   for (const uid of recipients) { await sendSseToUser(uid, event); }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// v5 Phase 4 — THE VOLLEY
+// BRIGHT LINE: fireVolley is ONLY called from handlers that record a REAL
+// prayer by a REAL user (request pray, daily prayer pray, pray-back after
+// Amen). Never call it from cron, seeds, previews, or anywhere synthetic.
+// ═══════════════════════════════════════════════════════════════════
+async function fireVolley(by: { id: string; name: string }, recipientUserId: string, context: "request" | "daily" | "volley", requestId: string | null, circleCode: string | null): Promise<string | null> {
+  if (!recipientUserId || recipientUserId === by.id) return null;
+  let volleyId: string | null = null;
+  try {
+    const ins = await pool.query(
+      "INSERT INTO volley_events (by_user_id, by_name, recipient_user_id, context, request_id, circle_code) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+      [by.id, by.name || "Someone", recipientUserId, context, requestId, circleCode]
+    );
+    volleyId = ins.rows[0]?.id || null;
+  } catch (err: any) { console.error("[Volley] insert error:", err.message); }
+
+  const eventData = {
+    type: "prayed_with_you",
+    volleyId,
+    byUserId: by.id,
+    byName: by.name || "Someone",
+    context,
+    requestId: requestId || "",
+    circleCode: circleCode || "",
+    occurredAt: new Date().toISOString()
+  };
+  // SSE to recipient if connected
+  sendSseToUser(recipientUserId, eventData).catch(() => {});
+  // Named push (localized) — covers offline recipients
+  (async () => {
+    try {
+      const lang = await getUserLanguage(recipientUserId);
+      const name = by.name || "Someone";
+      await pushToUser(recipientUserId, {
+        title: t(lang, "prayed_with_you_title", { name }),
+        body: t(lang, "prayed_with_you_body", { name }),
+        type: "prayed_with_you",
+        circleCode: circleCode || "",
+        circleName: "",
+        extra: { volleyId: volleyId || "", byUserId: by.id, byName: name, context, requestId: requestId || "" }
+      });
+    } catch {}
+  })();
+  trackEvent(by.id, "prayed_with_you_sent", { context, circle_code: circleCode || "" });
+  return volleyId;
+}
+
 async function pushSilentSyncToCircle(circle: StoredCircle, excludeUserId: string): Promise<void> {
   const memberIds = circle.members.filter((m) => m.userId !== excludeUserId).map((m) => m.userId);
   if (memberIds.length === 0) return;
@@ -543,6 +605,8 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id, is_deleted, created_at DESC)`);
     await client.query(`CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, data JSONB DEFAULT '{}', is_read BOOLEAN DEFAULT false, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_deleted, created_at DESC)`);
+    await client.query(`CREATE TABLE IF NOT EXISTS volley_events (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, by_user_id TEXT NOT NULL, by_name TEXT NOT NULL, recipient_user_id TEXT NOT NULL, context TEXT NOT NULL, request_id TEXT, circle_code TEXT, prayed_back BOOLEAN DEFAULT false, occurred_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_volley_recipient ON volley_events(recipient_user_id, occurred_at DESC)`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS notification_preferences (user_id TEXT PRIMARY KEY, encouragements BOOLEAN DEFAULT true, prayers_shared BOOLEAN DEFAULT true, prayer_requests BOOLEAN DEFAULT true, circle_posts BOOLEAN DEFAULT true, post_replies BOOLEAN DEFAULT true, post_reactions BOOLEAN DEFAULT true, circle_members BOOLEAN DEFAULT true, streak_milestones BOOLEAN DEFAULT true, streak_freeze BOOLEAN DEFAULT true, admin_promotions BOOLEAN DEFAULT true, removed_from_circle BOOLEAN DEFAULT true, churches_shared BOOLEAN DEFAULT true, updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS admin_promotions BOOLEAN DEFAULT true`).catch(() => {});
     await client.query(`ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS removed_from_circle BOOLEAN DEFAULT true`).catch(() => {});
@@ -1859,16 +1923,10 @@ app.post("/api/circles/:code/prayer-requests/:rid/pray", async (c) => {
     recordCircleEngagement(c.req.param("code").toUpperCase(), b.userId, "prayed_for_request");
     if (req.requesterUserId !== b.userId) {
       const prayerName = ci.members.find(m => m.userId === b.userId)?.name || "Someone";
-      // Notify the requester with read receipt
-      // v5.9.1 — translate title to requester's language; keep body as their own request text
-      (async () => {
-        try {
-          const lang = await getUserLanguage(req.requesterUserId);
-          const title = t(lang, "prayer_request_prayed_title", { name: prayerName });
-          const body = req.text.length > 60 ? req.text.substring(0, 60) + "..." : req.text;
-          await pushToUser(req.requesterUserId, { title, body, type: "prayer_request_prayed", circleCode: c.req.param("code").toUpperCase(), circleName: ci.name, extra: { requestId: c.req.param("rid"), prayerName, actedOn: true } });
-        } catch {}
-      })();
+      // v5 Phase 4 — THE VOLLEY: named, reciprocal signal replaces the old
+      // one-way receipt push. SSE prayed_with_you + localized push with
+      // one-tap pray-back. Fired ONLY here, on a real recorded prayer.
+      fireVolley({ id: b.userId, name: prayerName }, req.requesterUserId, "request", c.req.param("rid"), c.req.param("code").toUpperCase()).catch(() => {});
       // Update the sender's notification with "prayed" status
       try { await pool.query("UPDATE notifications SET data = data || $1::jsonb WHERE user_id=$2 AND type IN ('prayer_request','prayer_request_personal') AND data->>'requestId'=$3 ORDER BY created_at DESC LIMIT 1", [JSON.stringify({ recipientPrayed: true, prayedByName: prayerName }), req.requesterUserId, c.req.param("rid")]); } catch {}
     }
@@ -2520,11 +2578,25 @@ app.post("/api/circles/:code/daily-prayer/pray", async (c) => {
   const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
   const today = new Date().toISOString().split("T")[0];
   const userId = u.id;
-  // Add user to prayed_by array
-  await pool.query(
+  // Add user to prayed_by array (rowCount tells us if this was a NEW pray)
+  const upd = await pool.query(
     "UPDATE circle_daily_prayers SET prayed_by = array_append(prayed_by, $1) WHERE circle_code=$2 AND date=$3 AND NOT ($1 = ANY(prayed_by))",
     [userId, code, today]
   );
+  // v5 Phase 4 — THE VOLLEY (daily): you prayed the same prayer the others
+  // prayed today. Each of them feels it, by name. Real prayers only:
+  // fires only when this user NEWLY prayed (rowCount > 0).
+  if ((upd.rowCount || 0) > 0) {
+    try {
+      const prev = await pool.query("SELECT prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
+      const all: string[] = prev.rows[0]?.prayed_by || [];
+      const myName = ci.members.find(m => m.userId === userId)?.name || u.name || "Someone";
+      for (const otherId of all) {
+        if (otherId === userId) continue;
+        fireVolley({ id: userId, name: myName }, otherId, "daily", null, code).catch(() => {});
+      }
+    } catch {}
+  }
   // Record as circle engagement
   await recordCircleEngagement(code, userId, "prayed_daily_prayer");
   trackEvent(userId, "circle_daily_prayer_prayed", { circle_code: code, circle_name: ci.name });
@@ -2614,6 +2686,42 @@ app.get("/api/circles/:code/engagement", async (c) => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// ─── VOLLEY ENDPOINTS (v5 Phase 4) ──────────────────────────────
+// ═══════════════════════════════════════════════════════════════════
+// Pray-back: called by the client AFTER the user actually prayed (Amen
+// completed) — never on tap. Closes the loop by name.
+app.post("/api/volley/pray-back", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const b = await c.req.json();
+  const volleyId = String(b.volleyId || "");
+  const toUserId = String(b.toUserId || "");
+  const circleCode = b.circleCode ? String(b.circleCode).toUpperCase() : null;
+  if (!toUserId) return c.json({ error: "toUserId required" }, 400);
+  // Verify the original volley targeted THIS user (bright line: only the
+  // real recipient of a real prayer can close the loop)
+  if (volleyId) {
+    const orig = await pool.query("SELECT recipient_user_id, prayed_back FROM volley_events WHERE id=$1", [volleyId]);
+    if (!orig.rows[0]) return c.json({ error: "Volley not found" }, 404);
+    if (orig.rows[0].recipient_user_id !== u.id) return c.json({ error: "Not yours to close" }, 403);
+    await pool.query("UPDATE volley_events SET prayed_back=true WHERE id=$1", [volleyId]);
+  }
+  const newId = await fireVolley({ id: u.id, name: u.name || "Someone" }, toUserId, "volley", null, circleCode);
+  trackEvent(u.id, "volley_loop_closed", { circle_code: circleCode || "" });
+  trackEvent(u.id, "together_prayer", { context: "volley", partner_count: 1 });
+  return c.json({ success: true, volleyId: newId });
+});
+
+// Pending volleys for the Today feed card: real, recent, not yet prayed back
+app.get("/api/volley/pending", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const r = await pool.query(
+    "SELECT id, by_user_id, by_name, context, request_id, circle_code, occurred_at FROM volley_events WHERE recipient_user_id=$1 AND prayed_back=false AND occurred_at > NOW() - INTERVAL '48 hours' ORDER BY occurred_at DESC LIMIT 10",
+    [u.id]
+  );
+  return c.json({ volleys: r.rows.map((row: any) => ({ id: row.id, byUserId: row.by_user_id, byName: row.by_name, context: row.context, requestId: row.request_id || "", circleCode: row.circle_code || "", occurredAt: row.occurred_at })) });
+});
+
 app.get("/api/circles/:code/activity", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Session expired. Please log in again." }, 401);
   const code = c.req.param("code").toUpperCase(); const ci = getCircle(code);
@@ -2656,6 +2764,17 @@ app.get("/api/circles/:code/activity", async (c) => {
       }
     }
   }
+  // v5 Phase 4 — volley entries: real prayed-with moments in this circle
+  try {
+    const vr = await pool.query(
+      "SELECT v.id, v.by_name, v.recipient_user_id, v.occurred_at FROM volley_events v WHERE v.circle_code=$1 AND v.occurred_at > NOW() - INTERVAL '7 days' ORDER BY v.occurred_at DESC LIMIT 15",
+      [code]
+    );
+    for (const row of vr.rows) {
+      const recipName = ci.members.find(m => m.userId === row.recipient_user_id)?.name || "someone";
+      activities.push({ id: `volley-${row.id}`, memberName: row.by_name, memberAvatarUrl: null, action: "prayed_with", detail: recipName, timestamp: row.occurred_at });
+    }
+  } catch {}
   // Sort by timestamp descending
   activities.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   return c.json({ activities: activities.slice(0, limit) });
