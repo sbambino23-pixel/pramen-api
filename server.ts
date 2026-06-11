@@ -622,6 +622,9 @@ async function initDb(): Promise<void> {
     await client.query(`ALTER TABLE live_prayer_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ`).catch(() => {});
     // HARD anti-spam (§5): one "X is praying now" per member per circle per 4h
     await client.query(`CREATE TABLE IF NOT EXISTS room_notify_log (recipient_user_id TEXT NOT NULL, circle_code TEXT NOT NULL, notified_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (recipient_user_id, circle_code))`);
+    // v5 Phase 6.1 — Prayer Partner (one partner per user; spec locked #4)
+    await client.query(`CREATE TABLE IF NOT EXISTS partnerships (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_a TEXT NOT NULL, user_b TEXT, status TEXT NOT NULL DEFAULT 'pending', invite_code TEXT UNIQUE NOT NULL, shared_streak INT DEFAULT 0, last_advanced_date DATE, grace_a INT DEFAULT 1, grace_b INT DEFAULT 1, created_at TIMESTAMPTZ DEFAULT NOW(), accepted_at TIMESTAMPTZ)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_partnerships_users ON partnerships(user_a, user_b)`).catch(() => {});
     // Scheduled gatherings = member posts (§4)
     await client.query(`CREATE TABLE IF NOT EXISTS gathering_posts (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, host_id TEXT NOT NULL, host_name TEXT, at_time TIMESTAMPTZ NOT NULL, intention TEXT, joiners TEXT[] DEFAULT '{}', reminded_10 BOOLEAN DEFAULT false, reminded_0 BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
     // BRIGHT LINE: presence/counts derive ONLY from live_participants rows,
@@ -2901,6 +2904,157 @@ app.get("/api/circles/:code/gatherings", async (c) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
+// v5 Phase 6.1 — PRAYER PARTNER (the viral engine, invite-only)
+// One partner per user. The shared streak advances ONLY when both prayed
+// that day (any prayer counts). Grace: one save of a missed day, framed
+// warmly. Codes ride the P6.0 spine: "PR" prefix, text survives installs.
+// ═══════════════════════════════════════════════════════════════════
+
+async function userPrayedOn(userId: string, dateISO: string): Promise<boolean> {
+  // any prayer counts: user_data last-prayed OR circle engagement that day
+  try {
+    const ud = await pool.query("SELECT 1 FROM user_data WHERE user_id=$1 AND (last_prayed_date::date = $2::date OR last_prayed_local_date = $2)", [userId, dateISO]);
+    if (ud.rows.length > 0) return true;
+    const eng = await pool.query("SELECT 1 FROM circle_engagement WHERE user_id=$1 AND day=$2 LIMIT 1", [userId, dateISO]);
+    return eng.rows.length > 0;
+  } catch { return false; }
+}
+
+// Reconcile one partnership through yesterday: advance when both prayed,
+// consume ONE grace when exactly one missed, reset otherwise. Idempotent.
+async function reconcilePartnership(p: any): Promise<any> {
+  if (p.status !== "active" || !p.user_b) return p;
+  const today = new Date().toISOString().split("T")[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split("T")[0];
+  let { shared_streak, last_advanced_date, grace_a, grace_b } = p;
+  const lastAdv = last_advanced_date ? new Date(last_advanced_date).toISOString().split("T")[0] : null;
+
+  // settle yesterday if unsettled
+  if (lastAdv !== today && lastAdv !== yesterday && shared_streak > 0) {
+    const aPrayed = await userPrayedOn(p.user_a, yesterday);
+    const bPrayed = await userPrayedOn(p.user_b, yesterday);
+    if (aPrayed && bPrayed) {
+      shared_streak += 1; last_advanced_date = yesterday;
+    } else if (aPrayed && !bPrayed && grace_b > 0) {
+      // A prayed, B missed — B's grace covers the day. Warm framing, both told.
+      grace_b -= 1; shared_streak += 1; last_advanced_date = yesterday;
+      notifyGraceCoveredReal(p.user_a, p.user_b, yesterday).catch(() => {});
+    } else if (!aPrayed && bPrayed && grace_a > 0) {
+      grace_a -= 1; shared_streak += 1; last_advanced_date = yesterday;
+      notifyGraceCoveredReal(p.user_b, p.user_a, yesterday).catch(() => {});
+    } else {
+      shared_streak = 0;
+    }
+  }
+  // advance for today when both have prayed
+  if (lastAdv !== today) {
+    const aToday = await userPrayedOn(p.user_a, today);
+    const bToday = await userPrayedOn(p.user_b, today);
+    if (aToday && bToday) { shared_streak += 1; last_advanced_date = today; }
+  }
+  if (shared_streak !== p.shared_streak || String(last_advanced_date) !== String(p.last_advanced_date) || grace_a !== p.grace_a || grace_b !== p.grace_b) {
+    await pool.query("UPDATE partnerships SET shared_streak=$1, last_advanced_date=$2, grace_a=$3, grace_b=$4 WHERE id=$5", [shared_streak, last_advanced_date, grace_a, grace_b, p.id]);
+  }
+  return { ...p, shared_streak, last_advanced_date, grace_a, grace_b };
+}
+
+// Warm grace push: "Alex covered your Tuesday."
+async function notifyGraceCoveredReal(coveredById: string, coveredUserId: string, day: string): Promise<void> {
+  try {
+    const byName = (await pool.query("SELECT name FROM users WHERE id=$1", [coveredById])).rows[0]?.name || "Your partner";
+    const first = byName.split(" ")[0];
+    const dayName = new Date(day + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "long" });
+    await pushToUser(coveredUserId, { title: `${first} covered your ${dayName} \u{1F64F}`, body: "Your shared streak is safe. Pray today to keep it going together.", type: "partner_grace_used", circleCode: "", circleName: "", extra: {} });
+    trackEvent(coveredUserId, "grace_used", { covered_by: coveredById });
+  } catch {}
+}
+
+function partnerCode(): string {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  let c = "PR";
+  for (let i = 0; i < 4; i++) c += chars[Math.floor(Math.random() * chars.length)];
+  return c;
+}
+
+async function grantPartnerPremium(userId: string): Promise<void> {
+  if (!REVENUECAT_SECRET_KEY) return;
+  try {
+    const r = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(userId)}/entitlements/premium/promotional`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ duration: "monthly" })
+    });
+    if (!r.ok) console.error(`[Partner] RC grant failed ${r.status} for ${userId.substring(0,8)}`);
+  } catch (err: any) { console.error("[Partner] RC grant error:", err.message); }
+}
+
+app.post("/api/partner/invite", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const existing = await pool.query("SELECT id, status FROM partnerships WHERE (user_a=$1 OR user_b=$1) AND status='active'", [u.id]);
+  if (existing.rows.length > 0) return c.json({ error: "You already have a prayer partner." }, 409);
+  // reuse a pending invite if one exists
+  const pending = await pool.query("SELECT invite_code FROM partnerships WHERE user_a=$1 AND status='pending'", [u.id]);
+  if (pending.rows[0]) {
+    trackEvent(u.id, "partner_invite_sent", { reused: true });
+    return c.json({ code: pending.rows[0].invite_code, link: `https://pramen.app/join/${pending.rows[0].invite_code}` });
+  }
+  const code = partnerCode();
+  await pool.query("INSERT INTO partnerships (user_a, invite_code) VALUES ($1,$2)", [u.id, code]);
+  trackEvent(u.id, "partner_invite_sent", { reused: false });
+  return c.json({ code, link: `https://pramen.app/join/${code}` });
+});
+
+app.post("/api/partner/accept", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const b = await c.req.json();
+  const code = String(b.code || "").toUpperCase().trim();
+  const p = await pool.query("SELECT * FROM partnerships WHERE invite_code=$1 AND status='pending'", [code]);
+  if (!p.rows[0]) return c.json({ error: "This partner invite isn't valid anymore." }, 404);
+  const row = p.rows[0];
+  if (row.user_a === u.id) return c.json({ error: "You can't partner with yourself." }, 422);
+  const mine = await pool.query("SELECT 1 FROM partnerships WHERE (user_a=$1 OR user_b=$1) AND status='active'", [u.id]);
+  if (mine.rows.length > 0) return c.json({ error: "You already have a prayer partner." }, 409);
+  const theirs = await pool.query("SELECT 1 FROM partnerships WHERE (user_a=$1 OR user_b=$1) AND status='active'", [row.user_a]);
+  if (theirs.rows.length > 0) return c.json({ error: "They already have a prayer partner." }, 409);
+  await pool.query("UPDATE partnerships SET user_b=$1, status='active', accepted_at=NOW() WHERE id=$2", [u.id, row.id]);
+  trackEvent(u.id, "partner_invite_accepted", {});
+  trackEvent(u.id, "invite_accepted", { via: "partner_code" });
+  // Two-sided 30-day premium — server-side RC promotional entitlements,
+  // same proven mechanism as the referral grant (3.1.1-safe: no client
+  // purchase path involved, works with Purchases.logIn backend UUIDs).
+  grantPartnerPremium(u.id).catch(() => {});
+  grantPartnerPremium(row.user_a).catch(() => {});
+  const myName = u.name || "Someone";
+  pushToUser(row.user_a, { title: `${myName.split(" ")[0]} said yes \u{1F64F}`, body: "You're prayer partners now — 30 days of premium for you both.", type: "partner_accepted", circleCode: "", circleName: "", extra: {} }).catch(() => {});
+  return c.json({ success: true });
+});
+
+app.get("/api/partner", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const p = await pool.query("SELECT * FROM partnerships WHERE (user_a=$1 OR user_b=$1) AND status IN ('pending','active') ORDER BY created_at DESC LIMIT 1", [u.id]);
+  if (!p.rows[0]) return c.json({ partnership: null });
+  let row = p.rows[0];
+  if (row.status === "active") { row = await reconcilePartnership(row); }
+  const partnerId = row.user_a === u.id ? row.user_b : row.user_a;
+  let partnerName: string | null = null;
+  let partnerPrayedToday = false;
+  if (partnerId) {
+    const pn = await pool.query("SELECT name FROM users WHERE id=$1", [partnerId]);
+    partnerName = pn.rows[0]?.name || "Your partner";
+    partnerPrayedToday = await userPrayedOn(partnerId, new Date().toISOString().split("T")[0]);
+  }
+  const myGrace = row.user_a === u.id ? row.grace_a : row.grace_b;
+  const partnerGrace = row.user_a === u.id ? row.grace_b : row.grace_a;
+  return c.json({ partnership: {
+    id: row.id, status: row.status, inviteCode: row.invite_code,
+    partnerName, partnerPrayedToday,
+    sharedStreak: row.shared_streak || 0,
+    myGrace, partnerGrace,
+    iPrayedToday: await userPrayedOn(u.id, new Date().toISOString().split("T")[0])
+  } });
+});
+
+// ═══════════════════════════════════════════════════════════════════
 // ─── VOLLEY ENDPOINTS (v5 Phase 4) ──────────────────────────────
 // ═══════════════════════════════════════════════════════════════════
 // Pray-back: called by the client AFTER the user actually prayed (Amen
@@ -4148,6 +4302,13 @@ async function start() {
   setInterval(() => { generateCircleDailyPrayers().catch(() => {}); }, 6 * 60 * 60 * 1000);
   // LR2 — gathering reminders only (no band scheduling; rooms open on entry)
   setInterval(() => { gatheringReminderTick().catch(() => {}); }, 60 * 1000);
+  // P6.1 — settle partner streaks daily (grace consumption + warm pushes)
+  setInterval(async () => {
+    try {
+      const all = await pool.query("SELECT * FROM partnerships WHERE status='active'");
+      for (const row of all.rows) { await reconcilePartnership(row); }
+    } catch {}
+  }, 6 * 60 * 60 * 1000);
   // v5.10.5 — Auto-pull Meta Ads spend data every 6 hours
   async function pullMetaAdSpend(): Promise<void> {
     if (!META_CAPI_ACCESS_TOKEN) return;
