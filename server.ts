@@ -196,7 +196,7 @@ async function getUserLanguage(userId: string): Promise<Lang> {
   } catch { return "en"; }
 }
 
-const PUSH_STRINGS: Record<string, Record<Lang, string>> = {
+const PUSH_STRINGS: Record<string, Partial<Record<Lang, string>> & { en: string }> = {
   // Referrals
   referral_both_title: {
     en: "🎉 You both got 30 days free!",
@@ -310,6 +310,20 @@ const PUSH_STRINGS: Record<string, Record<Lang, string>> = {
     es: "Alguien compartió una petición de oración",
     pt: "Alguém compartilhou um pedido de oração",
   },
+
+  // v5 Phase 8 — LR2/gathering/partner pushes. EN live; FR/ES/PT are 🔴
+  // pending human review (drafts in v5-sacred-translations.md §C) — t()
+  // falls back to en until reviewed values land here.
+  room_invite_live_title: { en: "{name} is praying in {circle} now \u{1F64F}" },
+  room_invite_live_body: { en: "Join {name}" },
+  gathering_t10_title: { en: "{name}'s gathering begins soon \u{1F64F}" },
+  gathering_t10_body: { en: "{circle} prays in 10 minutes" },
+  gathering_t0_title: { en: "{name}'s gathering is starting" },
+  gathering_t0_body: { en: "Enter the prayer room \u{1F64F}" },
+  partner_accepted_title: { en: "{name} said yes \u{1F64F}" },
+  partner_accepted_body: { en: "You're prayer partners now — 30 days of premium for you both." },
+  partner_grace_title: { en: "{name} covered your {weekday} \u{1F64F}" },
+  partner_grace_body: { en: "Your shared streak is safe. Pray today to keep it going together." },
 
   // Volley — someone prayed WITH you, unprompted (v5 Phase 4)
   prayed_with_you_title: {
@@ -604,6 +618,10 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS daily_reflections (date DATE PRIMARY KEY, verse TEXT NOT NULL, reference TEXT NOT NULL, reflection TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())`);
     // v5.15.0 — daily circle prayers + who prayed them
     await client.query(`CREATE TABLE IF NOT EXISTS circle_daily_prayers (circle_code TEXT NOT NULL, date DATE NOT NULL, prayer_text TEXT NOT NULL, topic TEXT, prayed_by TEXT[] DEFAULT '{}', created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (circle_code, date))`);
+    // v5 Phase 8 L10n — per-language daily prayers (en row = canonical for prayed_by)
+    await client.query(`ALTER TABLE circle_daily_prayers ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en'`).catch(() => {});
+    await client.query(`ALTER TABLE circle_daily_prayers DROP CONSTRAINT IF EXISTS circle_daily_prayers_pkey`).catch(() => {});
+    await client.query(`ALTER TABLE circle_daily_prayers ADD CONSTRAINT circle_daily_prayers_pkey PRIMARY KEY (circle_code, date, language)`).catch(() => {});
     await client.query(`CREATE INDEX IF NOT EXISTS idx_circle_daily_prayers_date ON circle_daily_prayers(date)`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS seasonal_verses (date DATE NOT NULL, lang TEXT NOT NULL DEFAULT 'en', verse TEXT NOT NULL, reference TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (date, lang))`);
     await client.query(`CREATE TABLE IF NOT EXISTS favorites (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT NOT NULL, title TEXT, source TEXT NOT NULL DEFAULT 'app', prayer_text TEXT, prayer_id TEXT, media_url TEXT, media_type TEXT, media_filename TEXT, transcript TEXT, is_deleted BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
@@ -892,6 +910,22 @@ function seededFallbackPrayer(code: string, date: string, topic: string): string
   return pool[hash % pool.length];
 }
 
+const PRAYER_LANG_NAMES: Record<string, string> = { en: "English", fr: "French", es: "Latin-American Spanish", pt: "Brazilian Portuguese" };
+
+async function circleMemberLanguages(circle: StoredCircle): Promise<string[]> {
+  // Generate only languages this circle's members actually use (+ en
+  // canonical) — keeps Gemini quota sane (the original outage was quota).
+  const ids = circle.members.map(m => m.userId).filter(Boolean);
+  const langs = new Set<string>(["en"]);
+  if (ids.length > 0) {
+    try {
+      const r = await pool.query("SELECT DISTINCT language FROM users WHERE id = ANY($1) AND language IS NOT NULL", [ids]);
+      for (const row of r.rows) { if (["en","fr","es","pt"].includes(row.language)) langs.add(row.language); }
+    } catch {}
+  }
+  return [...langs];
+}
+
 async function generateCircleDailyPrayers(): Promise<void> {
   const today = new Date().toISOString().split("T")[0];
   let generated = 0;
@@ -902,49 +936,55 @@ async function generateCircleDailyPrayers(): Promise<void> {
   let geminiUp = !!GEMINI_API_KEY && isGeminiAvailable();
   for (const [code, circle] of circles) {
     if (circle.members.length === 0) continue;
-    // Skip if already generated today
-    const existing = await pool.query("SELECT 1 FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
-    if (existing.rows.length > 0) continue;
+    const wantedLangs = await circleMemberLanguages(circle);
     const topic = getCirclePrayerTopic(circle);
-    let prayer = "";
-    if (geminiUp) {
-      try {
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              system_instruction: { parts: [{ text: "You write short, heartfelt prayers (40-60 words) for prayer groups. Write in second person addressing God. Never use dashes or hyphens as punctuation. Be warm, scriptural, personal. The prayer should feel like something a group would pray together. Return ONLY the prayer text, nothing else. No quotes around it." }] },
-              contents: [{ role: "user", parts: [{ text: `Write today's shared prayer for a prayer circle focused on: ${topic}. It should feel fresh and specific to today, not generic.` }] }]
-            })
+    for (const lang of wantedLangs) {
+      const existing = await pool.query("SELECT 1 FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2 AND language=$3", [code, today, lang]);
+      if (existing.rows.length > 0) continue;
+      let prayer = "";
+      if (geminiUp) {
+        try {
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                system_instruction: { parts: [{ text: `You write short, heartfelt prayers (40-60 words) for prayer groups, in ${PRAYER_LANG_NAMES[lang] || "English"}. Address God formally in the liturgical register of that language. Write in second person addressing God. Never use dashes or hyphens as punctuation. Be warm, scriptural, personal. The prayer should feel like something a group would pray together. Return ONLY the prayer text in ${PRAYER_LANG_NAMES[lang] || "English"}, nothing else. No quotes around it.` }] },
+                contents: [{ role: "user", parts: [{ text: `Write today's shared prayer for a prayer circle focused on: ${topic}. It should feel fresh and specific to today, not generic.` }] }]
+              })
+            }
+          );
+          if (res.ok) {
+            const data = (await res.json()) as any;
+            prayer = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+            if (prayer.length <= 20) prayer = "";
+          } else if (res.status === 429) {
+            markGeminiRateLimited();
+            geminiUp = false;
+            console.log(`[CirclePrayer] Gemini 429 at ${code}/${lang} — seeding the rest of this pass`);
+          } else {
+            console.error(`[CirclePrayer] Gemini ${res.status} for ${code}/${lang}`);
           }
-        );
-        if (res.ok) {
-          const data = (await res.json()) as any;
-          prayer = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
-          if (prayer.length <= 20) prayer = "";
-        } else if (res.status === 429) {
-          markGeminiRateLimited();
-          geminiUp = false;
-          console.log(`[CirclePrayer] Gemini 429 at ${code} — seeding the rest of this pass`);
-        } else {
-          console.error(`[CirclePrayer] Gemini ${res.status} for ${code} — using seeded fallback`);
+        } catch (err: any) {
+          console.error(`[CirclePrayer] Gemini error for ${code}/${lang}: ${err.message}`);
         }
-      } catch (err: any) {
-        console.error(`[CirclePrayer] Gemini error for ${code}: ${err.message} — using seeded fallback`);
       }
+      if (prayer) {
+        generated++;
+      } else if (lang === "en") {
+        // Seeded fallback pool is EN-only until the sacred ×4 batch lands
+        // (flagged to Samy). Non-en readers fall back to the en row on GET.
+        prayer = seededFallbackPrayer(code, today, topic);
+        seeded++;
+      } else {
+        continue; // no non-en row; GET falls back to en
+      }
+      await pool.query(
+        "INSERT INTO circle_daily_prayers (circle_code, date, prayer_text, topic, language) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
+        [code, today, prayer, topic, lang]
+      );
     }
-    if (prayer) {
-      generated++;
-    } else {
-      prayer = seededFallbackPrayer(code, today, topic);
-      seeded++;
-    }
-    await pool.query(
-      "INSERT INTO circle_daily_prayers (circle_code, date, prayer_text, topic) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-      [code, today, prayer, topic]
-    );
   }
   if (generated > 0 || seeded > 0) console.log(`[CirclePrayer] Daily prayers: ${generated} generated, ${seeded} seeded (fallback)`);
 }
@@ -2563,12 +2603,22 @@ app.get("/api/circles/:code/daily-prayer", async (c) => {
   const code = c.req.param("code").toUpperCase();
   const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
   const today = new Date().toISOString().split("T")[0];
-  const r = await pool.query("SELECT prayer_text, topic, prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
-  if (r.rows.length === 0) {
+  // L10n: text in the REQUESTER's language (en fallback); prayed_by is shared
+  // across languages and lives canonically on the en row.
+  const reqLang = await getUserLanguage(u.id);
+  const pick = `SELECT
+      COALESCE(
+        (SELECT prayer_text FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2 AND language=$3),
+        (SELECT prayer_text FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2 AND language='en')
+      ) AS prayer_text,
+      (SELECT topic FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2 AND language='en') AS topic,
+      (SELECT prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2 AND language='en') AS prayed_by`;
+  const r = await pool.query(pick, [code, today, reqLang]);
+  if (!r.rows[0]?.prayer_text) {
     // Try generating on-the-fly if not yet generated
     await generateCircleDailyPrayers();
-    const retry = await pool.query("SELECT prayer_text, topic, prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
-    if (retry.rows.length === 0) return c.json({ prayer: null });
+    const retry = await pool.query(pick, [code, today, reqLang]);
+    if (!retry.rows[0]?.prayer_text) return c.json({ prayer: null });
     const row = retry.rows[0];
     const prayedBy = row.prayed_by || [];
     const userId = u.id;
@@ -2613,7 +2663,7 @@ app.post("/api/circles/:code/daily-prayer/pray", async (c) => {
   // fires only when this user NEWLY prayed (rowCount > 0).
   if ((upd.rowCount || 0) > 0) {
     try {
-      const prev = await pool.query("SELECT prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
+      const prev = await pool.query("SELECT prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2 AND language='en'", [code, today]);
       const all: string[] = prev.rows[0]?.prayed_by || [];
       const myName = ci.members.find(m => m.userId === userId)?.name || u.name || "Someone";
       for (const otherId of all) {
@@ -2648,7 +2698,7 @@ app.post("/api/circles/:code/daily-prayer/pray", async (c) => {
     );
   } catch {}
   // Get updated count
-  const r = await pool.query("SELECT prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2", [code, today]);
+  const r = await pool.query("SELECT prayed_by FROM circle_daily_prayers WHERE circle_code=$1 AND date=$2 AND language='en'", [code, today]);
   const prayedBy = r.rows[0]?.prayed_by || [];
   // Check if tier changed — notify circle
   const activeCount = ci.members.filter(m => getMemberLastSeen(m).isActive).length;
@@ -2796,7 +2846,10 @@ app.post("/api/circles/:code/room/enter", async (c) => {
         trackEvent(u.id, "room_notify_suppressed_ratelimit", { circle_code: code, recipient: m.userId });
         continue;
       }
-      pushToUser(m.userId, { title: `${firstName} is praying in ${ci.name} now \u{1F64F}`, body: `Join ${firstName}`, type: "room_invite_live", circleCode: code, circleName: ci.name, extra: { sessionId } }).catch(() => {});
+      (async () => {
+        const lang = await getUserLanguage(m.userId);
+        await pushToUser(m.userId, { title: t(lang, "room_invite_live_title", { name: firstName, circle: ci.name }), body: t(lang, "room_invite_live_body", { name: firstName }), type: "room_invite_live", circleCode: code, circleName: ci.name, extra: { sessionId } });
+      })().catch(() => {});
     }
   }
   await broadcastLivePresence(sessionId, code);
@@ -2963,8 +3016,11 @@ async function notifyGraceCoveredReal(coveredById: string, coveredUserId: string
   try {
     const byName = (await pool.query("SELECT name FROM users WHERE id=$1", [coveredById])).rows[0]?.name || "Your partner";
     const first = byName.split(" ")[0];
-    const dayName = new Date(day + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "long" });
-    await pushToUser(coveredUserId, { title: `${first} covered your ${dayName} \u{1F64F}`, body: "Your shared streak is safe. Pray today to keep it going together.", type: "partner_grace_used", circleCode: "", circleName: "", extra: {} });
+    const lang = await getUserLanguage(coveredUserId);
+    // Weekday rendered in the RECIPIENT's language (cross-cutting flag #C)
+    const localeMap: Record<string, string> = { en: "en-US", fr: "fr-FR", es: "es-419", pt: "pt-BR" };
+    const dayName = new Date(day + "T12:00:00Z").toLocaleDateString(localeMap[lang] || "en-US", { weekday: "long" });
+    await pushToUser(coveredUserId, { title: t(lang, "partner_grace_title", { name: first, weekday: dayName }), body: t(lang, "partner_grace_body", {}), type: "partner_grace_used", circleCode: "", circleName: "", extra: {} });
     trackEvent(coveredUserId, "grace_used", { covered_by: coveredById });
   } catch {}
 }
@@ -3025,7 +3081,10 @@ app.post("/api/partner/accept", async (c) => {
   grantPartnerPremium(u.id).catch(() => {});
   grantPartnerPremium(row.user_a).catch(() => {});
   const myName = u.name || "Someone";
-  pushToUser(row.user_a, { title: `${myName.split(" ")[0]} said yes \u{1F64F}`, body: "You're prayer partners now — 30 days of premium for you both.", type: "partner_accepted", circleCode: "", circleName: "", extra: {} }).catch(() => {});
+  (async () => {
+    const lang = await getUserLanguage(row.user_a);
+    await pushToUser(row.user_a, { title: t(lang, "partner_accepted_title", { name: myName.split(" ")[0] }), body: t(lang, "partner_accepted_body", {}), type: "partner_accepted", circleCode: "", circleName: "", extra: {} });
+  })().catch(() => {});
   return c.json({ success: true });
 });
 
@@ -3262,14 +3321,20 @@ async function gatheringReminderTick(): Promise<void> {
       if (!g.reminded_10 && minsAway <= 10 && minsAway > 0) {
         await pool.query("UPDATE gathering_posts SET reminded_10=true WHERE id=$1 AND reminded_10=false", [g.id]);
         for (const uid of recipients) {
-          pushToUser(uid, { title: `${hostFirst}'s gathering begins soon \u{1F64F}`, body: `${ci.name} prays in 10 minutes`, type: "gathering_reminder", circleCode: g.circle_code, circleName: ci.name, extra: { gatheringId: g.id } }).catch(() => {});
+          (async () => {
+            const lang = await getUserLanguage(uid);
+            await pushToUser(uid, { title: t(lang, "gathering_t10_title", { name: hostFirst }), body: t(lang, "gathering_t10_body", { circle: ci.name }), type: "gathering_reminder", circleCode: g.circle_code, circleName: ci.name, extra: { gatheringId: g.id } });
+          })().catch(() => {});
         }
         trackEvent(g.host_id, "gathering_reminder_fired", { circle_code: g.circle_code, at: "t-10", joiner_count: recipients.length });
       }
       if (!g.reminded_0 && minsAway <= 0) {
         await pool.query("UPDATE gathering_posts SET reminded_0=true WHERE id=$1 AND reminded_0=false", [g.id]);
         for (const uid of recipients) {
-          pushToUser(uid, { title: `${hostFirst}'s gathering is starting`, body: `Enter the prayer room \u{1F64F}`, type: "gathering_reminder", circleCode: g.circle_code, circleName: ci.name, extra: { gatheringId: g.id, starting: true } }).catch(() => {});
+          (async () => {
+            const lang = await getUserLanguage(uid);
+            await pushToUser(uid, { title: t(lang, "gathering_t0_title", { name: hostFirst }), body: t(lang, "gathering_t0_body", {}), type: "gathering_reminder", circleCode: g.circle_code, circleName: ci.name, extra: { gatheringId: g.id, starting: true } });
+          })().catch(() => {});
         }
         trackEvent(g.host_id, "gathering_reminder_fired", { circle_code: g.circle_code, at: "t-0", joiner_count: recipients.length });
       }
