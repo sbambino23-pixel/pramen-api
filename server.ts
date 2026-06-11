@@ -612,10 +612,18 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_deleted, created_at DESC)`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_push_status TEXT`).catch(() => {});
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS last_push_at TIMESTAMPTZ`).catch(() => {});
-    // v5 Phase 5 — Live Room. Config-driven bands (NEVER hardcode times in
-    // logic). Launch: single Americas band, 21:00 America/New_York.
-    await client.query(`CREATE TABLE IF NOT EXISTS live_bands (band_key TEXT PRIMARY KEY, tz TEXT NOT NULL, time_local TEXT NOT NULL, enabled BOOLEAN DEFAULT true)`);
-    await client.query(`INSERT INTO live_bands (band_key, tz, time_local, enabled) VALUES ('americas','America/New_York','21:00',true) ON CONFLICT (band_key) DO NOTHING`);
+    // v5 Live Room 2.0 (live-room-2-spec.md) — presence-driven, member-
+    // initiated. The fixed-band model is DEAD (bands table left in place,
+    // disabled, unused). Liveness IS presence, never schedule.
+    await client.query(`UPDATE live_bands SET enabled=false`).catch(() => {});
+    await client.query(`ALTER TABLE live_prayer_sessions ADD COLUMN IF NOT EXISTS anchor_type TEXT DEFAULT 'daily'`).catch(() => {});
+    await client.query(`ALTER TABLE live_prayer_sessions ADD COLUMN IF NOT EXISTS intention_text TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE live_prayer_sessions ADD COLUMN IF NOT EXISTS host_id TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE live_prayer_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ`).catch(() => {});
+    // HARD anti-spam (§5): one "X is praying now" per member per circle per 4h
+    await client.query(`CREATE TABLE IF NOT EXISTS room_notify_log (recipient_user_id TEXT NOT NULL, circle_code TEXT NOT NULL, notified_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY (recipient_user_id, circle_code))`);
+    // Scheduled gatherings = member posts (§4)
+    await client.query(`CREATE TABLE IF NOT EXISTS gathering_posts (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, host_id TEXT NOT NULL, host_name TEXT, at_time TIMESTAMPTZ NOT NULL, intention TEXT, joiners TEXT[] DEFAULT '{}', reminded_10 BOOLEAN DEFAULT false, reminded_0 BOOLEAN DEFAULT false, created_at TIMESTAMPTZ DEFAULT NOW())`);
     // BRIGHT LINE: presence/counts derive ONLY from live_participants rows,
     // which are ONLY written by the authenticated /live/join + heartbeat +
     // prayed endpoints. No seed path, no synthetic attendees, ever.
@@ -2701,58 +2709,113 @@ app.get("/api/circles/:code/engagement", async (c) => {
 // ═══════════════════════════════════════════════════════════════════
 // ─── LIVE ROOM ENDPOINTS (v5 Phase 5) ───────────────────────────
 // ═══════════════════════════════════════════════════════════════════
-// Current/next room for the caller's circle. Presence = real rows only.
+// LR2: the room is ALWAYS OPEN. "Live" = someone is actually inside.
+// BRIGHT LINE: presence lists/counts derive only from participant rows of the
+// active session; empty room = empty list; no seeding, no carryover.
 app.get("/api/circles/:code/live", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
   const code = c.req.param("code").toUpperCase();
   const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
-  const live = await pool.query("SELECT id, band_key, scheduled_for, window_end, status FROM live_prayer_sessions WHERE circle_code=$1 AND status='live' AND window_end > NOW() ORDER BY scheduled_for DESC LIMIT 1", [code]);
-  const band = await pool.query("SELECT band_key, tz, time_local FROM live_bands WHERE enabled=true LIMIT 1");
-  const bandInfo = band.rows[0] ? { bandKey: band.rows[0].band_key, tz: band.rows[0].tz, timeLocal: band.rows[0].time_local } : null;
+  const live = await pool.query("SELECT id, anchor_type, intention_text, host_id, scheduled_for FROM live_prayer_sessions WHERE circle_code=$1 AND ended_at IS NULL AND status='live' ORDER BY scheduled_for DESC LIMIT 1", [code]);
   if (live.rows.length === 0) {
-    return c.json({ status: "none", session: null, band: bandInfo, present: [], presentCount: 0, memberCount: ci.members.length });
+    return c.json({ status: "open", session: null, present: [], presentCount: 0, memberCount: ci.members.length });
   }
   const sess = live.rows[0];
   const present = await getSessionPresence(sess.id);
+  if (present.length === 0) {
+    // stale session (everyone vanished without leave) — close it honestly
+    await pool.query("UPDATE live_prayer_sessions SET ended_at=NOW(), status='completed' WHERE id=$1", [sess.id]);
+    return c.json({ status: "open", session: null, present: [], presentCount: 0, memberCount: ci.members.length });
+  }
   return c.json({
-    status: "live",
-    session: { sessionId: sess.id, bandKey: sess.band_key, scheduledFor: sess.scheduled_for, windowEnd: sess.window_end },
-    band: bandInfo,
+    status: "occupied",
+    session: { sessionId: sess.id, anchorType: sess.anchor_type || "daily", intention: sess.intention_text || "", hostId: sess.host_id || "", startedAt: sess.scheduled_for },
     present,
     presentCount: present.length,
     memberCount: ci.members.length
   });
 });
 
-// Join the live session. Idempotent. First REAL arrival triggers the one
-// per-session nudge to not-yet-present members (locked decision #5).
-app.post("/api/circles/:code/live/join", async (c) => {
+// Enter the room (Start Sheet). Creates the session if empty, joins if
+// occupied (joiners land mid-prayer — the arc never restarts).
+app.post("/api/circles/:code/room/enter", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
   const code = c.req.param("code").toUpperCase();
   const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
   if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "Not a member" }, 403);
-  const live = await pool.query("SELECT id, nudged FROM live_prayer_sessions WHERE circle_code=$1 AND status='live' AND window_end > NOW() ORDER BY scheduled_for DESC LIMIT 1", [code]);
-  if (live.rows.length === 0) return c.json({ error: "No live session" }, 404);
-  const sessionId = live.rows[0].id;
+  const b = await c.req.json().catch(() => ({}));
+  const anchorType = ["daily", "intention", "silent"].includes(b.anchorType) ? b.anchorType : "daily";
+  const intention = (b.intention || "").toString().substring(0, 200);
+  const notify = ["quiet", "circle", "members"].includes(b.notify) ? b.notify : "quiet";
+  const memberIds: string[] = Array.isArray(b.memberIds) ? b.memberIds : [];
+
+  // get-or-create the active session
+  let sessionId: string;
+  let anchorOut = anchorType;
+  let intentionOut = intention;
+  const live = await pool.query("SELECT id, anchor_type, intention_text FROM live_prayer_sessions WHERE circle_code=$1 AND ended_at IS NULL AND status='live' ORDER BY scheduled_for DESC LIMIT 1", [code]);
+  if (live.rows.length > 0) {
+    sessionId = live.rows[0].id;
+    anchorOut = live.rows[0].anchor_type || "daily";   // joiner adopts host's anchor
+    intentionOut = live.rows[0].intention_text || "";
+  } else {
+    const ins = await pool.query(
+      "INSERT INTO live_prayer_sessions (circle_code, band_key, scheduled_for, window_end, status, anchor_type, intention_text, host_id) VALUES ($1,'open',NOW(),NOW() + INTERVAL '24 hours','live',$2,$3,$4) RETURNING id",
+      [code, anchorType, intention || null, u.id]
+    );
+    sessionId = ins.rows[0].id;
+  }
   const myName = ci.members.find(m => m.userId === u.id)?.name || u.name || "Someone";
   await pool.query(
     `INSERT INTO live_prayer_participants (session_id, user_id, user_name) VALUES ($1,$2,$3)
      ON CONFLICT (session_id, user_id) DO UPDATE SET last_seen=NOW(), left_at=NULL`,
     [sessionId, u.id, myName]
   );
-  trackEvent(u.id, "room_joined", { circle_code: code, session_id: sessionId });
-  // First-arrival nudge — ONE per session, ever (nudged flag flips atomically)
-  if (!live.rows[0].nudged) {
-    const flip = await pool.query("UPDATE live_prayer_sessions SET nudged=true WHERE id=$1 AND nudged=false RETURNING id", [sessionId]);
-    if (flip.rows.length > 0) {
-      for (const m of ci.members) {
-        if (m.userId === u.id || m.notificationsMuted) continue;
-        pushToUser(m.userId, { title: `${myName} is in the prayer room \u{1F64F}`, body: `${ci.name} is gathering — come pray together`, type: "live_prayer_starting", circleCode: code, circleName: ci.name, extra: { sessionId, firstArrival: true } }).catch(() => {});
+  trackEvent(u.id, "room_entered", { circle_code: code, anchor_type: anchorOut, notify_choice: notify });
+
+  // Notify (§5): rate-limited ONE per recipient per circle per 4h. Quiet = truly silent.
+  if (notify !== "quiet") {
+    const firstName = myName.split(" ")[0];
+    const targets = notify === "members"
+      ? ci.members.filter(m => memberIds.includes(m.userId) && m.userId !== u.id && !m.notificationsMuted)
+      : ci.members.filter(m => m.userId !== u.id && !m.notificationsMuted);
+    for (const m of targets) {
+      const gate = await pool.query(
+        `INSERT INTO room_notify_log (recipient_user_id, circle_code) VALUES ($1,$2)
+         ON CONFLICT (recipient_user_id, circle_code)
+         DO UPDATE SET notified_at=NOW() WHERE room_notify_log.notified_at < NOW() - INTERVAL '4 hours'
+         RETURNING recipient_user_id`,
+        [m.userId, code]
+      );
+      if (gate.rows.length === 0) {
+        trackEvent(u.id, "room_notify_suppressed_ratelimit", { circle_code: code, recipient: m.userId });
+        continue;
       }
+      pushToUser(m.userId, { title: `${firstName} is praying in ${ci.name} now \u{1F64F}`, body: `Join ${firstName}`, type: "room_invite_live", circleCode: code, circleName: ci.name, extra: { sessionId } }).catch(() => {});
     }
   }
   await broadcastLivePresence(sessionId, code);
-  return c.json({ sessionId });
+  return c.json({ sessionId, anchorType: anchorOut, intention: intentionOut });
+});
+
+app.post("/api/live/:sessionId/leave", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const sessionId = c.req.param("sessionId");
+  await pool.query("UPDATE live_prayer_participants SET left_at=NOW() WHERE session_id=$1 AND user_id=$2", [sessionId, u.id]);
+  const sess = await pool.query("SELECT circle_code FROM live_prayer_sessions WHERE id=$1", [sessionId]);
+  const circleCode = sess.rows[0]?.circle_code || "";
+  // Last person leaving closes the session — together computed from REAL Amens
+  const remaining = await pool.query("SELECT COUNT(*)::int AS n FROM live_prayer_participants WHERE session_id=$1 AND left_at IS NULL", [sessionId]);
+  if ((remaining.rows[0]?.n || 0) === 0) {
+    const parts = await pool.query("SELECT user_id, prayed_at FROM live_prayer_participants WHERE session_id=$1", [sessionId]);
+    const prayed = parts.rows.filter((p: any) => p.prayed_at);
+    await pool.query("UPDATE live_prayer_sessions SET ended_at=NOW(), status='completed', together=$1, present_count=$2 WHERE id=$3 AND ended_at IS NULL", [prayed.length >= 2, parts.rows.length, sessionId]);
+    if (prayed.length >= 2) {
+      for (const p of prayed) { trackEvent(p.user_id, "together_prayer", { context: "live_room", partner_count: prayed.length - 1 }); }
+    }
+  }
+  if (circleCode) { await broadcastLivePresence(sessionId, circleCode); }
+  return c.json({ ok: true });
 });
 
 app.post("/api/live/:sessionId/heartbeat", async (c) => {
@@ -2761,11 +2824,10 @@ app.post("/api/live/:sessionId/heartbeat", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   const praying = !!b.praying;
   const r = await pool.query(
-    "UPDATE live_prayer_participants SET last_seen=NOW(), praying=$1 WHERE session_id=$2 AND user_id=$3 RETURNING (SELECT circle_code FROM live_prayer_sessions WHERE id=$2) AS circle_code, praying",
+    "UPDATE live_prayer_participants SET last_seen=NOW(), praying=$1 WHERE session_id=$2 AND user_id=$3 RETURNING (SELECT circle_code FROM live_prayer_sessions WHERE id=$2) AS circle_code",
     [praying, sessionId, u.id]
   );
   if (r.rows.length === 0) return c.json({ error: "Not in session" }, 404);
-  // fan out only when visible status could have changed
   if (b.statusChanged === true) { await broadcastLivePresence(sessionId, r.rows[0].circle_code); }
   return c.json({ ok: true });
 });
@@ -2789,16 +2851,51 @@ app.post("/api/live/:sessionId/prayed", async (c) => {
   return c.json({ ok: true, together: n >= 2, prayedCount: n });
 });
 
-app.post("/api/live/:sessionId/leave", async (c) => {
+// ── Gatherings (§4): member posts, join for reminders ──────────────
+app.post("/api/circles/:code/gatherings", async (c) => {
   const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
-  const sessionId = c.req.param("sessionId");
-  const r = await pool.query(
-    "UPDATE live_prayer_participants SET left_at=NOW() WHERE session_id=$1 AND user_id=$2 AND prayed_at IS NULL RETURNING session_id",
-    [sessionId, u.id]
+  const code = c.req.param("code").toUpperCase();
+  const ci = getCircle(code); if (!ci) return c.json({ error: "Not found" }, 404);
+  if (!isMemberOfCircle(u.id, ci, u.device_user_id)) return c.json({ error: "Not a member" }, 403);
+  const b = await c.req.json();
+  const atTime = new Date(b.atTime || "");
+  if (isNaN(atTime.getTime()) || atTime.getTime() < Date.now()) return c.json({ error: "Time must be in the future" }, 400);
+  const myName = ci.members.find(m => m.userId === u.id)?.name || u.name || "Someone";
+  const intention = (b.intention || "").toString().substring(0, 200) || null;
+  const ins = await pool.query(
+    "INSERT INTO gathering_posts (circle_code, host_id, host_name, at_time, intention, joiners) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+    [code, u.id, myName, atTime.toISOString(), intention, [u.id]]
   );
-  const sess = await pool.query("SELECT circle_code FROM live_prayer_sessions WHERE id=$1", [sessionId]);
-  if (sess.rows[0]) { await broadcastLivePresence(sessionId, sess.rows[0].circle_code); }
+  trackEvent(u.id, "gathering_posted", { circle_code: code });
+  return c.json({ id: ins.rows[0].id });
+});
+
+app.post("/api/gatherings/:id/join", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const id = c.req.param("id");
+  const r = await pool.query(
+    "UPDATE gathering_posts SET joiners = array_append(joiners, $1) WHERE id=$2 AND NOT ($1 = ANY(joiners)) RETURNING circle_code",
+    [u.id, id]
+  );
+  if (r.rows.length > 0) { trackEvent(u.id, "gathering_joined", { circle_code: r.rows[0].circle_code }); }
   return c.json({ ok: true });
+});
+
+app.get("/api/circles/:code/gatherings", async (c) => {
+  const u = await requireAuth(c); if (!u) return c.json({ error: "Unauthorized" }, 401);
+  const code = c.req.param("code").toUpperCase();
+  const r = await pool.query(
+    "SELECT id, host_id, host_name, at_time, intention, joiners FROM gathering_posts WHERE circle_code=$1 AND at_time > NOW() - INTERVAL '30 minutes' ORDER BY at_time ASC LIMIT 10",
+    [code]
+  );
+  const ci = getCircle(code);
+  return c.json({ gatherings: r.rows.map((g: any) => ({
+    id: g.id, hostId: g.host_id, hostName: g.host_name || "Someone", atTime: g.at_time,
+    intention: g.intention || "",
+    joinerCount: (g.joiners || []).length,
+    joined: (g.joiners || []).includes(u.id),
+    joinerNames: (g.joiners || []).map((uid: string) => ci?.members.find(m => m.userId === uid)?.name || null).filter(Boolean)
+  })) });
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2994,63 +3091,34 @@ async function broadcastLivePresence(sessionId: string, circleCode: string): Pro
   for (const m of ci.members) { sendSseToUser(m.userId, event).catch(() => {}); }
 }
 
-// 1-minute scheduler tick: open rooms at the band's local time, close after
-// the 15-min window. Times computed from live_bands config — never hardcoded.
-async function liveRoomTick(): Promise<void> {
+// LR2 §4: 1-minute tick fires gathering reminders to EXPLICIT JOINERS only
+// (T-10 and T-0). No band scheduling exists anymore — rooms open on entry.
+async function gatheringReminderTick(): Promise<void> {
   try {
-    const bands = await pool.query("SELECT band_key, tz, time_local FROM live_bands WHERE enabled=true");
-    for (const band of bands.rows) {
-      const nowLocal = timeNowInTz(band.tz);
-      if (nowLocal === band.time_local) {
-        const dayKey = todayInTimezone(band.tz);
-        for (const [code, circle] of circles) {
-          if (circle.members.length === 0) continue;
-          const scheduledFor = new Date();
-          const windowEnd = new Date(Date.now() + 15 * 60 * 1000);
-          let created = false;
-          try {
-            const ins = await pool.query(
-              `INSERT INTO live_prayer_sessions (circle_code, band_key, scheduled_for, window_end, status)
-               SELECT $1, $2, $3, $4, 'live'
-               WHERE NOT EXISTS (SELECT 1 FROM live_prayer_sessions WHERE circle_code=$1 AND band_key=$2 AND scheduled_for::date = $5::date)
-               RETURNING id`,
-              [code, band.band_key, scheduledFor.toISOString(), windowEnd.toISOString(), dayKey]
-            );
-            created = ins.rows.length > 0;
-            if (created) {
-              const sessionId = ins.rows[0].id;
-              const event = { type: "live_prayer_starting", circleCode: code, sessionId, bandKey: band.band_key, scheduledFor: scheduledFor.toISOString(), windowEnd: windowEnd.toISOString() };
-              for (const m of circle.members) {
-                sendSseToUser(m.userId, event).catch(() => {});
-                if (!m.notificationsMuted) {
-                  pushToUser(m.userId, { title: `${circle.name} is praying now \u{1F64F}`, body: "Join your circle", type: "live_prayer_starting", circleCode: code, circleName: circle.name, extra: { sessionId } }).catch(() => {});
-                }
-              }
-            }
-          } catch (err: any) { console.error(`[LiveRoom] open error ${code}:`, err.message); }
+    const soon = await pool.query(
+      "SELECT id, circle_code, host_id, host_name, at_time, intention, joiners, reminded_10, reminded_0 FROM gathering_posts WHERE at_time > NOW() - INTERVAL '30 minutes' AND at_time < NOW() + INTERVAL '11 minutes' AND (reminded_10=false OR reminded_0=false)"
+    );
+    for (const g of soon.rows) {
+      const ci = getCircle(g.circle_code); if (!ci) continue;
+      const hostFirst = (g.host_name || "Someone").split(" ")[0];
+      const minsAway = (new Date(g.at_time).getTime() - Date.now()) / 60000;
+      const recipients: string[] = [...(g.joiners || [])];
+      if (!g.reminded_10 && minsAway <= 10 && minsAway > 0) {
+        await pool.query("UPDATE gathering_posts SET reminded_10=true WHERE id=$1 AND reminded_10=false", [g.id]);
+        for (const uid of recipients) {
+          pushToUser(uid, { title: `${hostFirst}'s gathering begins soon \u{1F64F}`, body: `${ci.name} prays in 10 minutes`, type: "gathering_reminder", circleCode: g.circle_code, circleName: ci.name, extra: { gatheringId: g.id } }).catch(() => {});
         }
+        trackEvent(g.host_id, "gathering_reminder_fired", { circle_code: g.circle_code, at: "t-10", joiner_count: recipients.length });
+      }
+      if (!g.reminded_0 && minsAway <= 0) {
+        await pool.query("UPDATE gathering_posts SET reminded_0=true WHERE id=$1 AND reminded_0=false", [g.id]);
+        for (const uid of recipients) {
+          pushToUser(uid, { title: `${hostFirst}'s gathering is starting`, body: `Enter the prayer room \u{1F64F}`, type: "gathering_reminder", circleCode: g.circle_code, circleName: ci.name, extra: { gatheringId: g.id, starting: true } }).catch(() => {});
+        }
+        trackEvent(g.host_id, "gathering_reminder_fired", { circle_code: g.circle_code, at: "t-0", joiner_count: recipients.length });
       }
     }
-    // Close expired sessions honestly: together = >=2 REAL participants who prayed
-    const expired = await pool.query("SELECT id, circle_code FROM live_prayer_sessions WHERE status='live' AND window_end < NOW()");
-    for (const row of expired.rows) {
-      const parts = await pool.query("SELECT user_id, user_name, prayed_at FROM live_prayer_participants WHERE session_id=$1", [row.id]);
-      const prayed = parts.rows.filter((p: any) => p.prayed_at);
-      const together = prayed.length >= 2;
-      await pool.query("UPDATE live_prayer_sessions SET status='completed', together=$1, present_count=$2 WHERE id=$3", [together, parts.rows.length, row.id]);
-      const ci = getCircle(row.circle_code);
-      if (ci) {
-        const event = { type: "live_prayer_completed", sessionId: row.id, circleCode: row.circle_code, together, togetherCount: prayed.length, memberNames: prayed.map((p: any) => p.user_name || "Someone") };
-        for (const m of ci.members) { sendSseToUser(m.userId, event).catch(() => {}); }
-      }
-      if (together) {
-        for (const p of prayed) {
-          trackEvent(p.user_id, "together_prayer", { context: "live_room", partner_count: prayed.length - 1 });
-        }
-      }
-      trackEvent("system", "room_session_closed", { circle_code: row.circle_code, attendee_count: parts.rows.length, prayed_count: prayed.length, together });
-    }
-  } catch (err: any) { console.error("[LiveRoom] tick error:", err.message); }
+  } catch (err: any) { console.error("[Gathering] tick error:", err.message); }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -4076,8 +4144,8 @@ async function start() {
   // v5.15.0 — generate daily circle prayers
   setTimeout(() => { generateCircleDailyPrayers().catch(() => {}); }, 6 * 60 * 1000);
   setInterval(() => { generateCircleDailyPrayers().catch(() => {}); }, 6 * 60 * 60 * 1000);
-  // v5 Phase 5 — Live Room scheduler: 1-min tick, band-config-driven
-  setInterval(() => { liveRoomTick().catch(() => {}); }, 60 * 1000);
+  // LR2 — gathering reminders only (no band scheduling; rooms open on entry)
+  setInterval(() => { gatheringReminderTick().catch(() => {}); }, 60 * 1000);
   // v5.10.5 — Auto-pull Meta Ads spend data every 6 hours
   async function pullMetaAdSpend(): Promise<void> {
     if (!META_CAPI_ACCESS_TOKEN) return;
