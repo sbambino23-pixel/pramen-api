@@ -846,7 +846,12 @@ function getCirclePrayerTopic(circle: StoredCircle): string {
 // rate limited, API error). A circle must NEVER have a null prayer day: a
 // seeded human-written prayer is honest; a missing prayer is not.
 // Rotation is deterministic per circle+date so circles differ and days vary.
-const FALLBACK_CIRCLE_PRAYERS: Record<string, string[]> = {
+const FALLBACK_CIRCLE_PRAYERS_BY_LANG: Record<Lang, Record<string, string[]>> = {
+  // EN pool verbatim (order is LOAD-BEARING: the daily hash picks
+  // pool[hash % length] — identical order across languages means the same
+  // slot resolves to the SAME prayer in each tongue, matching the
+  // prayed_by-on-en-row model. DO NOT REORDER ANY POOL.)
+  en: {
   night: [
     "Father, as this day closes, we lay it all down before You. The things we finished and the things we could not. Quiet our minds, settle our hearts, and watch over everyone in this circle tonight. Let us rest knowing You stay awake. Amen.",
     "Lord, the evening has come and we are tired. Thank You for carrying us through this day. Forgive what needs forgiving, heal what aches, and give each of us the deep rest that comes from trusting You. We sleep in Your hands. Amen.",
@@ -890,6 +895,142 @@ const FALLBACK_CIRCLE_PRAYERS: Record<string, string[]> = {
     "Lord, lead us. Where we are confused, bring clarity. Where we are afraid, bring courage. Where we are proud, bring humility. This circle belongs to You, and we trust You with everything in it. Amen.",
     "Father, You see each person in this circle right now, exactly where they sit. Thank You that none of us is invisible to You. Draw near to every heart here, and make our prayers today honest, simple, and full of faith. Amen."
   ]
+  },
+  fr: {
+  night: [
+    "Père, à l'heure où ce jour s'achève, nous déposons tout devant Toi. Ce que nous avons accompli et ce que nous n'avons pas pu. Apaise nos pensées, calme nos cœurs, et veille cette nuit sur chacun de ce cercle. Que nous reposions, sachant que Toi, Tu veilles. Amen.",
+    "Seigneur, le soir est venu et nous sommes fatigués. Merci de nous avoir portés tout au long de ce jour. Pardonne ce qui doit l'être, guéris ce qui fait mal, et donne à chacun le repos profond qui naît de la confiance en Toi. Nous nous endormons dans Tes mains. Amen.",
+    "Dieu de paix, rassemble ce cercle sous Ton aile cette nuit. À ceux qui veillent dans l'inquiétude, donne le calme. À ceux qui sont épuisés, donne le sommeil. Rappelle nous que le monde est entre Tes mains, non les nôtres. Nous le remettons et nous reposons. Amen.",
+    "Père, avant de nous endormir, nous Te rendons grâce. Pour le souffle, pour ce cercle, pour la miséricorde qui nous a rejoints aujourd'hui. Garde nos maisons et ceux que nous aimons tout au long de la nuit, et réveille nous demain le cœur prêt à Te chercher d'abord. Amen.",
+    "Seigneur, les ténèbres ne T'effraient pas, et elles n'ont donc pas à nous effrayer. Demeure proche de chaque membre de ce cercle cette nuit. Apaise toute pensée anxieuse, et que Ta paix, qui surpasse toute intelligence, garde nos cœurs et nos pensées. Amen."
+  ],
+  morning: [
+    "Père, ce matin est à Toi avant d'être à nous. Mets de l'ordre dans nos cœurs avant que le jour ne les emporte. Donne à chacun de ce cercle la clarté pour la tâche qui vient, la patience envers ceux que nous rencontrerons, et des yeux pour Te reconnaître tout au long du jour. Amen.",
+    "Seigneur, merci de nous réveiller pour un jour nouveau. Tes compassions se renouvellent ce matin, comme Tu l'as promis. Marche devant ce cercle aujourd'hui. Ouvre les bonnes portes, ferme les mauvaises, et affermis nos pas sur Ton chemin. Amen.",
+    "Dieu, avant que le bruit ne commence, nous venons d'abord à Toi. Remplis chacun de nous de ce dont nous aurons besoin aujourd'hui. La force pour les moments difficiles, la douceur envers ceux qui nous entourent, et la gratitude pour tout cela. Conduis ce cercle heure après heure. Amen.",
+    "Père, le jour n'est pas encore écrit, et nous T'en confions l'écriture. Bénis l'œuvre de nos mains, garde nos paroles, et que chacun de ce cercle porte Ta paix dans chaque lieu où il entrera aujourd'hui. Amen.",
+    "Seigneur, matin après matin, Tu es fidèle. Nous Te donnons les premières minutes de ce jour et Te demandons d'en façonner le reste. Garde ce cercle proche de Toi et proche les uns des autres jusqu'à la venue du soir. Amen."
+  ],
+  hardDays: [
+    "Père, certains d'entre nous portent aujourd'hui des fardeaux qui semblent trop lourds. Tu as dit : venez à moi, vous tous qui êtes fatigués. Alors nous venons. Soutiens ceux qui tiennent à peine, et que ce cercle soit la preuve que nul ne traverse seul les jours difficiles. Amen.",
+    "Seigneur, Tu es près de ceux qui ont le cœur brisé, et c'est sur cela que nous comptons aujourd'hui. Pour chaque fardeau de ce cercle, visible et caché, nous demandons Ta force. Non celle qui fait semblant que tout va bien, mais celle qui tient bon. Amen.",
+    "Dieu, lorsque la vallée est longue, Tu demeures le Berger. Marche avec chaque personne de ce cercle à travers ce qu'elle affronte. Donne la grâce pour aujourd'hui seulement, et assez de lumière pour le pas suivant. Nous Te confions le reste. Amen.",
+    "Père, Tu ne gaspilles pas la douleur. Pour chacun ici qui traverse une saison difficile, apporte une consolation véritable et une espérance qui ne déçoit pas. Apprends nous à porter les fardeaux les uns des autres, et porte ceux que nous ne pouvons pas. Amen.",
+    "Seigneur, nous ne prétendrons pas qu'aujourd'hui est facile. Mais nous savons que Tu es bon, même maintenant. Affermis ceux qui tremblent, adoucis ceux qui se sont engourdis, et rappelle à tout ce cercle que le soir peuvent venir les pleurs, mais qu'au matin revient l'allégresse. Amen."
+  ],
+  stillness: [
+    "Père, ralentis nous. Le monde est bruyant et nos cœurs n'ont cessé de courir. En cet instant, nous choisissons le calme. Sois Dieu, et laisse nous cesser de vouloir l'être. Remplis ce cercle de la confiance paisible de ceux qui savent qui les tient. Amen.",
+    "Seigneur, Tu as dit : tenez-vous tranquilles, et sachez. Alors nous nous arrêtons, ici même, pour Te connaître. Apaise nos pensées agitées, desserre nos mains crispées, et enseigne à chacun de ce cercle que le repos n'est pas paresse. Il est confiance. Amen.",
+    "Dieu des eaux paisibles, conduis nous auprès d'elles aujourd'hui. Restaure en chacun de nous ce que la précipitation a épuisé. Que ce cercle apprenne le rythme paisible de la grâce, et découvre que Ton joug est doux et Ton fardeau léger. Amen.",
+    "Père, nous n'avons pas à mériter Ton amour aujourd'hui, et nous avions besoin de nous en souvenir. Dans le silence, parle. Nous écoutons. Donne à ce cercle le courage de se reposer en Toi tandis que tout le reste continue de s'agiter. Amen.",
+    "Seigneur, même la mer T'a obéi lorsque Tu as dit : Silence ! tais-toi ! Dis le maintenant sur nous. Sur nos pensées, nos emplois du temps, nos inquiétudes. Que ce cercle se tienne en Ta présence et reparte plus entier qu'il n'est venu. Amen."
+  ],
+  intercession: [
+    "Père, nous T'apportons les uns les autres par leur nom aujourd'hui. Tu connais chaque besoin de ce cercle avant même que nous le disions. Fortifie ceux qui sont fatigués, encourage ceux qui sont découragés, et que chacun de nous ressente le poids d'être véritablement porté dans la prière. Amen.",
+    "Seigneur, merci pour les personnes de ce cercle. Quelle grâce de ne pas prier seuls. Entends chaque requête silencieuse portée ici aujourd'hui. Réponds aux besoins que nous n'avons pas exprimés à voix haute, et unis nous plus étroitement tandis que nous nous soutenons les uns les autres. Amen.",
+    "Dieu, Tu nous as dit de porter les fardeaux les uns des autres, alors aujourd'hui nous le faisons. Pour chaque membre de ce cercle, nous demandons Ta provision, Ta protection et Ta présence. Que nul ici ne se demande si quelqu'un prie pour lui. Quelqu'un le fait. Amen.",
+    "Père, fais de nous de fidèles intercesseurs. Prompts à prier, lents à oublier. Bénis chaque personne de ce cercle aujourd'hui à l'endroit précis où elle en a le plus besoin, et qu'elle perçoive, d'une manière ou d'une autre, qu'elle a été portée devant Toi. Amen.",
+    "Seigneur, deux ou trois sont assemblés ici en Ton nom, et Tu as promis d'être au milieu de nous. Alors sois au milieu de nous. Prends chaque requête de ce cercle, exprimée ou tue, et réponds selon Ta parfaite sagesse et Ton amour. Amen."
+  ],
+  general: [
+    "Père, merci pour ce cercle et pour ce jour. Quoi que chacun de nous traverse, rejoins nous là. Donne nous des cœurs reconnaissants, des prières sincères, et le genre de foi qui sera encore là demain. Nous sommes à Toi. Amen.",
+    "Seigneur, Tu as été notre secours aux jours passés, et Tu seras notre espérance aux jours à venir. Bénis aujourd'hui chaque membre de ce cercle. Pourvois à ce qui manque, guéris ce qui fait souffrir, et garde nous marchant ensemble vers Toi. Amen.",
+    "Dieu, nous nous arrêtons ensemble pour Te dire merci. Pour la famille, pour l'amitié, pour la miséricorde que nous n'avions pas méritée. Apprends à ce cercle à compter ses bénédictions plutôt que ses problèmes, et à Te rapporter les unes comme les autres. Amen.",
+    "Père, donne nous de la force pour aujourd'hui. Pas pour l'année entière, juste pour aujourd'hui. Garde nos familles, guide nos décisions, et que chacun de ce cercle achève ce jour un peu plus proche de Toi qu'il ne l'a commencé. Amen.",
+    "Seigneur, conduis nous. Là où nous sommes dans la confusion, apporte la clarté. Là où nous avons peur, apporte le courage. Là où nous sommes orgueilleux, apporte l'humilité. Ce cercle T'appartient, et nous Te confions tout ce qu'il contient. Amen.",
+    "Père, Tu vois chaque personne de ce cercle en cet instant même, exactement là où elle se trouve. Merci de ce que nul d'entre nous ne T'est invisible. Approche Toi de chaque cœur ici, et rends nos prières d'aujourd'hui sincères, simples, et pleines de foi. Amen."
+  ]
+},
+  es: {
+  night: [
+    "Padre, al cerrarse este día, lo dejamos todo delante de Ti. Lo que terminamos y lo que no pudimos. Aquieta nuestra mente, calma nuestro corazón, y cuida esta noche a cada uno de este círculo. Que descansemos sabiendo que Tú permaneces despierto. Amén.",
+    "Señor, ha llegado la noche y estamos cansados. Gracias por sostenernos a lo largo de este día. Perdona lo que deba ser perdonado, sana lo que duele, y danos a cada uno el descanso profundo que nace de confiar en Ti. Dormimos en Tus manos. Amén.",
+    "Dios de paz, reúne esta noche a este círculo bajo Tu ala. A quienes velan con preocupación, dales calma. A quienes están agotados, dales sueño. Recuérdanos que el mundo está en Tus manos, no en las nuestras. Lo soltamos y descansamos. Amén.",
+    "Padre, antes de dormir, te damos gracias. Por el aliento, por este círculo, por la misericordia que hoy nos alcanzó. Guarda nuestros hogares y a quienes amamos durante la noche, y despiértanos mañana con el corazón dispuesto a buscarte primero. Amén.",
+    "Señor, la oscuridad no Te atemoriza, y por eso no tiene por qué atemorizarnos. Permanece cerca de cada miembro de este círculo esta noche. Aquieta todo pensamiento de ansiedad, y que Tu paz, que sobrepasa todo entendimiento, guarde nuestros corazones y nuestros pensamientos. Amén."
+  ],
+  morning: [
+    "Padre, esta mañana es Tuya antes de ser nuestra. Pon en orden nuestro corazón antes de que el día lo arrastre. Da a cada uno de este círculo claridad para la tarea que viene, paciencia hacia quienes encontremos, y ojos para reconocerte a lo largo del día. Amén.",
+    "Señor, gracias por despertarnos a un nuevo día. Tus misericordias son nuevas esta mañana, tal como prometiste. Camina delante de este círculo hoy. Abre las puertas correctas, cierra las equivocadas, y afirma nuestros pasos en Tu camino. Amén.",
+    "Dios, antes de que comience el ruido, venimos primero a Ti. Llena a cada uno de nosotros con lo que necesitaremos hoy. Fuerza para los momentos difíciles, ternura hacia quienes nos rodean, y gratitud por todo ello. Guía a este círculo hora tras hora. Amén.",
+    "Padre, el día aún no está escrito, y a Ti te confiamos su escritura. Bendice la obra de nuestras manos, guarda nuestras palabras, y que cada uno de este círculo lleve Tu paz a cada lugar donde entre hoy. Amén.",
+    "Señor, mañana tras mañana, Tú eres fiel. Te damos los primeros minutos de este día y te pedimos que des forma al resto. Mantén a este círculo cerca de Ti y cerca los unos de los otros hasta que llegue la noche. Amén."
+  ],
+  hardDays: [
+    "Padre, algunos de nosotros llevamos hoy cargas que se sienten demasiado pesadas. Tú dijiste: vengan a mí todos los que están cansados. Por eso venimos. Sostén a quienes apenas se sostienen, y que este círculo sea la prueba de que nadie atraviesa solo los días difíciles. Amén.",
+    "Señor, Tú estás cerca de los quebrantados de corazón, y en eso confiamos hoy. Por cada carga de este círculo, visible y oculta, te pedimos Tu fuerza. No la que finge que todo está bien, sino la que persevera. Amén.",
+    "Dios, cuando el valle es largo, Tú sigues siendo el Pastor. Camina con cada persona de este círculo a través de lo que enfrenta. Da gracia solo para hoy, y luz suficiente para el siguiente paso. A Ti te confiamos lo demás. Amén.",
+    "Padre, Tú no desperdicias el dolor. Para cada uno aquí que atraviesa una temporada difícil, trae consuelo verdadero y esperanza que no avergüenza. Enséñanos a sobrellevar las cargas los unos de los otros, y lleva Tú las que no podemos. Amén.",
+    "Señor, no fingiremos que hoy es fácil. Pero sabemos que Tú eres bueno, incluso ahora. Sostén a quienes tiemblan, ablanda a quienes se han quedado insensibles, y recuérdale a todo este círculo que por la noche durará el lloro, pero a la mañana vendrá la alegría. Amén."
+  ],
+  stillness: [
+    "Padre, haz que vayamos más despacio. El mundo es ruidoso y nuestro corazón no ha dejado de correr. En este momento, elegimos la quietud. Sé Dios, y déjanos dejar de intentar serlo. Llena este círculo con la confianza serena de quienes saben quién los sostiene. Amén.",
+    "Señor, Tú dijiste: estad quietos, y conoced. Por eso nos detenemos, aquí mismo, para conocerte. Aquieta nuestros pensamientos acelerados, afloja nuestras manos apretadas, y enseña a cada uno de este círculo que el descanso no es pereza. Es confianza. Amén.",
+    "Dios de las aguas de reposo, llévanos junto a ellas hoy. Restaura en cada uno de nosotros lo que la prisa ha desgastado. Que este círculo aprenda el ritmo sereno de la gracia, y descubra que Tu yugo es fácil y ligera Tu carga. Amén.",
+    "Padre, no tenemos que ganarnos Tu amor hoy, y necesitábamos recordarlo. En el silencio, habla. Estamos escuchando. Da a este círculo el valor de descansar en Ti mientras todo lo demás sigue moviéndose. Amén.",
+    "Señor, hasta el mar Te obedeció cuando dijiste: Calla, enmudece. Dilo ahora sobre nosotros. Sobre nuestra mente, nuestras agendas, nuestras preocupaciones. Que este círculo se quede en Tu presencia y se marche más entero de como llegó. Amén."
+  ],
+  intercession: [
+    "Padre, hoy te traemos los unos a los otros por su nombre. Tú conoces cada necesidad de este círculo antes de que la digamos. Fortalece a los cansados, anima a los desanimados, y que cada uno de nosotros sienta el peso de ser verdaderamente llevado en oración. Amén.",
+    "Señor, gracias por las personas de este círculo. Qué gracia es no orar solos. Escucha cada petición silenciosa que se trae aquí hoy. Suple las necesidades que no hemos dicho en voz alta, y únenos más estrechamente mientras nos sostenemos los unos a los otros. Amén.",
+    "Dios, Tú nos dijiste que sobrellevemos las cargas los unos de los otros, así que hoy lo hacemos. Por cada miembro de este círculo, te pedimos Tu provisión, Tu protección y Tu cercanía. Que nadie aquí se pregunte si alguien ora por él. Alguien lo hace. Amén.",
+    "Padre, haznos intercesores fieles. Prontos para orar, lentos para olvidar. Bendice hoy a cada persona de este círculo en el lugar exacto donde más lo necesita, y que perciba, de algún modo, que fue llevada delante de Ti. Amén.",
+    "Señor, dos o tres estamos congregados aquí en Tu nombre, y Tú prometiste estar en medio de nosotros. Por eso, está en medio de nosotros. Toma cada petición de este círculo, dicha y no dicha, y responde según Tu perfecta sabiduría y Tu amor. Amén."
+  ],
+  general: [
+    "Padre, gracias por este círculo y por este día. Sea lo que sea que cada uno esté atravesando, encuéntranos allí. Danos corazones agradecidos, oraciones sinceras, y el tipo de fe que también aparece mañana. Somos Tuyos. Amén.",
+    "Señor, Tú has sido nuestro auxilio en los días pasados, y serás nuestra esperanza en los días por venir. Bendice hoy a cada miembro de este círculo. Provee lo que falta, sana lo que duele, y mantennos caminando juntos hacia Ti. Amén.",
+    "Dios, nos detenemos juntos para darte gracias. Por la familia, por la amistad, por la misericordia que no merecíamos. Enseña a este círculo a contar sus bendiciones en lugar de sus problemas, y a traerte ambas cosas. Amén.",
+    "Padre, danos fuerza para hoy. No para todo el año, solo para hoy. Guarda a nuestras familias, guía nuestras decisiones, y que cada uno de este círculo termine este día un poco más cerca de Ti de lo que lo comenzó. Amén.",
+    "Señor, guíanos. Donde estamos confundidos, trae claridad. Donde tenemos miedo, trae valor. Donde somos orgullosos, trae humildad. Este círculo te pertenece, y te confiamos todo lo que hay en él. Amén.",
+    "Padre, Tú ves a cada persona de este círculo en este mismo instante, exactamente donde está. Gracias porque ninguno de nosotros es invisible para Ti. Acércate a cada corazón aquí, y haz que nuestras oraciones de hoy sean sinceras, sencillas y llenas de fe. Amén."
+  ]
+},
+  pt: {
+  night: [
+    "Pai, ao chegar o fim deste dia, depomos tudo diante de Ti. O que concluímos e o que não conseguimos. Aquieta a nossa mente, serena o nosso coração, e vela esta noite por cada um deste círculo. Que descansemos sabendo que Tu permaneces desperto. Amém.",
+    "Senhor, a noite chegou e estamos cansados. Obrigado por nos carregares ao longo deste dia. Perdoa o que precisa ser perdoado, cura o que dói, e dá a cada um o descanso profundo que nasce de confiar em Ti. Adormecemos nas Tuas mãos. Amém.",
+    "Deus de paz, reúne esta noite este círculo debaixo da Tua asa. Aos que velam com preocupação, concede serenidade. Aos que estão exaustos, concede sono. Lembra nos de que o mundo está nas Tuas mãos, não nas nossas. Nós o entregamos e descansamos. Amém.",
+    "Pai, antes de dormir, damos Te graças. Pelo fôlego, por este círculo, pela misericórdia que hoje nos alcançou. Guarda os nossos lares e aqueles que amamos ao longo da noite, e desperta nos amanhã com o coração pronto para Te buscar primeiro. Amém.",
+    "Senhor, as trevas não Te assustam, e por isso não precisam nos assustar. Permanece perto de cada membro deste círculo esta noite. Aquieta todo pensamento ansioso, e que a Tua paz, que excede todo o entendimento, guarde os nossos corações e as nossas mentes. Amém."
+  ],
+  morning: [
+    "Pai, esta manhã é Tua antes de ser nossa. Põe em ordem o nosso coração antes que o dia o arraste. Dá a cada um deste círculo clareza para a tarefa que vem, paciência para com aqueles que encontrarmos, e olhos para Te reconhecer ao longo do dia. Amém.",
+    "Senhor, obrigado por nos despertares para um novo dia. As Tuas misericórdias são novas esta manhã, como prometeste. Caminha diante deste círculo hoje. Abre as portas certas, fecha as erradas, e firma os nossos passos no Teu caminho. Amém.",
+    "Deus, antes que o barulho comece, vimos primeiro a Ti. Enche cada um de nós com aquilo de que precisaremos hoje. Força para os momentos difíceis, ternura para com os que nos cercam, e gratidão por tudo isso. Conduz este círculo hora após hora. Amém.",
+    "Pai, o dia ainda não está escrito, e a Ti confiamos a sua escrita. Abençoa a obra das nossas mãos, guarda as nossas palavras, e que cada um deste círculo leve a Tua paz a cada lugar onde entrar hoje. Amém.",
+    "Senhor, manhã após manhã, Tu és fiel. Damos Te os primeiros minutos deste dia e Te pedimos que dês forma ao restante. Guarda este círculo perto de Ti e perto uns dos outros até que a noite chegue. Amém."
+  ],
+  hardDays: [
+    "Pai, alguns de nós carregam hoje fardos que parecem pesados demais. Tu disseste: vinde a mim todos os que estais cansados. Por isso viemos. Ampara os que mal conseguem se manter de pé, e que este círculo seja a prova de que ninguém atravessa sozinho os dias difíceis. Amém.",
+    "Senhor, Tu estás perto dos que têm o coração quebrantado, e é nisso que confiamos hoje. Por cada fardo deste círculo, visível e oculto, pedimos a Tua força. Não a que finge que está tudo bem, mas a que persevera. Amém.",
+    "Deus, quando o vale é longo, Tu continuas sendo o Pastor. Caminha com cada pessoa deste círculo através daquilo que enfrenta. Concede graça apenas para hoje, e luz suficiente para o próximo passo. A Ti confiamos o restante. Amém.",
+    "Pai, Tu não desperdiças a dor. Para cada um aqui que atravessa uma estação difícil, traz consolo verdadeiro e esperança que não envergonha. Ensina nos a levar as cargas uns dos outros, e leva Tu as que não conseguimos. Amém.",
+    "Senhor, não fingiremos que hoje é fácil. Mas sabemos que Tu és bom, mesmo agora. Firma os que tremem, abranda os que ficaram insensíveis, e lembra a todo este círculo que o choro pode durar uma noite, mas a alegria vem pela manhã. Amém."
+  ],
+  stillness: [
+    "Pai, faz nos ir mais devagar. O mundo é barulhento e o nosso coração não tem parado de correr. Neste momento, escolhemos a quietude. Sê Deus, e deixa nos parar de tentar sê lo. Enche este círculo com a confiança serena de quem sabe quem o sustenta. Amém.",
+    "Senhor, Tu disseste: aquietai-vos, e sabei. Por isso nos detemos, aqui mesmo, para Te conhecer. Aquieta os nossos pensamentos agitados, afrouxa as nossas mãos cerradas, e ensina a cada um deste círculo que o descanso não é preguiça. É confiança. Amém.",
+    "Deus das águas tranquilas, conduz nos a elas hoje. Restaura em cada um de nós aquilo que a pressa desgastou. Que este círculo aprenda o ritmo tranquilo da graça, e descubra que o Teu jugo é suave e o Teu fardo é leve. Amém.",
+    "Pai, não precisamos merecer o Teu amor hoje, e precisávamos lembrar disso. No silêncio, fala. Estamos ouvindo. Dá a este círculo a coragem de descansar em Ti enquanto tudo o mais continua a se mover. Amém.",
+    "Senhor, até o mar Te obedeceu quando disseste: Cala-te, aquieta-te. Dize o agora sobre nós. Sobre a nossa mente, os nossos compromissos, as nossas preocupações. Que este círculo permaneça na Tua presença e parta mais inteiro do que chegou. Amém."
+  ],
+  intercession: [
+    "Pai, hoje Te trazemos uns aos outros pelo nome. Tu conheces cada necessidade deste círculo antes mesmo de a dizermos. Fortalece os cansados, anima os desanimados, e que cada um de nós sinta o peso de ser verdadeiramente levado em oração. Amém.",
+    "Senhor, obrigado pelas pessoas deste círculo. Que graça é não orar sozinhos. Ouve cada pedido silencioso trazido aqui hoje. Supre as necessidades que não dissemos em voz alta, e une nos mais estreitamente enquanto sustentamos uns aos outros. Amém.",
+    "Deus, Tu nos disseste para levar as cargas uns dos outros, então hoje nós o fazemos. Por cada membro deste círculo, pedimos a Tua provisão, a Tua proteção e a Tua presença. Que ninguém aqui se pergunte se alguém ora por ele. Alguém ora. Amém.",
+    "Pai, faz de nós intercessores fiéis. Prontos para orar, lentos para esquecer. Abençoa hoje cada pessoa deste círculo no lugar exato onde mais precisa, e que perceba, de algum modo, que foi levada diante de Ti. Amém.",
+    "Senhor, dois ou três estamos reunidos aqui em Teu nome, e Tu prometeste estar no meio de nós. Por isso, está no meio de nós. Toma cada pedido deste círculo, dito e não dito, e responde segundo a Tua perfeita sabedoria e o Teu amor. Amém."
+  ],
+  general: [
+    "Pai, obrigado por este círculo e por este dia. Seja o que for que cada um esteja atravessando, encontra nos ali. Dá nos corações gratos, orações sinceras, e o tipo de fé que também aparece amanhã. Somos Teus. Amém.",
+    "Senhor, Tu foste o nosso amparo nos dias passados, e serás a nossa esperança nos dias que virão. Abençoa hoje cada membro deste círculo. Provê o que falta, cura o que dói, e guarda nos caminhando juntos em direção a Ti. Amém.",
+    "Deus, paramos juntos para Te dizer obrigado. Pela família, pela amizade, pela misericórdia que não merecíamos. Ensina a este círculo a contar as suas bênçãos em vez dos seus problemas, e a trazer ambas a Ti. Amém.",
+    "Pai, dá nos força para hoje. Não para o ano inteiro, apenas para hoje. Guarda as nossas famílias, guia as nossas decisões, e que cada um deste círculo termine este dia um pouco mais perto de Ti do que o começou. Amém.",
+    "Senhor, conduz nos. Onde estamos confusos, traz clareza. Onde temos medo, traz coragem. Onde somos orgulhosos, traz humildade. Este círculo Te pertence, e Te confiamos tudo o que há nele. Amém.",
+    "Pai, Tu vês cada pessoa deste círculo neste exato instante, exatamente onde está. Obrigado porque nenhum de nós é invisível para Ti. Aproxima Te de cada coração aqui, e torna as nossas orações de hoje sinceras, simples e cheias de fé. Amém."
+  ]
+},
 };
 
 function fallbackBucketForTopic(topic: string): string {
@@ -902,9 +1043,11 @@ function fallbackBucketForTopic(topic: string): string {
   return "general";
 }
 
-function seededFallbackPrayer(code: string, date: string, topic: string): string {
-  const pool = FALLBACK_CIRCLE_PRAYERS[fallbackBucketForTopic(topic)] || FALLBACK_CIRCLE_PRAYERS.general;
-  const key = code + date;
+function seededFallbackPrayer(code: string, date: string, topic: string, lang: Lang = "en"): string {
+  const byLang = FALLBACK_CIRCLE_PRAYERS_BY_LANG[lang] ?? FALLBACK_CIRCLE_PRAYERS_BY_LANG.en;
+  const bucket = fallbackBucketForTopic(topic);
+  const pool = byLang[bucket] ?? FALLBACK_CIRCLE_PRAYERS_BY_LANG.en[bucket] ?? FALLBACK_CIRCLE_PRAYERS_BY_LANG.en.general;
+  const key = code + date;                       // SAME key as before — index stable across languages
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
   return pool[hash % pool.length];
@@ -972,13 +1115,11 @@ async function generateCircleDailyPrayers(): Promise<void> {
       }
       if (prayer) {
         generated++;
-      } else if (lang === "en") {
-        // Seeded fallback pool is EN-only until the sacred ×4 batch lands
-        // (flagged to Samy). Non-en readers fall back to the en row on GET.
-        prayer = seededFallbackPrayer(code, today, topic);
-        seeded++;
       } else {
-        continue; // no non-en row; GET falls back to en
+        // Sacred ×4 seeded pools (v5-fallback-prayers-translations.md):
+        // same daily slot resolves to the same prayer in every language.
+        prayer = seededFallbackPrayer(code, today, topic, lang as Lang);
+        seeded++;
       }
       await pool.query(
         "INSERT INTO circle_daily_prayers (circle_code, date, prayer_text, topic, language) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
