@@ -311,19 +311,18 @@ const PUSH_STRINGS: Record<string, Partial<Record<Lang, string>> & { en: string 
     pt: "Alguém compartilhou um pedido de oração",
   },
 
-  // v5 Phase 8 — LR2/gathering/partner pushes. EN live; FR/ES/PT are 🔴
-  // pending human review (drafts in v5-sacred-translations.md §C) — t()
-  // falls back to en until reviewed values land here.
-  room_invite_live_title: { en: "{name} is praying in {circle} now \u{1F64F}" },
-  room_invite_live_body: { en: "Join {name}" },
-  gathering_t10_title: { en: "{name}'s gathering begins soon \u{1F64F}" },
-  gathering_t10_body: { en: "{circle} prays in 10 minutes" },
-  gathering_t0_title: { en: "{name}'s gathering is starting" },
-  gathering_t0_body: { en: "Enter the prayer room \u{1F64F}" },
-  partner_accepted_title: { en: "{name} said yes \u{1F64F}" },
-  partner_accepted_body: { en: "You're prayer partners now — 30 days of premium for you both." },
-  partner_grace_title: { en: "{name} covered your {weekday} \u{1F64F}" },
-  partner_grace_body: { en: "Your shared streak is safe. Pray today to keep it going together." },
+  // v5 Phase 8 — LR2/gathering/partner pushes, all four languages LIVE
+  // (review waived by Samy Jun 12; drafts from v5-sacred-translations.md §C).
+  room_invite_live_title: { en: "{name} is praying in {circle} now \u{1F64F}", fr: "{name} prie dans {circle} en ce moment \u{1F64F}", es: "{name} está orando en {circle} ahora \u{1F64F}", pt: "{name} está orando em {circle} agora \u{1F64F}" },
+  room_invite_live_body: { en: "Join {name}", fr: "Rejoignez {name}", es: "Únete a {name}", pt: "Junte-se a {name}" },
+  gathering_t10_title: { en: "{name}'s gathering begins soon \u{1F64F}", fr: "Le rassemblement de {name} commence bientôt \u{1F64F}", es: "El encuentro de {name} comienza pronto \u{1F64F}", pt: "O encontro de {name} começa em breve \u{1F64F}" },
+  gathering_t10_body: { en: "{circle} prays in 10 minutes", fr: "{circle} prie dans 10 minutes", es: "{circle} ora en 10 minutos", pt: "{circle} ora em 10 minutos" },
+  gathering_t0_title: { en: "{name}'s gathering is starting", fr: "Le rassemblement de {name} commence", es: "El encuentro de {name} está comenzando", pt: "O encontro de {name} está começando" },
+  gathering_t0_body: { en: "Enter the prayer room \u{1F64F}", fr: "Entrez dans la salle de prière \u{1F64F}", es: "Entra a la sala de oración \u{1F64F}", pt: "Entre na sala de oração \u{1F64F}" },
+  partner_accepted_title: { en: "{name} said yes \u{1F64F}", fr: "{name} a dit oui \u{1F64F}", es: "{name} aceptó \u{1F64F}", pt: "{name} aceitou \u{1F64F}" },
+  partner_accepted_body: { en: "You're prayer partners now — 30 days of premium for you both.", fr: "Vous êtes partenaires de prière — 30 jours de premium pour vous deux.", es: "Ahora son compañeros de oración — 30 días de premium para los dos.", pt: "Agora vocês são parceiros de oração — 30 dias de premium para os dois." },
+  partner_grace_title: { en: "{name} covered your {weekday} \u{1F64F}", fr: "{name} a couvert votre {weekday} \u{1F64F}", es: "{name} cubrió tu {weekday} \u{1F64F}", pt: "{name} cobriu sua {weekday} \u{1F64F}" },
+  partner_grace_body: { en: "Your shared streak is safe. Pray today to keep it going together.", fr: "Votre série commune est sauvée. Priez aujourd'hui pour la poursuivre ensemble.", es: "Su racha compartida está a salvo. Oren hoy para mantenerla juntos.", pt: "Sua sequência compartilhada está salva. Orem hoje para mantê-la juntos." },
 
   // Volley — someone prayed WITH you, unprompted (v5 Phase 4)
   prayed_with_you_title: {
@@ -920,7 +919,7 @@ const FALLBACK_CIRCLE_PRAYERS_BY_LANG: Record<Lang, Record<string, string[]>> = 
   ],
   stillness: [
     "Père, ralentis nous. Le monde est bruyant et nos cœurs n'ont cessé de courir. En cet instant, nous choisissons le calme. Sois Dieu, et laisse nous cesser de vouloir l'être. Remplis ce cercle de la confiance paisible de ceux qui savent qui les tient. Amen.",
-    "Seigneur, Tu as dit : tenez-vous tranquilles, et sachez. Alors nous nous arrêtons, ici même, pour Te connaître. Apaise nos pensées agitées, desserre nos mains crispées, et enseigne à chacun de ce cercle que le repos n'est pas paresse. Il est confiance. Amen.",
+    "Seigneur, Tu as dit : Arrêtez, et sachez. Alors nous nous arrêtons, ici même, pour Te connaître. Apaise nos pensées agitées, desserre nos mains crispées, et enseigne à chacun de ce cercle que le repos n'est pas paresse. Il est confiance. Amen.",
     "Dieu des eaux paisibles, conduis nous auprès d'elles aujourd'hui. Restaure en chacun de nous ce que la précipitation a épuisé. Que ce cercle apprenne le rythme paisible de la grâce, et découvre que Ton joug est doux et Ton fardeau léger. Amen.",
     "Père, nous n'avons pas à mériter Ton amour aujourd'hui, et nous avions besoin de nous en souvenir. Dans le silence, parle. Nous écoutons. Donne à ce cercle le courage de se reposer en Toi tandis que tout le reste continue de s'agiter. Amen.",
     "Seigneur, même la mer T'a obéi lorsque Tu as dit : Silence ! tais-toi ! Dis le maintenant sur nous. Sur nos pensées, nos emplois du temps, nos inquiétudes. Que ce cercle se tienne en Ta présence et reparte plus entier qu'il n'est venu. Amen."
