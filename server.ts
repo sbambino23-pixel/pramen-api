@@ -5105,74 +5105,23 @@ async function start() {
 
   // ═══════════════════════════════════════════════════════════════════
   // v5.16.0 — JOURNEYS Phase 0: backfill circles.family
-  // Additive only, reversible. Default everything to 'drawing_closer',
-  // then best-effort upgrade from circle name/topic data.
+  // Flat default only — every existing circle gets 'drawing_closer'.
+  // Real family sorting happens by hand when each journey ships.
   // To undo: UPDATE circles SET family = 'drawing_closer';
   // ═══════════════════════════════════════════════════════════════════
   (async () => {
     try {
-      // Only run if there are circles with NULL family
       const nullCount = await pool.query("SELECT COUNT(*) as cnt FROM circles WHERE family IS NULL");
-      if (parseInt(nullCount.rows[0]?.cnt || "0") === 0) return;
+      const cnt = parseInt(nullCount.rows[0]?.cnt || "0");
+      if (cnt === 0) return;
 
-      console.log("[Journeys backfill] Found circles with NULL family — running backfill...");
-
-      // Step 1: Default all NULL families to 'drawing_closer'
+      console.log(`[Journeys backfill] ${cnt} circles with NULL family — defaulting to drawing_closer...`);
       await pool.query("UPDATE circles SET family = 'drawing_closer' WHERE family IS NULL");
 
-      // Step 2: Best-effort keyword mapping from circle data (name, description, topics in JSONB)
-      // We inspect the JSONB 'data' column for circle name and any topic/description fields.
-      const allCircles = await pool.query("SELECT code, data FROM circles");
-      let mapped: Record<string, number> = { loss: 0, health: 0, waiting: 0, new_life: 0, drawing_closer: 0, hardship: 0, relationships: 0 };
-      const familyKeywords: Record<string, string[]> = {
-        loss: ["grief", "loss", "mourning", "died", "death", "passed away", "bereavement", "memorial"],
-        health: ["health", "illness", "sick", "cancer", "surgery", "hospital", "healing", "recovery", "diagnosis", "treatment"],
-        waiting: ["waiting", "patience", "infertility", "adoption", "job search", "uncertainty"],
-        new_life: ["expecting", "pregnancy", "pregnant", "baby", "newborn", "new parent", "parenthood", "birth"],
-        hardship: ["hard season", "difficult", "struggle", "trial", "hardship", "crisis", "anxiety", "depression", "stress"],
-        relationships: ["marriage", "relationship", "family", "spouse", "husband", "wife", "friend", "reconciliation", "forgiveness", "couple"]
-      };
-
-      for (const row of allCircles.rows) {
-        const data = row.data as any;
-        const searchText = [
-          data?.name || "",
-          data?.description || "",
-          data?.topic || "",
-          ...(data?.prayerRequests || []).map((pr: any) => pr.text || "")
-        ].join(" ").toLowerCase();
-
-        let bestFamily: string | null = null;
-        let bestScore = 0;
-
-        for (const [family, keywords] of Object.entries(familyKeywords)) {
-          let score = 0;
-          for (const kw of keywords) {
-            if (searchText.includes(kw)) score++;
-          }
-          if (score > bestScore) {
-            bestScore = score;
-            bestFamily = family;
-          }
-        }
-
-        if (bestFamily && bestScore > 0) {
-          await pool.query("UPDATE circles SET family = $1 WHERE code = $2", [bestFamily, row.code]);
-          // Also update in-memory circle data
-          const circle = circles.get(row.code);
-          if (circle) (circle as any).family = bestFamily;
-          mapped[bestFamily] = (mapped[bestFamily] || 0) + 1;
-        } else {
-          mapped.drawing_closer = (mapped.drawing_closer || 0) + 1;
-        }
-      }
-
       // Log distribution for sanity check
+      const dist = await pool.query("SELECT family, COUNT(*) as count FROM circles GROUP BY family ORDER BY count DESC");
       console.log("[Journeys backfill] Circle family distribution:");
-      for (const [family, count] of Object.entries(mapped)) {
-        if (count > 0) console.log(`  ${family}: ${count}`);
-      }
-      console.log(`[Journeys backfill] Total: ${allCircles.rows.length} circles processed`);
+      for (const row of dist.rows) console.log(`  ${row.family}: ${row.count}`);
     } catch (err: any) { console.error("[Journeys backfill]", err.message); }
   })();
 
