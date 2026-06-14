@@ -1,4 +1,4 @@
-// v5.16.3 — Journeys Phase 0-3 (schema + generator + onboarding + partners)
+// v5.16.4 — Journeys Phase 0-4 (schema + generator + onboarding + partners + graduation)
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -1381,7 +1381,26 @@ const MEDITATION_TEMPLATES: Record<JourneyTone, Record<Lang, string>> = {
   },
 };
 
-// -- 5. Daily-action generator ----------------------------------------
+// -- 5. GRADUATION_MESSAGES (gender-neutral, outcome-neutral) ----------
+// Never assumes a happy ending. Centers on companionship.
+// No "congratulations," "complete," "finished," or outcome-specific language.
+
+const GRADUATION_MESSAGES: Record<string, Record<Lang, string>> = {
+  through_a_hard_season: {
+    en: "Thirty days walked. Whatever this season holds, you didn't walk it alone.",
+    fr: "Trente jours de marche. Quelle que soit cette saison, tu ne l\u2019as pas travers\u00e9e dans la solitude.",
+    es: "Treinta d\u00edas de camino. Sea lo que sea esta temporada, no la caminaste en soledad.",
+    pt: "Trinta dias de caminhada. Seja o que for esta fase, voc\u00ea n\u00e3o a atravessou em solid\u00e3o.",
+  },
+  expecting: {
+    en: "Forty weeks of prayer. However this chapter unfolds, you were never alone in it.",
+    fr: "Quarante semaines de pri\u00e8re. Quelle que soit la suite de ce chapitre, tu n\u2019as jamais \u00e9t\u00e9 sans pr\u00e9sence.",
+    es: "Cuarenta semanas de oraci\u00f3n. Como sea que siga este cap\u00edtulo, nunca hubo soledad en el camino.",
+    pt: "Quarenta semanas de ora\u00e7\u00e3o. Como quer que este cap\u00edtulo se desenrole, nunca houve solid\u00e3o no caminho.",
+  },
+};
+
+// -- 6. Daily-action generator ----------------------------------------
 // SAME hash function as seededFallbackPrayer: deterministic, stable.
 
 function journeyHash(key: string): number {
@@ -5025,14 +5044,27 @@ app.post("/journeys/:id/complete-day", async (c) => {
         "UPDATE journey_instances SET status='graduated', current_day=$1, last_action_at=NOW() WHERE id=$2",
         [instance.current_day, instanceId]
       );
+
+      const gradMessages = GRADUATION_MESSAGES[instance.template_key] || {
+        en: "This part of the journey is walked. You didn't walk it alone.",
+        fr: "Cette \u00e9tape du chemin est parcourue. Tu ne l\u2019as pas parcourue dans la solitude.",
+        es: "Esta parte del camino est\u00e1 recorrida. No la recorriste en soledad.",
+        pt: "Esta parte do caminho foi percorrida. Voc\u00ea n\u00e3o a percorreu em solid\u00e3o.",
+      };
+
+      trackEvent(instance.user_id, "journey_graduated", {
+        family: instance.family,
+        template: instance.template_key,
+        daysWalked: instance.current_day,
+        unit: instance.unit
+      });
+
       return c.json({
         instanceId,
         status: "graduated",
         currentDay: instance.current_day,
         unit: instance.unit,
-        message: isExpecting
-          ? "Your journey is complete. Welcome to this new chapter."
-          : "You made it through. This season shaped you."
+        message: gradMessages
       });
     }
 
@@ -5416,6 +5448,86 @@ app.get("/journeys/:id/partner", async (c) => {
         startedAt: p.started_at
       }
     });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// v5.16.4 — JOURNEYS Phase 4: graduation + open-mode rollover
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /journeys/:id/graduation — graduation message, only when status='graduated'
+app.get("/journeys/:id/graduation", async (c) => {
+  const instanceId = c.req.param("id");
+  try {
+    const result = await pool.query("SELECT * FROM journey_instances WHERE id=$1", [instanceId]);
+    if (result.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+    const instance = result.rows[0];
+
+    if (instance.status !== "graduated") {
+      return c.json({ error: "Journey is not graduated", status: instance.status }, 400);
+    }
+
+    const gradMessages = GRADUATION_MESSAGES[instance.template_key] || {
+      en: "This part of the journey is walked. You didn't walk it alone.",
+      fr: "Cette \u00e9tape du chemin est parcourue. Tu ne l\u2019as pas parcourue dans la solitude.",
+      es: "Esta parte del camino est\u00e1 recorrida. No la recorriste en soledad.",
+      pt: "Esta parte do caminho foi percorrida. Voc\u00ea n\u00e3o a percorreu em solid\u00e3o.",
+    };
+
+    return c.json({
+      graduated: true,
+      templateKey: instance.template_key,
+      family: instance.family,
+      daysWalked: instance.current_day,
+      unit: instance.unit,
+      message: gradMessages,
+      options: ["continue", "new_journey"]
+    });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// POST /journeys/:id/continue — graduated → active open drawing_closer
+// One-way door. Reroutes into the gentle companion journey, NOT a repeat
+// of the original final phase (avoids serving "Arrival" in week 50).
+// Family tag preserved for future migration.
+app.post("/journeys/:id/continue", async (c) => {
+  const instanceId = c.req.param("id");
+  try {
+    const result = await pool.query("SELECT * FROM journey_instances WHERE id=$1", [instanceId]);
+    if (result.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+    const instance = result.rows[0];
+
+    // Idempotency: if already active + open, return as-is
+    if (instance.status === "active" && instance.mode === "open") {
+      return c.json({ instance, isExisting: true });
+    }
+
+    if (instance.status !== "graduated") {
+      return c.json({ error: "Journey must be graduated to continue", status: instance.status }, 400);
+    }
+
+    // Reroute to drawing_closer: gentle companion, fresh start
+    await pool.query(
+      `UPDATE journey_instances
+       SET status='active', mode='open', template_key='drawing_closer',
+           length_days=NULL, current_day=1, unit='day', last_action_at=NOW()
+       WHERE id=$1`,
+      [instanceId]
+    );
+
+    // Re-fetch the updated instance
+    const updated = await pool.query("SELECT * FROM journey_instances WHERE id=$1", [instanceId]);
+    const cont = updated.rows[0];
+
+    trackEvent(cont.user_id, "journey_continued", {
+      originalTemplate: instance.template_key,
+      family: cont.family,
+      newTemplate: "drawing_closer"
+    });
+
+    console.log(`[Journey] Continued: instance=${instanceId} ${instance.template_key}→drawing_closer, family=${cont.family} preserved`);
+
+    return c.json({ instance: cont, isExisting: false }, 200);
   } catch (err: any) { return c.json({ error: err.message }, 500); }
 });
 
