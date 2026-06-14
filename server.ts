@@ -1,4 +1,4 @@
-// v5.16.1 — Journeys Phase 0+1 (schema + family config + backfill + templates + generator + endpoints)
+// v5.16.2 — Journeys Phase 0-2 (schema + generator + onboarding assignment)
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -5042,6 +5042,135 @@ app.post("/journeys/:id/complete-day", async (c) => {
   } catch (err: any) {
     console.error("[Journey] POST /complete-day error:", err.message);
     return c.json({ error: "Failed to complete day", detail: err.message }, 500);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// v5.16.2 — JOURNEYS Phase 2: Onboarding assignment
+// POST /journeys/start — intake → family → template → instance + day1
+// ═══════════════════════════════════════════════════════════════════
+
+// Intake → family map (exhaustive, drawing_closer catch-all)
+const INTAKE_TO_FAMILY: Record<string, JourneyFamily> = {
+  // Direct matches
+  grief: "loss", loss: "loss", mourning: "loss", died: "loss", death: "loss", bereavement: "loss",
+  illness: "health", health: "health", diagnosis: "health", cancer: "health", surgery: "health", sick: "health",
+  waiting: "waiting", decision: "waiting", uncertainty: "waiting", discernment: "waiting",
+  expecting: "new_life", pregnancy: "new_life", pregnant: "new_life", baby: "new_life",
+  stress: "hardship", anxiety: "hardship", hard: "hardship", struggle: "hardship", crisis: "hardship", depression: "hardship",
+  marriage: "relationships", relationship: "relationships", family: "relationships", reconciliation: "relationships", spouse: "relationships",
+  habit: "drawing_closer", pray: "drawing_closer", grow: "drawing_closer", closer: "drawing_closer", faith: "drawing_closer",
+};
+
+// Family → template resolver. Families without their own template fall back to drawing_closer.
+// The family tag stays accurate on the instance so Phase 5 migration can find all loss/health/etc. users.
+function templateForFamily(family: JourneyFamily): string {
+  if (family === "new_life") return "expecting";
+  if (family === "hardship") return "through_a_hard_season";
+  // loss, health, waiting, relationships → drawing_closer (no template yet)
+  return "drawing_closer";
+}
+
+// Find an existing circle tagged with this family. Never creates one.
+function circleForFamily(family: string): { code: string; name: string; family: string } | null {
+  for (const [code, circle] of circles) {
+    if ((circle as any).family === family) {
+      return { code, name: circle.name, family };
+    }
+  }
+  return null;
+}
+
+// Resolve intake text → family (keyword match, drawing_closer fallback)
+function intakeToFamily(intake: string): JourneyFamily {
+  const normalized = intake.toLowerCase().trim();
+  // Exact match first
+  if (INTAKE_TO_FAMILY[normalized]) return INTAKE_TO_FAMILY[normalized];
+  // Substring match: check if any keyword appears in the intake text
+  for (const [keyword, family] of Object.entries(INTAKE_TO_FAMILY)) {
+    if (normalized.includes(keyword)) return family;
+  }
+  return "drawing_closer";
+}
+
+app.post("/journeys/start", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { userId, intake, prayedForName } = body;
+
+    if (!userId || !intake) return c.json({ error: "userId and intake required" }, 400);
+
+    // 1. Map intake → family → template
+    const family = intakeToFamily(intake);
+    const templateKey = templateForFamily(family);
+    const template = JOURNEY_TEMPLATES[templateKey];
+    if (!template) return c.json({ error: `Template resolution failed for family=${family}` }, 500);
+
+    // 2. Idempotency guard: if user already has an active instance of this template, return it
+    const existing = await pool.query(
+      "SELECT * FROM journey_instances WHERE user_id=$1 AND template_key=$2 AND status='active' LIMIT 1",
+      [userId, templateKey]
+    );
+
+    if (existing.rows.length > 0) {
+      const instance = existing.rows[0];
+      const lang: Lang = "en"; // default for start; client can re-fetch with preferred lang
+      const day1Action = await getTodayAction(instance, lang);
+      const circle = circleForFamily(family);
+
+      return c.json({
+        instance,
+        day1Action: { type: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content },
+        circle,
+        partnerSuggestions: [],
+        isExisting: true
+      });
+    }
+
+    // 3. Create new journey instance
+    const unit = templateKey === "expecting" ? "week" : "day";
+    const lengthDays = template.lengthDays || null;
+
+    const ins = await pool.query(
+      `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [userId, templateKey, family, template.mode, unit, lengthDays, prayedForName || null]
+    );
+    const instance = ins.rows[0];
+
+    // 4. Generate Day 1 action
+    const lang: Lang = "en";
+    const day1Action = await getTodayAction(instance, lang);
+
+    // 5. Find family circle (never create)
+    const circle = circleForFamily(family);
+
+    // 6. Attach circle if found
+    if (circle) {
+      await pool.query("UPDATE journey_instances SET circle_id=$1 WHERE id=$2", [circle.code, instance.id]);
+      instance.circle_id = circle.code;
+    }
+
+    // PostHog: journey_started (only on new instance, not idempotent return)
+    trackEvent(userId, "journey_started", {
+      family,
+      template: templateKey,
+      mode: template.mode,
+      intake
+    });
+
+    console.log(`[Journey] Started: user=${userId.substring(0, 8)}... intake="${intake}" → family=${family} template=${templateKey} instance=${instance.id}`);
+
+    return c.json({
+      instance,
+      day1Action: { type: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content },
+      circle,
+      partnerSuggestions: [],
+      isExisting: false
+    }, 201);
+  } catch (err: any) {
+    console.error("[Journey] POST /journeys/start error:", err.message);
+    return c.json({ error: "Failed to start journey", detail: err.message }, 500);
   }
 });
 
