@@ -1,4 +1,4 @@
-// v5.16.4 — Journeys Phase 0-4 (schema + generator + onboarding + partners + graduation)
+// v5.16.5 — Journeys Phase 0-4 + completedToday signal + camelCase normalization
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -4974,6 +4974,7 @@ app.get("/journeys/:id/today", async (c) => {
   const instanceId = c.req.param("id");
   const langRaw = (c.req.query("lang") || "en").toLowerCase();
   const lang: Lang = (["en", "fr", "es", "pt"] as string[]).includes(langRaw) ? (langRaw as Lang) : "en";
+  const tzParam = c.req.query("tz") || "";
 
   try {
     const result = await pool.query("SELECT * FROM journey_instances WHERE id=$1", [instanceId]);
@@ -4983,6 +4984,26 @@ app.get("/journeys/:id/today", async (c) => {
     if (instance.status !== "active") return c.json({ error: "Journey is not active", status: instance.status }, 400);
 
     const action = await getTodayAction(instance, lang);
+
+    // Resolve timezone: 1) tz param, 2) user_data.last_prayed_timezone, 3) UTC
+    let resolvedTz = tzParam;
+    if (!resolvedTz) {
+      try {
+        const udRow = await pool.query("SELECT last_prayed_timezone FROM user_data WHERE user_id=$1", [instance.user_id]);
+        resolvedTz = udRow.rows[0]?.last_prayed_timezone || "";
+      } catch { /* fall through to UTC */ }
+    }
+
+    // Compute completedToday from last_action_at against today in resolved timezone
+    let completedToday = false;
+    const lastCompletedAt: string | null = instance.last_action_at ? new Date(instance.last_action_at).toISOString() : null;
+    if (lastCompletedAt) {
+      const todayStr = resolvedTz ? todayInTimezone(resolvedTz) : new Date().toISOString().split("T")[0];
+      const completedDate = resolvedTz
+        ? new Date(lastCompletedAt).toLocaleDateString("en-CA", { timeZone: resolvedTz })
+        : lastCompletedAt.split("T")[0];
+      completedToday = completedDate === todayStr;
+    }
 
     // PostHog: daily_action_viewed
     trackEvent(instance.user_id, "daily_action_viewed", {
@@ -5002,6 +5023,8 @@ app.get("/journeys/:id/today", async (c) => {
       mode: instance.mode,
       status: instance.status,
       prayedForName: instance.prayed_for_name || null,
+      completedToday,
+      lastCompletedAt,
       action: {
         type: action.type,
         phaseLabel: action.phaseLabel,
@@ -5154,6 +5177,27 @@ app.post("/journeys/start", async (c) => {
       [userId, templateKey]
     );
 
+    // Helper: normalize raw DB row to camelCase instance
+    function camelInstance(row: any) {
+      return {
+        id: row.id,
+        userId: row.user_id,
+        templateKey: row.template_key,
+        family: row.family,
+        mode: row.mode,
+        unit: row.unit,
+        lengthDays: row.length_days || null,
+        currentDay: row.current_day,
+        status: row.status,
+        prayedForName: row.prayed_for_name || null,
+        circleId: row.circle_id || null,
+        partnerId: row.partner_id || null,
+        startedAt: row.started_at,
+        lastActionAt: row.last_action_at || null,
+        openToPartner: row.open_to_partner || false,
+      };
+    }
+
     if (existing.rows.length > 0) {
       const instance = existing.rows[0];
       const lang: Lang = "en"; // default for start; client can re-fetch with preferred lang
@@ -5161,7 +5205,7 @@ app.post("/journeys/start", async (c) => {
       const circle = circleForFamily(family);
 
       return c.json({
-        instance,
+        instance: camelInstance(instance),
         day1Action: { type: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content },
         circle,
         partnerSuggestions: [],
@@ -5204,7 +5248,7 @@ app.post("/journeys/start", async (c) => {
     console.log(`[Journey] Started: user=${userId.substring(0, 8)}... intake="${intake}" → family=${family} template=${templateKey} instance=${instance.id}`);
 
     return c.json({
-      instance,
+      instance: camelInstance(instance),
       day1Action: { type: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content },
       circle,
       partnerSuggestions: [],
