@@ -1,4 +1,4 @@
-// v5.16.2 — Journeys Phase 0-2 (schema + generator + onboarding assignment)
+// v5.16.3 — Journeys Phase 0-3 (schema + generator + onboarding + partners)
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -758,7 +758,17 @@ async function initDb(): Promise<void> {
       status TEXT NOT NULL DEFAULT 'pending',
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )`);
-    console.log("DB initialized (v5.16.1 — Journeys Phase 0+1 schema)");
+    // ═══════════════════════════════════════════════════════════════════
+    // v5.16.3 — JOURNEYS Phase 3: partner privacy + blocks
+    // ═══════════════════════════════════════════════════════════════════
+    await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS open_to_partner BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+    await client.query(`CREATE TABLE IF NOT EXISTS partner_blocks (
+      blocker TEXT NOT NULL REFERENCES users(id),
+      blocked TEXT NOT NULL REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (blocker, blocked)
+    )`);
+    console.log("DB initialized (v5.16.3 — Journeys Phase 0-3 schema)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -5172,6 +5182,241 @@ app.post("/journeys/start", async (c) => {
     console.error("[Journey] POST /journeys/start error:", err.message);
     return c.json({ error: "Failed to start journey", detail: err.message }, 500);
   }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// v5.16.3 — JOURNEYS Phase 3: circles-by-family + partner system
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /journeys/:id/circle — family circle (find-or-null, never create)
+app.get("/journeys/:id/circle", async (c) => {
+  const instanceId = c.req.param("id");
+  try {
+    const result = await pool.query("SELECT family FROM journey_instances WHERE id=$1", [instanceId]);
+    if (result.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+    const circle = circleForFamily(result.rows[0].family);
+    return c.json({ circle });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// POST /journeys/:id/open-to-partner — toggle opt-in for partner suggestions
+app.post("/journeys/:id/open-to-partner", async (c) => {
+  const instanceId = c.req.param("id");
+  try {
+    const body = await c.req.json();
+    const open = body.open === true;
+    const result = await pool.query(
+      "UPDATE journey_instances SET open_to_partner=$1 WHERE id=$2 RETURNING id, user_id, open_to_partner",
+      [open, instanceId]
+    );
+    if (result.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+
+    if (open) {
+      trackEvent(result.rows[0].user_id, "partner_opted_in", { instanceId });
+    }
+
+    return c.json({ instanceId, openToPartner: open });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// GET /journeys/:id/partner-suggestions — opt-in, minimized, same-family only
+// Pre-consent: firstName + userId ONLY. No family, day, template, or tier exposed.
+app.get("/journeys/:id/partner-suggestions", async (c) => {
+  const instanceId = c.req.param("id");
+  try {
+    const inst = await pool.query("SELECT user_id, family, template_key FROM journey_instances WHERE id=$1", [instanceId]);
+    if (inst.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+    const { user_id, family, template_key } = inst.rows[0];
+
+    const suggestions = await pool.query(
+      `SELECT ji.user_id, u.name
+       FROM journey_instances ji
+       JOIN users u ON u.id = ji.user_id
+       WHERE ji.family = $1
+         AND ji.status = 'active'
+         AND ji.open_to_partner = TRUE
+         AND ji.user_id != $2
+         AND ji.partner_id IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM partner_blocks
+           WHERE (blocker=$2 AND blocked=ji.user_id)
+              OR (blocker=ji.user_id AND blocked=$2)
+         )
+       ORDER BY
+         CASE WHEN ji.template_key = $3 THEN 0 ELSE 1 END,
+         ji.started_at DESC
+       LIMIT 5`,
+      [family, user_id, template_key]
+    );
+
+    // Minimized: firstName + userId only. No family, day, template, or tier.
+    const minimized = suggestions.rows.map((r: any) => ({
+      userId: r.user_id,
+      firstName: (r.name || "").split(" ")[0] || "Someone"
+    }));
+
+    return c.json({ suggestions: minimized });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// POST /partners/request — mutual consent gate 1
+app.post("/partners/request", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { fromUser, toUser, fromInstance } = body;
+    if (!fromUser || !toUser) return c.json({ error: "fromUser and toUser required" }, 400);
+    if (fromUser === toUser) return c.json({ error: "Cannot request yourself" }, 400);
+
+    // Idempotency: if a pending request already exists between these two, return it
+    const existing = await pool.query(
+      "SELECT * FROM partner_requests WHERE from_user=$1 AND to_user=$2 AND status='pending' LIMIT 1",
+      [fromUser, toUser]
+    );
+    if (existing.rows.length > 0) {
+      return c.json({ request: existing.rows[0], isExisting: true });
+    }
+
+    // Block check
+    const blocked = await pool.query(
+      "SELECT 1 FROM partner_blocks WHERE (blocker=$1 AND blocked=$2) OR (blocker=$2 AND blocked=$1)",
+      [fromUser, toUser]
+    );
+    if (blocked.rows.length > 0) return c.json({ error: "Cannot request this user" }, 403);
+
+    const ins = await pool.query(
+      `INSERT INTO partner_requests (from_user, to_user, from_instance, status)
+       VALUES ($1, $2, $3, 'pending') RETURNING *`,
+      [fromUser, toUser, fromInstance || null]
+    );
+
+    trackEvent(fromUser, "partner_requested", { toUser, fromInstance });
+    return c.json({ request: ins.rows[0], isExisting: false }, 201);
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// POST /partners/respond — mutual consent gate 2
+app.post("/partners/respond", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { requestId, accept } = body;
+    if (!requestId || accept === undefined) return c.json({ error: "requestId and accept required" }, 400);
+
+    const req = await pool.query("SELECT * FROM partner_requests WHERE id=$1 AND status='pending'", [requestId]);
+    if (req.rows.length === 0) return c.json({ error: "Request not found or not pending" }, 404);
+    const partnerReq = req.rows[0];
+
+    if (!accept) {
+      await pool.query("UPDATE partner_requests SET status='declined' WHERE id=$1", [requestId]);
+      return c.json({ requestId, status: "declined" });
+    }
+
+    // Accept: set partner_id on both instances
+    await pool.query("UPDATE partner_requests SET status='accepted' WHERE id=$1", [requestId]);
+
+    // Find the requester's instance (from_instance)
+    const fromInst = partnerReq.from_instance
+      ? (await pool.query("SELECT * FROM journey_instances WHERE id=$1 AND status='active'", [partnerReq.from_instance])).rows[0]
+      : (await pool.query("SELECT * FROM journey_instances WHERE user_id=$1 AND status='active' ORDER BY started_at DESC LIMIT 1", [partnerReq.from_user])).rows[0];
+
+    // Find the responder's active instance in the same family
+    const toInst = fromInst
+      ? (await pool.query("SELECT * FROM journey_instances WHERE user_id=$1 AND family=$2 AND status='active' ORDER BY started_at DESC LIMIT 1", [partnerReq.to_user, fromInst.family])).rows[0]
+      : null;
+
+    if (fromInst && toInst) {
+      // Set partner_id on both — no day-sync, each walks their own day
+      await pool.query("UPDATE journey_instances SET partner_id=$1 WHERE id=$2", [partnerReq.to_user, fromInst.id]);
+      await pool.query("UPDATE journey_instances SET partner_id=$1 WHERE id=$2", [partnerReq.from_user, toInst.id]);
+    }
+
+    trackEvent(partnerReq.to_user, "partner_accepted", {
+      fromUser: partnerReq.from_user,
+      requestId
+    });
+
+    return c.json({
+      requestId,
+      status: "accepted",
+      fromInstanceId: fromInst?.id || null,
+      toInstanceId: toInst?.id || null
+    });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// POST /partners/end — immediate, optional block
+app.post("/partners/end", async (c) => {
+  try {
+    const body = await c.req.json();
+    const { instanceId, block } = body;
+    if (!instanceId) return c.json({ error: "instanceId required" }, 400);
+
+    const inst = await pool.query("SELECT * FROM journey_instances WHERE id=$1", [instanceId]);
+    if (inst.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+    const instance = inst.rows[0];
+    const partnerId = instance.partner_id;
+
+    if (!partnerId) return c.json({ error: "No partner to end" }, 400);
+
+    // Null partner_id on this instance
+    await pool.query("UPDATE journey_instances SET partner_id=NULL WHERE id=$1", [instanceId]);
+
+    // Null partner_id on partner's instance (where partner_id = this user)
+    await pool.query(
+      "UPDATE journey_instances SET partner_id=NULL WHERE user_id=$1 AND partner_id=$2 AND status='active'",
+      [partnerId, instance.user_id]
+    );
+
+    // Optional block — prevents future matching both directions
+    if (block === true) {
+      await pool.query(
+        "INSERT INTO partner_blocks (blocker, blocked) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        [instance.user_id, partnerId]
+      );
+    }
+
+    trackEvent(instance.user_id, "partner_ended", {
+      partnerId,
+      blocked: block === true
+    });
+
+    return c.json({ instanceId, partnerEnded: true, blocked: block === true });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
+// GET /journeys/:id/partner — full detail, only after mutual accept
+app.get("/journeys/:id/partner", async (c) => {
+  const instanceId = c.req.param("id");
+  try {
+    const inst = await pool.query("SELECT * FROM journey_instances WHERE id=$1", [instanceId]);
+    if (inst.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+    const instance = inst.rows[0];
+
+    if (!instance.partner_id) return c.json({ partner: null });
+
+    // Get partner's instance + user info
+    const partnerInst = await pool.query(
+      `SELECT ji.*, u.name FROM journey_instances ji
+       JOIN users u ON u.id = ji.user_id
+       WHERE ji.user_id = $1 AND ji.status = 'active'
+       ORDER BY ji.started_at DESC LIMIT 1`,
+      [instance.partner_id]
+    );
+
+    if (partnerInst.rows.length === 0) return c.json({ partner: null });
+
+    const p = partnerInst.rows[0];
+    return c.json({
+      partner: {
+        userId: p.user_id,
+        firstName: (p.name || "").split(" ")[0] || "Someone",
+        family: p.family,
+        templateKey: p.template_key,
+        currentDay: p.current_day,
+        unit: p.unit,
+        startedAt: p.started_at
+      }
+    });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
 });
 
 // Admin/debug: create a test journey instance
