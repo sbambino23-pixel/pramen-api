@@ -1,4 +1,4 @@
-// v5.15.3
+// v5.16.1 — Journeys Phase 0+1 (schema + family config + backfill + templates + generator + endpoints)
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -713,7 +713,52 @@ async function initDb(): Promise<void> {
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_outreach_platform ON outreach_contacts(platform)`);
-    console.log("DB initialized (v5.15.0 — outreach contacts tracking)");
+    // ═══════════════════════════════════════════════════════════════════
+    // v5.16.0 — JOURNEYS Phase 0: schema migrations
+    // ═══════════════════════════════════════════════════════════════════
+    // 1. Add family column to existing circles table
+    await client.query(`ALTER TABLE circles ADD COLUMN IF NOT EXISTS family TEXT`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_circles_family ON circles(family)`).catch(() => {});
+    // 2. Journey instances
+    await client.query(`CREATE TABLE IF NOT EXISTS journey_instances (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      user_id TEXT NOT NULL REFERENCES users(id),
+      template_key TEXT NOT NULL,
+      family TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      unit TEXT NOT NULL DEFAULT 'day',
+      length_days INT,
+      current_day INT NOT NULL DEFAULT 1,
+      status TEXT NOT NULL DEFAULT 'active',
+      prayed_for_name TEXT,
+      circle_id TEXT,
+      partner_id TEXT,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_action_at TIMESTAMPTZ
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ji_user ON journey_instances(user_id)`).catch(() => {});
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ji_family ON journey_instances(family)`).catch(() => {});
+    // 3. Idempotent cache of generated daily actions
+    await client.query(`CREATE TABLE IF NOT EXISTS journey_daily_actions (
+      instance_id TEXT NOT NULL REFERENCES journey_instances(id),
+      day INT NOT NULL,
+      lang TEXT NOT NULL,
+      type TEXT NOT NULL,
+      phase_label TEXT NOT NULL,
+      content_json JSONB NOT NULL,
+      generated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (instance_id, day, lang)
+    )`);
+    // 4. Partner requests (journey-aware, mutual consent)
+    await client.query(`CREATE TABLE IF NOT EXISTS partner_requests (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      from_user TEXT NOT NULL REFERENCES users(id),
+      to_user TEXT NOT NULL REFERENCES users(id),
+      from_instance TEXT REFERENCES journey_instances(id),
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    console.log("DB initialized (v5.16.1 — Journeys Phase 0+1 schema)");
   } catch (err) { console.error("DB init failed:", err); } finally { client.release(); }
 }
 
@@ -1050,6 +1095,398 @@ function seededFallbackPrayer(code: string, date: string, topic: string, lang: L
   let hash = 0;
   for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
   return pool[hash % pool.length];
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// v5.16.0 — JOURNEYS: Family config (versioned in source, not DB rows)
+// ═══════════════════════════════════════════════════════════════════
+// Each family maps to existing prayer buckets so prayer-type journey days
+// reuse the localized FALLBACK_CIRCLE_PRAYERS_BY_LANG pool — zero new authoring.
+type JourneyFamily = "loss" | "health" | "waiting" | "new_life" | "drawing_closer" | "hardship" | "relationships";
+
+interface JourneyFamilyConfig {
+  key: JourneyFamily;
+  name: Record<Lang, string>;
+  buckets: string[];  // prayer bucket keys from FALLBACK_CIRCLE_PRAYERS_BY_LANG
+}
+
+const JOURNEY_FAMILIES: JourneyFamilyConfig[] = [
+  {
+    key: "loss",
+    name: { en: "Walking Through Loss", fr: "Traverser le deuil", es: "Caminando a trav\u00e9s de la p\u00e9rdida", pt: "Caminhando atrav\u00e9s da perda" },
+    buckets: ["hardDays", "stillness"]
+  },
+  {
+    key: "health",
+    name: { en: "Facing a Health Challenge", fr: "Face \u00e0 un d\u00e9fi de sant\u00e9", es: "Enfrentando un desaf\u00edo de salud", pt: "Enfrentando um desafio de sa\u00fade" },
+    buckets: ["intercession", "morning"]
+  },
+  {
+    key: "waiting",
+    name: { en: "In a Season of Waiting", fr: "Dans une saison d\u2019attente", es: "En una temporada de espera", pt: "Numa esta\u00e7\u00e3o de espera" },
+    buckets: ["stillness", "morning"]
+  },
+  {
+    key: "new_life",
+    name: { en: "Welcoming New Life", fr: "Accueillir une nouvelle vie", es: "Dando la bienvenida a una nueva vida", pt: "Acolhendo uma nova vida" },
+    buckets: ["morning", "general"]
+  },
+  {
+    key: "drawing_closer",
+    name: { en: "Drawing Closer to God", fr: "Se rapprocher de Dieu", es: "Acerc\u00e1ndose m\u00e1s a Dios", pt: "Aproximando-se de Deus" },
+    buckets: ["morning", "night", "general"]
+  },
+  {
+    key: "hardship",
+    name: { en: "Through a Hard Season", fr: "\u00c0 travers une saison difficile", es: "A trav\u00e9s de una temporada dif\u00edcil", pt: "Atrav\u00e9s de uma esta\u00e7\u00e3o dif\u00edcil" },
+    buckets: ["hardDays", "stillness"]
+  },
+  {
+    key: "relationships",
+    name: { en: "Strengthening Relationships", fr: "Renforcer les relations", es: "Fortaleciendo relaciones", pt: "Fortalecendo rela\u00e7\u00f5es" },
+    buckets: ["intercession", "general"]
+  }
+];
+
+const JOURNEY_FAMILIES_BY_KEY: Record<string, JourneyFamilyConfig> = {};
+for (const f of JOURNEY_FAMILIES) JOURNEY_FAMILIES_BY_KEY[f.key] = f;
+
+// ═══════════════════════════════════════════════════════════════════
+// v5.16.1 — JOURNEYS Phase 1: Templates + Generator + Endpoints
+// Drop-in authored config from §K content file.
+// ═══════════════════════════════════════════════════════════════════
+
+type JourneyTone = "gentle" | "grateful" | "steadying" | "honest" | "tender" | "lifting";
+type JourneyActionType = "prayer" | "reflection" | "meditation" | "small_act";
+
+interface JourneyPhase {
+  label: Record<Lang, string>;
+  dayStart: number;
+  dayEnd: number;
+  tone: JourneyTone;
+  mix: JourneyActionType[];
+}
+
+interface JourneyTemplate {
+  key: string;
+  family: JourneyFamily;
+  mode: "fixed" | "open";
+  lengthDays?: number;
+  name: Record<Lang, string>;
+  oneLiner: Record<Lang, string>;
+  phases: JourneyPhase[];
+}
+
+interface JourneyDailyAction {
+  type: JourneyActionType;
+  phaseLabel: string;
+  content: { title: string; body: string; scriptureRef?: string; prompt?: string };
+}
+
+// -- 1. JOURNEY_TEMPLATES (3 Phase-1 starters) -----------------------
+
+const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
+  drawing_closer: {
+    key: "drawing_closer",
+    family: "drawing_closer",
+    mode: "open",
+    name: { en: "Drawing Closer", fr: "Se rapprocher", es: "M\u00e1s cerca", pt: "Mais perto" },
+    oneLiner: {
+      en: "A simple daily prayer to build the habit, one day at a time.",
+      fr: "Une pri\u00e8re quotidienne toute simple, un jour \u00e0 la fois.",
+      es: "Una oraci\u00f3n diaria sencilla, un d\u00eda a la vez.",
+      pt: "Uma ora\u00e7\u00e3o di\u00e1ria simples, um dia de cada vez.",
+    },
+    phases: [
+      { label: { en: "Arrive", fr: "Arriver", es: "Llegar", pt: "Chegar" }, dayStart: 1, dayEnd: 3, tone: "gentle", mix: ["prayer", "reflection"] },
+      { label: { en: "Make space", fr: "Faire de la place", es: "Hacer espacio", pt: "Abrir espa\u00e7o" }, dayStart: 4, dayEnd: 7, tone: "gentle", mix: ["prayer", "meditation"] },
+      { label: { en: "Give thanks", fr: "Rendre gr\u00e2ce", es: "Dar gracias", pt: "Dar gra\u00e7as" }, dayStart: 8, dayEnd: 11, tone: "grateful", mix: ["prayer", "reflection", "small_act"] },
+      { label: { en: "Carry it with you", fr: "Le garder en toi", es: "Ll\u00e9valo contigo", pt: "Leve com voc\u00ea" }, dayStart: 12, dayEnd: 9999, tone: "steadying", mix: ["prayer", "reflection", "meditation"] },
+    ],
+  },
+  through_a_hard_season: {
+    key: "through_a_hard_season",
+    family: "hardship",
+    mode: "fixed",
+    lengthDays: 30,
+    name: {
+      en: "Through a Hard Season",
+      fr: "Traverser une saison difficile",
+      es: "A trav\u00e9s de una temporada dif\u00edcil",
+      pt: "Atravessando uma fase dif\u00edcil",
+    },
+    oneLiner: {
+      en: "For when life feels heavy \u2014 30 days of walking it together.",
+      fr: "Quand la vie p\u00e8se \u2014 30 jours pour la traverser ensemble.",
+      es: "Cuando la vida pesa: 30 d\u00edas para atravesarla juntos.",
+      pt: "Quando a vida pesa: 30 dias para atravess\u00e1-la juntos.",
+    },
+    phases: [
+      { label: { en: "Steady", fr: "Tenir bon", es: "Af\u00edrmate", pt: "Firme-se" }, dayStart: 1, dayEnd: 6, tone: "steadying", mix: ["prayer", "reflection"] },
+      { label: { en: "Honest", fr: "En v\u00e9rit\u00e9", es: "Con verdad", pt: "Com verdade" }, dayStart: 7, dayEnd: 14, tone: "honest", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Held", fr: "Se laisser porter", es: "Dejarse sostener", pt: "Deixar-se amparar" }, dayStart: 15, dayEnd: 21, tone: "tender", mix: ["prayer", "meditation", "small_act"] },
+      { label: { en: "Turn", fr: "Le tournant", es: "El giro", pt: "A virada" }, dayStart: 22, dayEnd: 27, tone: "steadying", mix: ["prayer", "reflection"] },
+      { label: { en: "Lift", fr: "Reprendre souffle", es: "Respirar de nuevo", pt: "Recobrar o f\u00f4lego" }, dayStart: 28, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection"] },
+    ],
+  },
+  expecting: {
+    key: "expecting",
+    family: "new_life",
+    mode: "fixed",
+    lengthDays: 40, // UNIT = WEEKS
+    name: { en: "Expecting", fr: "En attendant b\u00e9b\u00e9", es: "En espera", pt: "\u00c0 espera" },
+    oneLiner: {
+      en: "A prayer for each week, from now until your little one arrives.",
+      fr: "Une pri\u00e8re pour chaque semaine, jusqu'\u00e0 l'arriv\u00e9e de ton petit.",
+      es: "Una oraci\u00f3n para cada semana, hasta que llegue tu peque\u00f1o.",
+      pt: "Uma ora\u00e7\u00e3o para cada semana, at\u00e9 a chegada do seu pequeno.",
+    },
+    phases: [
+      { label: { en: "Hidden beginnings", fr: "Les d\u00e9buts cach\u00e9s", es: "Comienzos ocultos", pt: "Come\u00e7os ocultos" }, dayStart: 1, dayEnd: 13, tone: "tender", mix: ["prayer", "reflection"] },
+      { label: { en: "Growing", fr: "La croissance", es: "Creciendo", pt: "Crescendo" }, dayStart: 14, dayEnd: 27, tone: "grateful", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Nearing", fr: "L'approche", es: "Se acerca", pt: "Aproximando-se" }, dayStart: 28, dayEnd: 39, tone: "steadying", mix: ["prayer", "meditation", "small_act"] },
+      { label: { en: "Arrival", fr: "L'arriv\u00e9e", es: "La llegada", pt: "A chegada" }, dayStart: 40, dayEnd: 40, tone: "lifting", mix: ["prayer", "reflection"] },
+    ],
+  },
+};
+
+// -- 2. SMALL_ACT_POOLS_BY_FAMILY ------------------------------------
+
+const SMALL_ACT_POOLS_BY_FAMILY: Record<JourneyFamily, Record<Lang, string>[]> = {
+  new_life: [
+    { en: "Place a hand where your baby rests and breathe slowly.", fr: "Pose une main l\u00e0 o\u00f9 ton b\u00e9b\u00e9 repose et respire doucement.", es: "Pon una mano donde descansa tu beb\u00e9 y respira despacio.", pt: "Coloque a m\u00e3o onde o seu beb\u00ea repousa e respire devagar." },
+    { en: "Write down one hope you have for your child.", fr: "\u00c9cris un espoir que tu portes pour ton enfant.", es: "Escribe una esperanza que tienes para tu hijo.", pt: "Escreva uma esperan\u00e7a que voc\u00ea tem para o seu filho." },
+    { en: "Say their name out loud, if you've chosen one.", fr: "Dis son pr\u00e9nom \u00e0 voix haute, si tu en as choisi un.", es: "Di su nombre en voz alta, si ya lo elegiste.", pt: "Diga o nome dele em voz alta, se j\u00e1 escolheu um." },
+    { en: "Tell someone you trust how you really feel today.", fr: "Confie \u00e0 une personne de confiance ce que tu ressens vraiment aujourd'hui.", es: "Cu\u00e9ntale a alguien de confianza c\u00f3mo te sientes de verdad hoy.", pt: "Conte a algu\u00e9m de confian\u00e7a como voc\u00ea realmente se sente hoje." },
+    { en: "Rest ten minutes without your phone.", fr: "Repose-toi dix minutes sans ton t\u00e9l\u00e9phone.", es: "Descansa diez minutos sin tu tel\u00e9fono.", pt: "Descanse dez minutos sem o celular." },
+    { en: "Write a short note for your child to read one day.", fr: "\u00c9cris un petit mot que ton enfant lira un jour.", es: "Escribe una nota breve para que tu hijo la lea alg\u00fan d\u00eda.", pt: "Escreva um bilhete curto para o seu filho ler um dia." },
+    { en: "Choose one small thing to prepare this week.", fr: "Choisis une petite chose \u00e0 pr\u00e9parer cette semaine.", es: "Elige una cosa peque\u00f1a para preparar esta semana.", pt: "Escolha uma coisa pequena para preparar esta semana." },
+    { en: "Thank your body for what it is doing.", fr: "Remercie ton corps pour ce qu\u2019il accomplit.", es: "Agradece a tu cuerpo por lo que est\u00e1 haciendo.", pt: "Agrade\u00e7a ao seu corpo pelo que ele est\u00e1 fazendo." },
+  ],
+  drawing_closer: [
+    { en: "Put your phone away for the first ten minutes after waking.", fr: "Range ton t\u00e9l\u00e9phone les dix premi\u00e8res minutes apr\u00e8s le r\u00e9veil.", es: "Deja el tel\u00e9fono los primeros diez minutos tras despertar.", pt: "Deixe o celular de lado nos primeiros dez minutos ap\u00f3s acordar." },
+    { en: "Write down one thing you are grateful for.", fr: "Note une chose pour laquelle tu es reconnaissant.", es: "Escribe una cosa por la que est\u00e9s agradecido.", pt: "Escreva uma coisa pela qual voc\u00ea \u00e9 grato." },
+    { en: "Say a short prayer for someone before you see them today.", fr: "Dis une courte pri\u00e8re pour quelqu\u2019un avant de le voir aujourd\u2019hui.", es: "Reza una oraci\u00f3n breve por alguien antes de verlo hoy.", pt: "Fa\u00e7a uma ora\u00e7\u00e3o breve por algu\u00e9m antes de v\u00ea-lo hoje." },
+    { en: "Step outside and be still for two minutes.", fr: "Sors et reste immobile deux minutes.", es: "Sal afuera y qu\u00e9date quieto dos minutos.", pt: "Saia e fique em sil\u00eancio por dois minutos." },
+    { en: "Send a kind message to someone you\u2019ve meant to reach.", fr: "Envoie un message bienveillant \u00e0 quelqu\u2019un que tu voulais joindre.", es: "Env\u00eda un mensaje amable a alguien que quer\u00edas contactar.", pt: "Envie uma mensagem gentil a algu\u00e9m que voc\u00ea queria contatar." },
+    { en: "Read one verse slowly, twice.", fr: "Lis un verset lentement, deux fois.", es: "Lee un vers\u00edculo despacio, dos veces.", pt: "Leia um vers\u00edculo devagar, duas vezes." },
+    { en: "Pause before your next meal and give thanks.", fr: "Marque une pause avant ton prochain repas et rends gr\u00e2ce.", es: "Haz una pausa antes de tu pr\u00f3xima comida y da gracias.", pt: "Fa\u00e7a uma pausa antes da pr\u00f3xima refei\u00e7\u00e3o e d\u00ea gra\u00e7as." },
+    { en: "Forgive yourself for one thing today.", fr: "Pardonne-toi une chose aujourd\u2019hui.", es: "Perd\u00f3nate una cosa hoy.", pt: "Perdoe a si mesmo por uma coisa hoje." },
+  ],
+  hardship: [
+    { en: "Name the one thing weighing on you, out loud or on paper.", fr: "Nomme ce qui te p\u00e8se le plus, \u00e0 voix haute ou par \u00e9crit.", es: "Nombra lo que m\u00e1s te pesa, en voz alta o por escrito.", pt: "D\u00ea nome ao que mais pesa em voc\u00ea, em voz alta ou no papel." },
+    { en: "Ask one person for one small piece of help today.", fr: "Demande \u00e0 une personne une petite aide aujourd\u2019hui.", es: "P\u00eddele a alguien una peque\u00f1a ayuda hoy.", pt: "Pe\u00e7a a algu\u00e9m uma pequena ajuda hoje." },
+    { en: "Step outside and breathe slowly for two minutes.", fr: "Sors et respire lentement deux minutes.", es: "Sal afuera y respira despacio dos minutos.", pt: "Saia e respire devagar por dois minutos." },
+    { en: "Write down one thing that is still good in your life.", fr: "Note une chose qui va encore bien dans ta vie.", es: "Escribe una cosa que sigue estando bien en tu vida.", pt: "Escreva uma coisa que ainda est\u00e1 boa na sua vida." },
+    { en: "Do one small task you\u2019ve been putting off.", fr: "Accomplis une petite t\u00e2che que tu repousses.", es: "Haz una peque\u00f1a tarea que has estado posponiendo.", pt: "Fa\u00e7a uma pequena tarefa que voc\u00ea vem adiando." },
+    { en: "Let yourself rest without guilt for ten minutes.", fr: "Accorde-toi dix minutes de repos sans culpabilit\u00e9.", es: "Perm\u00edtete descansar sin culpa diez minutos.", pt: "Permita-se descansar sem culpa por dez minutos." },
+    { en: "Tell someone you trust how heavy it feels.", fr: "Dis \u00e0 une personne de confiance \u00e0 quel point c\u2019est lourd.", es: "Dile a alguien de confianza lo pesado que se siente.", pt: "Diga a algu\u00e9m de confian\u00e7a como est\u00e1 pesado." },
+    { en: "Drink some water and eat something today.", fr: "Bois de l\u2019eau et mange quelque chose aujourd\u2019hui.", es: "Bebe agua y come algo hoy.", pt: "Beba \u00e1gua e coma algo hoje." },
+  ],
+  loss: [],
+  health: [],
+  waiting: [],
+  relationships: [],
+};
+
+// -- 3. REFLECTION_TEMPLATES (keyed by tone) -------------------------
+
+const REFLECTION_TEMPLATES: Record<JourneyTone, Record<Lang, string>> = {
+  gentle: {
+    en: "Where did you notice a moment of quiet today? Stay with it for one breath, and offer it up.",
+    fr: "O\u00f9 as-tu remarqu\u00e9 un moment de calme aujourd\u2019hui ? Reste avec lui le temps d\u2019un souffle, et offre-le.",
+    es: "\u00bfD\u00f3nde notaste un momento de calma hoy? Qu\u00e9date con \u00e9l un respiro y ofr\u00e9celo.",
+    pt: "Onde voc\u00ea notou um momento de calma hoje? Fique com ele por um respiro e ofere\u00e7a-o.",
+  },
+  grateful: {
+    en: "Name one gift from today you might have rushed past. Let yourself feel thankful for it.",
+    fr: "Nomme un cadeau d\u2019aujourd\u2019hui que tu as peut-\u00eatre laiss\u00e9 filer. Laisse-toi en \u00eatre reconnaissant.",
+    es: "Nombra un regalo de hoy que quiz\u00e1s pasaste por alto. Perm\u00edtete agradecerlo.",
+    pt: "D\u00ea nome a um presente de hoje que talvez voc\u00ea tenha deixado passar. Permita-se agradecer por ele.",
+  },
+  steadying: {
+    en: "What is one thing still steady beneath you right now? Rest your weight there.",
+    fr: "Qu\u2019est-ce qui reste solide sous tes pieds en ce moment ? Pose-y ton poids.",
+    es: "\u00bfQu\u00e9 sigue firme bajo tus pies ahora mismo? Apoya all\u00ed tu peso.",
+    pt: "O que ainda est\u00e1 firme sob os seus p\u00e9s agora? Apoie ali o seu peso.",
+  },
+  honest: {
+    en: "What are you carrying that you haven\u2019t said out loud? Say it here, plainly. Nothing is too much.",
+    fr: "Que portes-tu sans l\u2019avoir dit \u00e0 voix haute ? Dis-le ici, simplement. Rien n\u2019est de trop.",
+    es: "\u00bfQu\u00e9 cargas que no has dicho en voz alta? Dilo aqu\u00ed, con sencillez. Nada es demasiado.",
+    pt: "O que voc\u00ea carrega e ainda n\u00e3o disse em voz alta? Diga aqui, com simplicidade. Nada \u00e9 demais.",
+  },
+  tender: {
+    en: "Be gentle with yourself for a moment. What do you most need to hear right now?",
+    fr: "Sois doux envers toi un instant. Qu\u2019as-tu le plus besoin d\u2019entendre maintenant ?",
+    es: "S\u00e9 amable contigo un momento. \u00bfQu\u00e9 es lo que m\u00e1s necesitas escuchar ahora?",
+    pt: "Seja gentil consigo por um momento. O que voc\u00ea mais precisa ouvir agora?",
+  },
+  lifting: {
+    en: "Where did you glimpse a little light today? Let it grow as you pray.",
+    fr: "O\u00f9 as-tu entrevu un peu de lumi\u00e8re aujourd\u2019hui ? Laisse-la grandir en priant.",
+    es: "\u00bfD\u00f3nde vislumbraste un poco de luz hoy? Deja que crezca mientras rezas.",
+    pt: "Onde voc\u00ea vislumbrou um pouco de luz hoje? Deixe-a crescer enquanto reza.",
+  },
+};
+
+// -- 4. MEDITATION_TEMPLATES (keyed by tone) -------------------------
+
+const MEDITATION_TEMPLATES: Record<JourneyTone, Record<Lang, string>> = {
+  gentle: {
+    en: "Read today\u2019s verse slowly, twice. Then sit in silence and let one word settle. Carry that word with you.",
+    fr: "Lis le verset du jour lentement, deux fois. Puis reste en silence et laisse un mot se d\u00e9poser. Emporte ce mot avec toi.",
+    es: "Lee el vers\u00edculo de hoy despacio, dos veces. Luego qu\u00e9date en silencio y deja que una palabra se asiente. Ll\u00e9vala contigo.",
+    pt: "Leia o vers\u00edculo de hoje devagar, duas vezes. Depois fique em sil\u00eancio e deixe uma palavra repousar. Leve-a com voc\u00ea.",
+  },
+  grateful: {
+    en: "Receive today\u2019s verse as a gift. Rest in it without rushing. Leave with one thing to thank God for.",
+    fr: "Re\u00e7ois le verset du jour comme un cadeau. Demeure en lui sans te presser. Repars avec une raison de rendre gr\u00e2ce \u00e0 Dieu.",
+    es: "Recibe el vers\u00edculo de hoy como un regalo. Permanece en \u00e9l sin prisa. Vete con un motivo para dar gracias a Dios.",
+    pt: "Receba o vers\u00edculo de hoje como um presente. Permane\u00e7a nele sem pressa. Saia com um motivo para agradecer a Deus.",
+  },
+  steadying: {
+    en: "Let today\u2019s verse be solid ground. Breathe slowly and stand on it. Carry its steadiness into your day.",
+    fr: "Que le verset du jour soit un sol ferme. Respire lentement et tiens-toi dessus. Emporte sa stabilit\u00e9 dans ta journ\u00e9e.",
+    es: "Que el vers\u00edculo de hoy sea suelo firme. Respira despacio y af\u00edrmate en \u00e9l. Lleva su firmeza a tu d\u00eda.",
+    pt: "Que o vers\u00edculo de hoje seja ch\u00e3o firme. Respire devagar e firme-se nele. Leve a sua firmeza para o seu dia.",
+  },
+  honest: {
+    en: "Bring today\u2019s verse your real self \u2014 nothing hidden. Sit with it honestly. Let it meet you where you are.",
+    fr: "Apporte au verset du jour ton vrai visage \u2014 rien de cach\u00e9. Demeure avec lui en v\u00e9rit\u00e9. Laisse-le te rejoindre l\u00e0 o\u00f9 tu es.",
+    es: "Lleva al vers\u00edculo de hoy tu verdadero yo, sin esconder nada. Qu\u00e9date con \u00e9l con sinceridad. Deja que te encuentre donde est\u00e1s.",
+    pt: "Leve ao vers\u00edculo de hoje o seu verdadeiro eu, sem esconder nada. Fique com ele com sinceridade. Deixe-o encontrar voc\u00ea onde est\u00e1.",
+  },
+  tender: {
+    en: "Let today\u2019s verse hold you gently. Rest in it like rest itself. Carry its tenderness with you.",
+    fr: "Laisse le verset du jour te porter avec douceur. Repose-toi en lui comme dans le repos m\u00eame. Emporte sa tendresse avec toi.",
+    es: "Deja que el vers\u00edculo de hoy te sostenga con ternura. Descansa en \u00e9l como en el descanso mismo. Lleva su ternura contigo.",
+    pt: "Deixe o vers\u00edculo de hoje segurar voc\u00ea com ternura. Descanse nele como no pr\u00f3prio descanso. Leve a sua ternura com voc\u00ea.",
+  },
+  lifting: {
+    en: "Let today\u2019s verse lift your eyes. Sit with the hope in it. Carry that hope into what\u2019s next.",
+    fr: "Que le verset du jour rel\u00e8ve ton regard. Demeure avec l\u2019esp\u00e9rance qu\u2019il porte. Emporte cette esp\u00e9rance vers la suite.",
+    es: "Que el vers\u00edculo de hoy levante tu mirada. Qu\u00e9date con la esperanza que encierra. Ll\u00e9vala hacia lo que viene.",
+    pt: "Que o vers\u00edculo de hoje levante o seu olhar. Fique com a esperan\u00e7a que ele traz. Leve essa esperan\u00e7a para o que vem.",
+  },
+};
+
+// -- 5. Daily-action generator ----------------------------------------
+// SAME hash function as seededFallbackPrayer: deterministic, stable.
+
+function journeyHash(key: string): number {
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  return hash;
+}
+
+function resolveJourneyPhase(template: JourneyTemplate, currentDay: number): JourneyPhase {
+  for (const phase of template.phases) {
+    if (currentDay >= phase.dayStart && currentDay <= phase.dayEnd) return phase;
+  }
+  // Open journeys past last phase: repeat final phase
+  return template.phases[template.phases.length - 1];
+}
+
+async function getTodayAction(instance: any, lang: Lang): Promise<JourneyDailyAction> {
+  const day = instance.current_day;
+  const instanceId = instance.id;
+  const family: JourneyFamily = instance.family;
+  const templateKey = instance.template_key;
+  const prayedForName: string | null = instance.prayed_for_name || null;
+
+  // 1. CHECK CACHE — idempotency guarantee
+  try {
+    const cached = await pool.query(
+      "SELECT type, phase_label, content_json FROM journey_daily_actions WHERE instance_id=$1 AND day=$2 AND lang=$3",
+      [instanceId, day, lang]
+    );
+    if (cached.rows.length > 0) {
+      const row = cached.rows[0];
+      return { type: row.type as JourneyActionType, phaseLabel: row.phase_label, content: row.content_json };
+    }
+  } catch (err: any) { console.error("[Journey] Cache read error:", err.message); }
+
+  // 2. Resolve phase
+  const template = JOURNEY_TEMPLATES[templateKey];
+  if (!template) throw new Error(`Unknown journey template: ${templateKey}`);
+  const phase = resolveJourneyPhase(template, day);
+
+  // 3. Pick type deterministically
+  const hashKey = instanceId + ":" + day;
+  const h = journeyHash(hashKey);
+  const actionType = phase.mix[h % phase.mix.length];
+
+  // 4. Dispatch by type
+  let content: { title: string; body: string; scriptureRef?: string; prompt?: string };
+  const phaseLabel = phase.label[lang] || phase.label.en;
+
+  switch (actionType) {
+    case "prayer": {
+      const familyConfig = JOURNEY_FAMILIES_BY_KEY[family];
+      const buckets = familyConfig?.buckets || ["general"];
+      const bucket = buckets[day % buckets.length];
+      // Reuse seededFallbackPrayer with a synthetic code derived from instance ID
+      const syntheticCode = instanceId.substring(0, 8);
+      const syntheticDate = String(day);
+      const prayerText = seededFallbackPrayer(syntheticCode, syntheticDate, bucket, lang);
+      let title = lang === "fr" ? "Pri\u00e8re du jour" : lang === "es" ? "Oraci\u00f3n del d\u00eda" : lang === "pt" ? "Ora\u00e7\u00e3o do dia" : "Today's prayer";
+      let body = prayerText;
+      if (prayedForName) {
+        const forPrefix = lang === "fr" ? `Aujourd\u2019hui nous prions pour ${prayedForName}. ` : lang === "es" ? `Hoy oramos por ${prayedForName}. ` : lang === "pt" ? `Hoje oramos por ${prayedForName}. ` : `Today we pray for ${prayedForName}. `;
+        body = forPrefix + body;
+      }
+      content = { title, body };
+      break;
+    }
+    case "reflection": {
+      const reflText = REFLECTION_TEMPLATES[phase.tone]?.[lang] || REFLECTION_TEMPLATES[phase.tone]?.en || REFLECTION_TEMPLATES.gentle.en;
+      let title = lang === "fr" ? "R\u00e9flexion" : lang === "es" ? "Reflexi\u00f3n" : lang === "pt" ? "Reflex\u00e3o" : "Reflection";
+      let body = reflText;
+      if (prayedForName) {
+        body = body + (lang === "fr" ? ` Porte ${prayedForName} dans ta pri\u00e8re.` : lang === "es" ? ` Lleva a ${prayedForName} en tu oraci\u00f3n.` : lang === "pt" ? ` Leve ${prayedForName} na sua ora\u00e7\u00e3o.` : ` Carry ${prayedForName} in your prayer.`);
+      }
+      content = { title, body, prompt: reflText };
+      break;
+    }
+    case "meditation": {
+      const medText = MEDITATION_TEMPLATES[phase.tone]?.[lang] || MEDITATION_TEMPLATES[phase.tone]?.en || MEDITATION_TEMPLATES.gentle.en;
+      let title = lang === "fr" ? "M\u00e9ditation" : lang === "es" ? "Meditaci\u00f3n" : lang === "pt" ? "Medita\u00e7\u00e3o" : "Meditation";
+      let body = medText;
+      if (prayedForName) {
+        body = body + (lang === "fr" ? ` Porte ${prayedForName} dans ta pri\u00e8re.` : lang === "es" ? ` Lleva a ${prayedForName} en tu oraci\u00f3n.` : lang === "pt" ? ` Leve ${prayedForName} na sua ora\u00e7\u00e3o.` : ` Carry ${prayedForName} in your prayer.`);
+      }
+      content = { title, body };
+      break;
+    }
+    case "small_act": {
+      const actsPool = SMALL_ACT_POOLS_BY_FAMILY[family] || [];
+      if (actsPool.length === 0) {
+        // Fallback to drawing_closer pool if family pool is empty
+        const fallbackPool = SMALL_ACT_POOLS_BY_FAMILY.drawing_closer;
+        const act = fallbackPool[h % fallbackPool.length];
+        const actText = act[lang] || act.en;
+        content = { title: lang === "fr" ? "Petit geste" : lang === "es" ? "Peque\u00f1o gesto" : lang === "pt" ? "Pequeno gesto" : "Small act", body: actText };
+      } else {
+        const act = actsPool[h % actsPool.length];
+        const actText = act[lang] || act.en;
+        content = { title: lang === "fr" ? "Petit geste" : lang === "es" ? "Peque\u00f1o gesto" : lang === "pt" ? "Pequeno gesto" : "Small act", body: actText };
+      }
+      break;
+    }
+    default:
+      content = { title: "Prayer", body: "Take a moment to pray." };
+  }
+
+  // 5. Cache — INSERT ON CONFLICT DO NOTHING for idempotency
+  try {
+    await pool.query(
+      "INSERT INTO journey_daily_actions (instance_id, day, lang, type, phase_label, content_json) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (instance_id, day, lang) DO NOTHING",
+      [instanceId, day, lang, actionType, phaseLabel, JSON.stringify(content)]
+    );
+  } catch (err: any) { console.error("[Journey] Cache write error:", err.message); }
+
+  return { type: actionType, phaseLabel, content };
 }
 
 const PRAYER_LANG_NAMES: Record<string, string> = { en: "English", fr: "French", es: "Latin-American Spanish", pt: "Brazilian Portuguese" };
@@ -4457,10 +4894,287 @@ app.get("/dashboard", (c) => {
   try { return c.html(readFileSync("./dashboard.html", "utf-8")); } catch { return c.text("dashboard.html not found", 404); }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// v5.16.0 — JOURNEYS endpoints (Phase 0)
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /journeys/families — returns the 7 families with localized names
+app.get("/journeys/families", (c) => {
+  return c.json({
+    families: JOURNEY_FAMILIES.map(f => ({
+      key: f.key,
+      name: f.name,
+      buckets: f.buckets
+    }))
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// v5.16.1 — JOURNEYS Phase 1 endpoints
+// ═══════════════════════════════════════════════════════════════════
+
+// GET /journeys/templates?family= — returns templates, optionally filtered
+app.get("/journeys/templates", (c) => {
+  const familyFilter = c.req.query("family") || "";
+  let templates = Object.values(JOURNEY_TEMPLATES);
+  if (familyFilter) {
+    templates = templates.filter(t => t.family === familyFilter);
+  }
+  return c.json({
+    templates: templates.map(t => ({
+      key: t.key,
+      family: t.family,
+      mode: t.mode,
+      lengthDays: t.lengthDays || null,
+      unit: t.key === "expecting" ? "week" : "day",
+      name: t.name,
+      oneLiner: t.oneLiner,
+      phases: t.phases.map(p => ({
+        label: p.label,
+        dayStart: p.dayStart,
+        dayEnd: p.dayEnd,
+        tone: p.tone,
+        mixTypes: p.mix
+      }))
+    }))
+  });
+});
+
+// GET /journeys/:id/today?lang=en — generates + caches + returns today's action
+app.get("/journeys/:id/today", async (c) => {
+  const instanceId = c.req.param("id");
+  const langRaw = (c.req.query("lang") || "en").toLowerCase();
+  const lang: Lang = (["en", "fr", "es", "pt"] as string[]).includes(langRaw) ? (langRaw as Lang) : "en";
+
+  try {
+    const result = await pool.query("SELECT * FROM journey_instances WHERE id=$1", [instanceId]);
+    if (result.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+    const instance = result.rows[0];
+
+    if (instance.status !== "active") return c.json({ error: "Journey is not active", status: instance.status }, 400);
+
+    const action = await getTodayAction(instance, lang);
+
+    // PostHog: daily_action_viewed
+    trackEvent(instance.user_id, "daily_action_viewed", {
+      type: action.type,
+      day: instance.current_day,
+      family: instance.family,
+      template: instance.template_key,
+      lang
+    });
+
+    return c.json({
+      instanceId: instance.id,
+      templateKey: instance.template_key,
+      family: instance.family,
+      currentDay: instance.current_day,
+      unit: instance.unit,
+      mode: instance.mode,
+      status: instance.status,
+      prayedForName: instance.prayed_for_name || null,
+      action: {
+        type: action.type,
+        phaseLabel: action.phaseLabel,
+        content: action.content
+      }
+    });
+  } catch (err: any) {
+    console.error("[Journey] GET /today error:", err.message);
+    return c.json({ error: "Failed to get today's action", detail: err.message }, 500);
+  }
+});
+
+// POST /journeys/:id/complete-day — advances current_day, checks graduation
+app.post("/journeys/:id/complete-day", async (c) => {
+  const instanceId = c.req.param("id");
+
+  try {
+    const result = await pool.query("SELECT * FROM journey_instances WHERE id=$1", [instanceId]);
+    if (result.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+    const instance = result.rows[0];
+
+    if (instance.status !== "active") return c.json({ error: "Journey is not active", status: instance.status }, 400);
+
+    const template = JOURNEY_TEMPLATES[instance.template_key];
+    const isExpecting = instance.unit === "week";
+    const advanceBy = 1; // always 1 (represents 1 day or 1 week depending on unit)
+    const newDay = instance.current_day + advanceBy;
+
+    // PostHog: daily_action_completed
+    trackEvent(instance.user_id, "daily_action_completed", {
+      type: "complete",
+      day: instance.current_day,
+      family: instance.family,
+      template: instance.template_key
+    });
+
+    // Check graduation for fixed journeys
+    if (instance.mode === "fixed" && instance.length_days && newDay > instance.length_days) {
+      await pool.query(
+        "UPDATE journey_instances SET status='graduated', current_day=$1, last_action_at=NOW() WHERE id=$2",
+        [instance.current_day, instanceId]
+      );
+      return c.json({
+        instanceId,
+        status: "graduated",
+        currentDay: instance.current_day,
+        unit: instance.unit,
+        message: isExpecting
+          ? "Your journey is complete. Welcome to this new chapter."
+          : "You made it through. This season shaped you."
+      });
+    }
+
+    // Advance
+    await pool.query(
+      "UPDATE journey_instances SET current_day=$1, last_action_at=NOW() WHERE id=$2",
+      [newDay, instanceId]
+    );
+
+    return c.json({
+      instanceId,
+      status: "active",
+      previousDay: instance.current_day,
+      currentDay: newDay,
+      unit: instance.unit
+    });
+  } catch (err: any) {
+    console.error("[Journey] POST /complete-day error:", err.message);
+    return c.json({ error: "Failed to complete day", detail: err.message }, 500);
+  }
+});
+
+// Admin/debug: create a test journey instance
+app.post("/journeys/admin/create-instance", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+
+  try {
+    const body = await c.req.json();
+    const { userId, templateKey, prayedForName } = body;
+
+    if (!userId || !templateKey) return c.json({ error: "userId and templateKey required" }, 400);
+
+    const template = JOURNEY_TEMPLATES[templateKey];
+    if (!template) return c.json({ error: `Unknown template: ${templateKey}. Available: ${Object.keys(JOURNEY_TEMPLATES).join(", ")}` }, 400);
+
+    const unit = templateKey === "expecting" ? "week" : "day";
+    const lengthDays = template.lengthDays || null;
+
+    const ins = await pool.query(
+      `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [userId, templateKey, template.family, template.mode, unit, lengthDays, prayedForName || null]
+    );
+
+    const instance = ins.rows[0];
+
+    // PostHog: journey_started
+    trackEvent(userId, "journey_started", {
+      family: template.family,
+      template: templateKey,
+      mode: template.mode
+    });
+
+    console.log(`[Journey] Created instance ${instance.id} for user ${userId.substring(0, 8)}... template=${templateKey} family=${template.family}`);
+
+    return c.json({ instance }, 201);
+  } catch (err: any) {
+    console.error("[Journey] Admin create error:", err.message);
+    return c.json({ error: "Failed to create instance", detail: err.message }, 500);
+  }
+});
+
+// Admin/debug: list journey instances for a user
+app.get("/journeys/admin/instances", async (c) => {
+  const secret = c.req.query("key") || c.req.header("X-Dashboard-Key");
+  if (secret !== DASHBOARD_SECRET) return c.json({ error: "Unauthorized" }, 401);
+  const userId = c.req.query("userId");
+  if (!userId) return c.json({ error: "?userId= required" }, 400);
+  try {
+    const result = await pool.query("SELECT * FROM journey_instances WHERE user_id=$1 ORDER BY started_at DESC", [userId]);
+    return c.json({ instances: result.rows });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
 // ─── Start ───────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || "3000", 10);
 async function start() {
   await initDb(); await loadAllFromDb();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.16.0 — JOURNEYS Phase 0: backfill circles.family
+  // Additive only, reversible. Default everything to 'drawing_closer',
+  // then best-effort upgrade from circle name/topic data.
+  // To undo: UPDATE circles SET family = 'drawing_closer';
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    try {
+      // Only run if there are circles with NULL family
+      const nullCount = await pool.query("SELECT COUNT(*) as cnt FROM circles WHERE family IS NULL");
+      if (parseInt(nullCount.rows[0]?.cnt || "0") === 0) return;
+
+      console.log("[Journeys backfill] Found circles with NULL family — running backfill...");
+
+      // Step 1: Default all NULL families to 'drawing_closer'
+      await pool.query("UPDATE circles SET family = 'drawing_closer' WHERE family IS NULL");
+
+      // Step 2: Best-effort keyword mapping from circle data (name, description, topics in JSONB)
+      // We inspect the JSONB 'data' column for circle name and any topic/description fields.
+      const allCircles = await pool.query("SELECT code, data FROM circles");
+      let mapped: Record<string, number> = { loss: 0, health: 0, waiting: 0, new_life: 0, drawing_closer: 0, hardship: 0, relationships: 0 };
+      const familyKeywords: Record<string, string[]> = {
+        loss: ["grief", "loss", "mourning", "died", "death", "passed away", "bereavement", "memorial"],
+        health: ["health", "illness", "sick", "cancer", "surgery", "hospital", "healing", "recovery", "diagnosis", "treatment"],
+        waiting: ["waiting", "patience", "infertility", "adoption", "job search", "uncertainty"],
+        new_life: ["expecting", "pregnancy", "pregnant", "baby", "newborn", "new parent", "parenthood", "birth"],
+        hardship: ["hard season", "difficult", "struggle", "trial", "hardship", "crisis", "anxiety", "depression", "stress"],
+        relationships: ["marriage", "relationship", "family", "spouse", "husband", "wife", "friend", "reconciliation", "forgiveness", "couple"]
+      };
+
+      for (const row of allCircles.rows) {
+        const data = row.data as any;
+        const searchText = [
+          data?.name || "",
+          data?.description || "",
+          data?.topic || "",
+          ...(data?.prayerRequests || []).map((pr: any) => pr.text || "")
+        ].join(" ").toLowerCase();
+
+        let bestFamily: string | null = null;
+        let bestScore = 0;
+
+        for (const [family, keywords] of Object.entries(familyKeywords)) {
+          let score = 0;
+          for (const kw of keywords) {
+            if (searchText.includes(kw)) score++;
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            bestFamily = family;
+          }
+        }
+
+        if (bestFamily && bestScore > 0) {
+          await pool.query("UPDATE circles SET family = $1 WHERE code = $2", [bestFamily, row.code]);
+          // Also update in-memory circle data
+          const circle = circles.get(row.code);
+          if (circle) (circle as any).family = bestFamily;
+          mapped[bestFamily] = (mapped[bestFamily] || 0) + 1;
+        } else {
+          mapped.drawing_closer = (mapped.drawing_closer || 0) + 1;
+        }
+      }
+
+      // Log distribution for sanity check
+      console.log("[Journeys backfill] Circle family distribution:");
+      for (const [family, count] of Object.entries(mapped)) {
+        if (count > 0) console.log(`  ${family}: ${count}`);
+      }
+      console.log(`[Journeys backfill] Total: ${allCircles.rows.length} circles processed`);
+    } catch (err: any) { console.error("[Journeys backfill]", err.message); }
+  })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
   // Users who were auto-assigned 'trial' on signup but never actually subscribed via RevenueCat
