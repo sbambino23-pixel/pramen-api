@@ -1,4 +1,4 @@
-// v5.16.6 — Fix circleForFamily: load family column from DB into memory + tag community circles
+// v5.16.7 — Add journeyDisplayName, displayName on responses, GET /users/:userId/active-journey
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -1160,6 +1160,29 @@ const JOURNEY_FAMILIES: JourneyFamilyConfig[] = [
 
 const JOURNEY_FAMILIES_BY_KEY: Record<string, JourneyFamilyConfig> = {};
 for (const f of JOURNEY_FAMILIES) JOURNEY_FAMILIES_BY_KEY[f.key] = f;
+
+// ─── Journey display names (user-facing, localized) ─────────────
+const JOURNEY_DISPLAY_NAMES: Record<string, Record<Lang, string>> = {
+  drawing_closer:        { en: "Drawing Closer to God", fr: "Se rapprocher de Dieu", es: "Acercándose a Dios", pt: "Aproximando-se de Deus" },
+  through_a_hard_season: { en: "Through a Hard Season", fr: "Traverser une saison difficile", es: "A través de una temporada difícil", pt: "Atravessando uma fase difícil" },
+  expecting:             { en: "Expecting a Child", fr: "En attendant bébé", es: "En espera", pt: "À espera" },
+};
+const JOURNEY_FAMILY_DISPLAY_FALLBACK: Record<string, Record<Lang, string>> = {
+  loss:          { en: "Carrying a Loss", fr: "Porter un deuil", es: "Cargando una pérdida", pt: "Carregando uma perda" },
+  health:        { en: "Through a Health Challenge", fr: "Face à un défi de santé", es: "Enfrentando un desafío de salud", pt: "Enfrentando um desafio de saúde" },
+  waiting:       { en: "Waiting on God", fr: "Dans l'attente de Dieu", es: "Esperando en Dios", pt: "Esperando em Deus" },
+  relationships: { en: "Navigating a Relationship", fr: "Naviguer une relation", es: "Navegando una relación", pt: "Navegando um relacionamento" },
+};
+function journeyDisplayName(templateKey: string, family: string, lang: Lang): string {
+  const byTemplate = JOURNEY_DISPLAY_NAMES[templateKey];
+  if (byTemplate) return byTemplate[lang] || byTemplate.en;
+  const byFamily = JOURNEY_FAMILY_DISPLAY_FALLBACK[family];
+  if (byFamily) return byFamily[lang] || byFamily.en;
+  // Ultimate fallback: use the JOURNEY_FAMILIES name
+  const familyConfig = JOURNEY_FAMILIES_BY_KEY[family];
+  if (familyConfig) return familyConfig.name[lang] || familyConfig.name.en;
+  return templateKey;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // v5.16.1 — JOURNEYS Phase 1: Templates + Generator + Endpoints
@@ -5018,6 +5041,7 @@ app.get("/journeys/:id/today", async (c) => {
       instanceId: instance.id,
       templateKey: instance.template_key,
       family: instance.family,
+      displayName: journeyDisplayName(instance.template_key, instance.family, lang),
       currentDay: instance.current_day,
       unit: instance.unit,
       mode: instance.mode,
@@ -5178,12 +5202,13 @@ app.post("/journeys/start", async (c) => {
     );
 
     // Helper: normalize raw DB row to camelCase instance
-    function camelInstance(row: any) {
+    function camelInstance(row: any, displayLang: Lang = "en") {
       return {
         id: row.id,
         userId: row.user_id,
         templateKey: row.template_key,
         family: row.family,
+        displayName: journeyDisplayName(row.template_key, row.family, displayLang),
         mode: row.mode,
         unit: row.unit,
         lengthDays: row.length_days || null,
@@ -5628,6 +5653,62 @@ app.get("/journeys/admin/instances", async (c) => {
   } catch (err: any) { return c.json({ error: err.message }, 500); }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// v5.16.7 — GET /users/:userId/active-journey
+// ═══════════════════════════════════════════════════════════════════
+
+app.get("/users/:userId/active-journey", async (c) => {
+  const userId = c.req.param("userId");
+  const langRaw = (c.req.query("lang") || "en").toLowerCase();
+  const lang: Lang = (["en", "fr", "es", "pt"] as string[]).includes(langRaw) ? (langRaw as Lang) : "en";
+
+  try {
+    const result = await pool.query(
+      "SELECT * FROM journey_instances WHERE user_id=$1 AND status='active' ORDER BY started_at DESC LIMIT 1",
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return c.json({ instance: null });
+    }
+
+    const row = result.rows[0];
+    const templateKey = row.template_key;
+    const family: string = row.family;
+    const template = JOURNEY_TEMPLATES[templateKey];
+
+    // Resolve phase label
+    let phaseLabel: string | null = null;
+    if (template) {
+      const phase = resolveJourneyPhase(template, row.current_day);
+      phaseLabel = phase.label[lang] || phase.label.en;
+    }
+
+    // Resolve circle
+    const circle = circleForFamily(family);
+
+    return c.json({
+      instance: {
+        id: row.id,
+        userId: row.user_id,
+        family: row.family,
+        templateKey: row.template_key,
+        displayName: journeyDisplayName(templateKey, family, lang),
+        currentDay: row.current_day,
+        unit: row.unit,
+        mode: row.mode,
+        status: row.status,
+        prayedForName: row.prayed_for_name || null,
+        phaseLabel,
+      },
+      circle,
+    });
+  } catch (err: any) {
+    console.error("[Journey] GET /users/:userId/active-journey error:", err.message);
+    return c.json({ error: "Failed to fetch active journey", detail: err.message }, 500);
+  }
+});
+
 // ─── Start ───────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT || "3000", 10);
 async function start() {
@@ -5656,7 +5737,7 @@ async function start() {
   })();
 
   // ═══════════════════════════════════════════════════════════════════
-  // v5.16.6 — Tag the 5 community circles with correct families
+  // v5.16.6/7 — Tag the 5 community circles with correct families
   // Runs every startup (idempotent — WHERE code = ... is always safe).
   // ═══════════════════════════════════════════════════════════════════
   (async () => {
