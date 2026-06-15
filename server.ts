@@ -1,4 +1,4 @@
-// v5.16.5 — Journeys Phase 0-4 + completedToday signal + camelCase normalization
+// v5.16.6 — Fix circleForFamily: load family column from DB into memory + tag community circles
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -774,8 +774,8 @@ async function initDb(): Promise<void> {
 
 // ─── Circle Cache ────────────────────────────────────────────────────
 const circles = new Map<string, StoredCircle>();
-async function loadAllFromDb(): Promise<void> { try { const r = await pool.query("SELECT code, data FROM circles"); for (const row of r.rows) circles.set(row.code, row.data as StoredCircle); console.log(`Loaded ${circles.size} circles`); } catch (err) { console.error("Load circles:", err); } }
-async function saveCircleToDb(circle: StoredCircle): Promise<void> { const k = circle.code.toUpperCase(); circles.set(k, circle); try { await pool.query(`INSERT INTO circles (code,data,updated_at) VALUES ($1,$2,NOW()) ON CONFLICT (code) DO UPDATE SET data=$2,updated_at=NOW()`, [k, JSON.stringify(circle)]); } catch (err) { console.error("Save circle:", err); } }
+async function loadAllFromDb(): Promise<void> { try { const r = await pool.query("SELECT code, data, family FROM circles"); for (const row of r.rows) { const circle = row.data as StoredCircle; (circle as any).family = row.family || "drawing_closer"; circles.set(row.code, circle); } console.log(`Loaded ${circles.size} circles`); } catch (err) { console.error("Load circles:", err); } }
+async function saveCircleToDb(circle: StoredCircle): Promise<void> { const k = circle.code.toUpperCase(); circles.set(k, circle); const family = (circle as any).family || "drawing_closer"; try { await pool.query(`INSERT INTO circles (code,data,family,updated_at) VALUES ($1,$2,$3,NOW()) ON CONFLICT (code) DO UPDATE SET data=$2,family=$3,updated_at=NOW()`, [k, JSON.stringify(circle), family]); } catch (err) { console.error("Save circle:", err); } }
 async function deleteCircleFromDb(code: string): Promise<boolean> { const k = code.toUpperCase(); const e = circles.delete(k); try { await pool.query("DELETE FROM circles WHERE code=$1", [k]); } catch {} return e; }
 function getCircle(code: string): StoredCircle | undefined { return circles.get(code.toUpperCase()); }
 function generateCircleCode(): string { const ch = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; let c = ""; for (let i = 0; i < 6; i++) c += ch[Math.floor(Math.random() * ch.length)]; if (circles.has(c)) return generateCircleCode(); return c; }
@@ -5653,6 +5653,28 @@ async function start() {
       console.log("[Journeys backfill] Circle family distribution:");
       for (const row of dist.rows) console.log(`  ${row.family}: ${row.count}`);
     } catch (err: any) { console.error("[Journeys backfill]", err.message); }
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.16.6 — Tag the 5 community circles with correct families
+  // Runs every startup (idempotent — WHERE code = ... is always safe).
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    try {
+      const communityFamilies: { code: string; family: string }[] = [
+        { code: "LE2AA4", family: "drawing_closer" }, // Morning Prayers
+        { code: "DS8RSY", family: "drawing_closer" }, // Night Prayers
+        { code: "Z4KTHN", family: "hardship" },       // Prayers for Hard Days
+        { code: "NGZX5G", family: "waiting" },        // Stillness & Rest
+        { code: "TW6HHP", family: "relationships" },  // Pray for Each Other
+      ];
+      for (const { code, family } of communityFamilies) {
+        await pool.query("UPDATE circles SET family = $1 WHERE code = $2", [family, code]);
+      }
+      // Reload in-memory cache so circleForFamily() sees the updated tags immediately
+      await loadAllFromDb();
+      console.log("[v5.16.6] Community circle families tagged + cache reloaded");
+    } catch (err: any) { console.error("[v5.16.6 community families]", err.message); }
   })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
