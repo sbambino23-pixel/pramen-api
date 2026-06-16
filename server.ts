@@ -5340,7 +5340,7 @@ function intakeToFamily(intake: string): JourneyFamily {
 app.post("/journeys/start", async (c) => {
   try {
     const body = await c.req.json();
-    const { userId, intake, prayedForName } = body;
+    const { userId, intake, prayedForName, lengthDays: bodyLengthDays } = body;
 
     if (!userId || !intake) return c.json({ error: "userId and intake required" }, 400);
 
@@ -5395,7 +5395,7 @@ app.post("/journeys/start", async (c) => {
 
     // 3. Create new journey instance
     const unit = templateKey === "expecting" ? "week" : "day";
-    const lengthDays = template.lengthDays || null;
+    const lengthDays = bodyLengthDays || template.lengthDays || null;
 
     const ins = await pool.query(
       `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name)
@@ -5437,6 +5437,29 @@ app.post("/journeys/start", async (c) => {
   } catch (err: any) {
     console.error("[Journey] POST /journeys/start error:", err.message);
     return c.json({ error: "Failed to start journey", detail: err.message }, 500);
+  }
+});
+
+// PATCH /journeys/:id/set-length — update journey length after creation
+app.post("/journeys/:id/set-length", async (c) => {
+  try {
+    const instanceId = c.req.param("id");
+    const body = await c.req.json();
+    const { lengthDays } = body;
+    if (!lengthDays || typeof lengthDays !== "number" || lengthDays < 1) {
+      return c.json({ error: "lengthDays must be a positive number" }, 400);
+    }
+    const result = await pool.query(
+      "UPDATE journey_instances SET length_days=$1 WHERE id=$2 AND status='active' RETURNING id, length_days",
+      [lengthDays, instanceId]
+    );
+    if (result.rows.length === 0) {
+      return c.json({ error: "Journey not found or not active" }, 404);
+    }
+    return c.json({ ok: true, lengthDays: result.rows[0].length_days });
+  } catch (err: any) {
+    console.error("[Journey] POST /journeys/:id/set-length error:", err.message);
+    return c.json({ error: "Failed to update journey length", detail: err.message }, 500);
   }
 });
 
