@@ -5455,6 +5455,85 @@ app.get("/journeys/:id/circle", async (c) => {
   } catch (err: any) { return c.json({ error: err.message }, 500); }
 });
 
+// GET /journeys/:id/todays-request — select eligible circle prayer request for today's journey action
+function isReceivingPhase(templateKey: string, currentDay: number): boolean {
+  // Grief Phase 1: days 1-10 are "receiving" — user is being carried, not carrying others
+  if (templateKey === "walking_through_grief" && currentDay <= 10) return true;
+  // All other phases are "outward"
+  return false;
+}
+
+app.get("/journeys/:id/todays-request", async (c) => {
+  const instanceId = c.req.param("id");
+  try {
+    const result = await pool.query("SELECT * FROM journey_instances WHERE id=$1", [instanceId]);
+    if (result.rows.length === 0) return c.json({ error: "Journey instance not found" }, 404);
+
+    const instance = result.rows[0];
+
+    // PHASE GATE: receiving phase → no outward action
+    if (isReceivingPhase(instance.template_key, instance.current_day)) {
+      return c.json({ request: null, reason: "receiving_phase" });
+    }
+
+    // Find matched circle: prefer instance's circle_id, fall back to circleForFamily
+    const circleCode: string | null = instance.circle_id || (() => {
+      const fc = circleForFamily(instance.family);
+      return fc ? fc.code : null;
+    })();
+
+    if (!circleCode) {
+      return c.json({ request: null, reason: "no_circle" });
+    }
+
+    const circle = circles.get(circleCode);
+    if (!circle) {
+      return c.json({ request: null, reason: "no_circle" });
+    }
+
+    const userId: string = instance.user_id;
+
+    // Filter eligible requests:
+    // - posted by someone else
+    // - user hasn't lit a candle (not in prayedByUserIds)
+    // - no answered status filter deferred (B deferred per spec)
+    const eligible = (circle.prayerRequests || []).filter((req: StoredPrayerRequest) => {
+      if (req.requesterUserId === userId) return false;
+      if ((req.prayedByUserIds || []).includes(userId)) return false;
+      return true;
+    });
+
+    if (eligible.length === 0) {
+      return c.json({ request: null, reason: "no_eligible" });
+    }
+
+    // Pick lowest prayingCount; tie-break by newest timestamp
+    eligible.sort((a: StoredPrayerRequest, b: StoredPrayerRequest) => {
+      const countDiff = (a.prayedByUserIds?.length ?? 0) - (b.prayedByUserIds?.length ?? 0);
+      if (countDiff !== 0) return countDiff;
+      return new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime();
+    });
+
+    const chosen = eligible[0];
+    const requesterFirstName = chosen.isAnonymous ? "Someone" : (chosen.requesterName || "Someone").split(" ")[0];
+
+    return c.json({
+      request: {
+        remoteId: chosen.id,
+        requesterName: chosen.isAnonymous ? "Someone" : chosen.requesterName,
+        requesterFirstName,
+        text: chosen.text,
+        prayingCount: chosen.prayedByUserIds?.length ?? 0,
+        timestamp: chosen.timestamp,
+      },
+      reason: "eligible",
+    });
+  } catch (err: any) {
+    console.error("[Journey] GET /todays-request error:", err.message);
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // POST /journeys/:id/open-to-partner — toggle opt-in for partner suggestions
 app.post("/journeys/:id/open-to-partner", async (c) => {
   const instanceId = c.req.param("id");
