@@ -1760,7 +1760,7 @@ app.post("/api/admin/upload-video", async (c) => {
   } catch (err: any) { return c.json({ error: "Internal error", detail: err.message }, 500); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.14.8", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.16.8", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -5756,6 +5756,34 @@ async function start() {
       await loadAllFromDb();
       console.log("[v5.16.6] Community circle families tagged + cache reloaded");
     } catch (err: any) { console.error("[v5.16.6 community families]", err.message); }
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.16.8 — One-time junk circle cleanup
+  // Deletes clearly-junk circles (test, single-char, emoji, gibberish).
+  // Flags ambiguous ones for Samy to confirm.
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const JUNK_CODES = ["CHHUPK","ZYXGL4","BXDJEE","S89DKV","7FRGYM","Q6ZDWG","T6MCY4",
+      "374KXB","Q5L5G3","N7D322","EP5VGN","Y9VXRY","VYD3S5","YYQ6M4","6Q8365","TDCNDT","VGTVLK","93QLZF"];
+    const FLAGGED_CODES = ["QGV3C5","2LK27T","TT449W","DVQPFP"];
+    try {
+      const delResult = await pool.query(
+        "DELETE FROM circles WHERE code = ANY($1) RETURNING code, data->>'name' as name",
+        [JUNK_CODES]
+      );
+      if (delResult.rows.length > 0) {
+        console.log(`[Cleanup] Deleted ${delResult.rows.length} junk circles:`);
+        for (const r of delResult.rows) {
+          console.log(`  ${r.code}: "${r.name}"`);
+          circles.delete(r.code);
+        }
+      }
+      for (const code of FLAGGED_CODES) {
+        const c = circles.get(code);
+        if (c) console.log(`[Cleanup] FLAGGED for Samy: ${code} "${c.name}" — confirm delete`);
+      }
+    } catch (err: any) { console.error("[Cleanup]", err.message); }
   })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
