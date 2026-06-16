@@ -1,4 +1,4 @@
-// v5.16.7 — Add journeyDisplayName, displayName on responses, GET /users/:userId/active-journey
+// v5.16.9 — 7 journey templates (4 new: grief, health, waiting, relationships) + 3 community circles + routing fix
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -1166,6 +1166,10 @@ const JOURNEY_DISPLAY_NAMES: Record<string, Record<Lang, string>> = {
   drawing_closer:        { en: "Drawing Closer to God", fr: "Se rapprocher de Dieu", es: "Acercándose a Dios", pt: "Aproximando-se de Deus" },
   through_a_hard_season: { en: "Through a Hard Season", fr: "Traverser une saison difficile", es: "A través de una temporada difícil", pt: "Atravessando uma fase difícil" },
   expecting:             { en: "Expecting a Child", fr: "En attendant bébé", es: "En espera", pt: "À espera" },
+  walking_through_grief:       { en: "Walking Through Grief", fr: "Traverser le deuil", es: "Caminando a través del duelo", pt: "Caminhando através do luto" },
+  through_illness_and_healing: { en: "Through Illness and Healing", fr: "À travers la maladie et la guérison", es: "A través de la enfermedad y la sanación", pt: "Através da doença e da cura" },
+  the_season_of_waiting:       { en: "The Season of Waiting", fr: "La saison de l'attente", es: "La temporada de espera", pt: "A estação da espera" },
+  praying_for_someone:         { en: "Praying for Someone", fr: "Prier pour quelqu'un", es: "Orando por alguien", pt: "Orando por alguém" },
 };
 const JOURNEY_FAMILY_DISPLAY_FALLBACK: Record<string, Record<Lang, string>> = {
   loss:          { en: "Carrying a Loss", fr: "Porter un deuil", es: "Cargando una pérdida", pt: "Carregando uma perda" },
@@ -1281,6 +1285,98 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       { label: { en: "Arrival", fr: "L'arriv\u00e9e", es: "La llegada", pt: "A chegada" }, dayStart: 40, dayEnd: 40, tone: "lifting", mix: ["prayer", "reflection"] },
     ],
   },
+  walking_through_grief: {
+    key: "walking_through_grief",
+    family: "loss",
+    mode: "fixed",
+    lengthDays: 30,
+    name: {
+      en: "Walking Through Grief",
+      fr: "Traverser le deuil",
+      es: "Caminando a trav\u00e9s del duelo",
+      pt: "Caminhando atrav\u00e9s do luto",
+    },
+    oneLiner: {
+      en: "For someone carrying a loss. We sit with you.",
+      fr: "Pour quelqu\u2019un qui porte un deuil. Nous sommes l\u00e0 avec vous.",
+      es: "Para alguien que carga una p\u00e9rdida. Estamos contigo.",
+      pt: "Para algu\u00e9m carregando uma perda. Estamos com voc\u00ea.",
+    },
+    phases: [
+      { label: { en: "Just here", fr: "Simplement l\u00e0", es: "Solo aqu\u00ed", pt: "Apenas aqui" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection"] },
+      { label: { en: "Carrying it", fr: "Le porter", es: "Carg\u00e1ndolo", pt: "Carregando" }, dayStart: 11, dayEnd: 20, tone: "tender", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Carrying it forward", fr: "Le porter plus loin", es: "Llev\u00e1ndolo adelante", pt: "Levando adiante" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "reflection"] },
+    ],
+  },
+  through_illness_and_healing: {
+    key: "through_illness_and_healing",
+    family: "health",
+    mode: "fixed",
+    lengthDays: 30,
+    name: {
+      en: "Through Illness and Healing",
+      fr: "\u00c0 travers la maladie et la gu\u00e9rison",
+      es: "A trav\u00e9s de la enfermedad y la sanaci\u00f3n",
+      pt: "Atrav\u00e9s da doen\u00e7a e da cura",
+    },
+    oneLiner: {
+      en: "For someone facing a health struggle. Grace for today.",
+      fr: "Pour quelqu\u2019un face \u00e0 un combat de sant\u00e9. La gr\u00e2ce pour aujourd\u2019hui.",
+      es: "Para alguien enfrentando una lucha de salud. Gracia para hoy.",
+      pt: "Para algu\u00e9m enfrentando uma luta de sa\u00fade. Gra\u00e7a para hoje.",
+    },
+    phases: [
+      { label: { en: "The weight of it", fr: "Le poids de tout cela", es: "El peso de todo", pt: "O peso de tudo isso" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection"] },
+      { label: { en: "Strength for today", fr: "La force pour aujourd\u2019hui", es: "Fuerza para hoy", pt: "For\u00e7a para hoje" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Hope held honestly", fr: "L\u2019espoir tenu honn\u00eatement", es: "Esperanza sostenida con honestidad", pt: "Esperan\u00e7a mantida com honestidade" }, dayStart: 21, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection"] },
+    ],
+  },
+  the_season_of_waiting: {
+    key: "the_season_of_waiting",
+    family: "waiting",
+    mode: "fixed",
+    lengthDays: 30,
+    name: {
+      en: "The Season of Waiting",
+      fr: "La saison de l\u2019attente",
+      es: "La temporada de espera",
+      pt: "A esta\u00e7\u00e3o da espera",
+    },
+    oneLiner: {
+      en: "For someone in an unanswered stretch. Stay in it.",
+      fr: "Pour quelqu\u2019un dans une p\u00e9riode sans r\u00e9ponse. Restez-y.",
+      es: "Para alguien en un tramo sin respuesta. Qu\u00e9date.",
+      pt: "Para algu\u00e9m em um per\u00edodo sem resposta. Fique.",
+    },
+    phases: [
+      { label: { en: "The ache of unanswered", fr: "La douleur de l\u2019absence de r\u00e9ponse", es: "El dolor de lo sin respuesta", pt: "A dor do sem resposta" }, dayStart: 1, dayEnd: 10, tone: "honest", mix: ["prayer", "reflection"] },
+      { label: { en: "Faithful in the meantime", fr: "Fid\u00e8le entre-temps", es: "Fiel mientras tanto", pt: "Fiel enquanto isso" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "reflection"] },
+      { label: { en: "Trusting the timing", fr: "Faire confiance au temps", es: "Confiando en el tiempo", pt: "Confiando no tempo" }, dayStart: 21, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection"] },
+    ],
+  },
+  praying_for_someone: {
+    key: "praying_for_someone",
+    family: "relationships",
+    mode: "fixed",
+    lengthDays: 30,
+    name: {
+      en: "Praying for Someone",
+      fr: "Prier pour quelqu\u2019un",
+      es: "Orando por alguien",
+      pt: "Orando por algu\u00e9m",
+    },
+    oneLiner: {
+      en: "For someone carrying a strained relationship. Lift them first.",
+      fr: "Pour quelqu\u2019un portant une relation tendue. Priez d\u2019abord pour eux.",
+      es: "Para alguien cargando una relaci\u00f3n tensa. Eleva a esa persona primero.",
+      pt: "Para algu\u00e9m carregando um relacionamento tenso. Eleve-os primeiro.",
+    },
+    phases: [
+      { label: { en: "Bring them to God", fr: "Les porter devant Dieu", es: "Ll\u00e9valos ante Dios", pt: "Leve-os diante de Deus" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection"] },
+      { label: { en: "Your own heart first", fr: "Ton propre c\u0153ur d\u2019abord", es: "Tu propio coraz\u00f3n primero", pt: "Seu pr\u00f3prio cora\u00e7\u00e3o primeiro" }, dayStart: 11, dayEnd: 20, tone: "honest", mix: ["prayer", "reflection"] },
+      { label: { en: "Hope for restoration, held loosely", fr: "Esp\u00e9rer la restauration, sans forcer", es: "Esperanza de restauraci\u00f3n, sin forzar", pt: "Esperan\u00e7a de restaura\u00e7\u00e3o, sem for\u00e7ar" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "reflection"] },
+    ],
+  },
 };
 
 // -- 2. SMALL_ACT_POOLS_BY_FAMILY ------------------------------------
@@ -1316,10 +1412,42 @@ const SMALL_ACT_POOLS_BY_FAMILY: Record<JourneyFamily, Record<Lang, string>[]> =
     { en: "Tell someone you trust how heavy it feels.", fr: "Dis \u00e0 une personne de confiance \u00e0 quel point c\u2019est lourd.", es: "Dile a alguien de confianza lo pesado que se siente.", pt: "Diga a algu\u00e9m de confian\u00e7a como est\u00e1 pesado." },
     { en: "Drink some water and eat something today.", fr: "Bois de l\u2019eau et mange quelque chose aujourd\u2019hui.", es: "Bebe agua y come algo hoy.", pt: "Beba \u00e1gua e coma algo hoje." },
   ],
-  loss: [],
-  health: [],
-  waiting: [],
-  relationships: [],
+  loss: [
+    { en: "Just breathe with us for one minute.", fr: "Respire simplement avec nous une minute.", es: "Solo respira con nosotros un minuto.", pt: "Apenas respire conosco por um minuto." },
+    { en: "Let someone pray for you.", fr: "Laisse quelqu\u2019un prier pour toi.", es: "Deja que alguien ore por ti.", pt: "Deixe algu\u00e9m orar por voc\u00ea." },
+    { en: "Name one absence you feel today.", fr: "Nomme une absence que tu ressens aujourd\u2019hui.", es: "Nombra una ausencia que sientes hoy.", pt: "D\u00ea nome a uma aus\u00eancia que voc\u00ea sente hoje." },
+    { en: "Hold one good memory for a minute.", fr: "Garde un bon souvenir une minute.", es: "Sostén un buen recuerdo un minuto.", pt: "Segure uma boa lembran\u00e7a por um minuto." },
+    { en: "Sit with us. You don\u2019t have to speak.", fr: "Reste avec nous. Tu n\u2019as pas besoin de parler.", es: "Si\u00e9ntate con nosotros. No tienes que hablar.", pt: "Sente-se conosco. Voc\u00ea n\u00e3o precisa falar." },
+    { en: "Be prayed for. That\u2019s enough today.", fr: "Laisse-toi porter par la pri\u00e8re. C\u2019est suffisant aujourd\u2019hui.", es: "Deja que oren por ti. Eso es suficiente hoy.", pt: "Seja alvo de ora\u00e7\u00e3o. Isso \u00e9 suficiente hoje." },
+    { en: "Name the numbness if it\u2019s there. It counts too.", fr: "Nomme l\u2019engourdissement s\u2019il est l\u00e0. Il compte aussi.", es: "Nombra el entumecimiento si est\u00e1 ah\u00ed. Tambi\u00e9n cuenta.", pt: "D\u00ea nome ao entorpecimento se ele estiver a\u00ed. Ele tamb\u00e9m conta." },
+  ],
+  health: [
+    { en: "Pray for just today. Not the diagnosis, not next month.", fr: "Prie juste pour aujourd\u2019hui. Pas le diagnostic, pas le mois prochain.", es: "Ora solo por hoy. No el diagn\u00f3stico, no el mes que viene.", pt: "Ore apenas por hoje. N\u00e3o pelo diagn\u00f3stico, n\u00e3o pelo pr\u00f3ximo m\u00eas." },
+    { en: "Name one fear and set it down here.", fr: "Nomme une peur et d\u00e9pose-la ici.", es: "Nombra un miedo y d\u00e9jalo aqu\u00ed.", pt: "D\u00ea nome a um medo e deixe-o aqui." },
+    { en: "One minute of real rest.", fr: "Une minute de vrai repos.", es: "Un minuto de verdadero descanso.", pt: "Um minuto de descanso real." },
+    { en: "Pray for the people in this with you.", fr: "Prie pour les personnes qui traversent cela avec toi.", es: "Ora por las personas que est\u00e1n en esto contigo.", pt: "Ore pelas pessoas que est\u00e3o nisso com voc\u00ea." },
+    { en: "Name what you\u2019re hoping for, without pretending it\u2019s certain.", fr: "Nomme ce que tu esp\u00e8res, sans pr\u00e9tendre que c\u2019est certain.", es: "Nombra lo que esperas, sin pretender que es seguro.", pt: "D\u00ea nome ao que voc\u00ea espera, sem fingir que \u00e9 certo." },
+    { en: "One kind sentence to yourself.", fr: "Une phrase bienveillante pour toi-m\u00eame.", es: "Una frase amable para ti mismo.", pt: "Uma frase gentil para si mesmo." },
+    { en: "Be prayed for. You kept showing up.", fr: "Laisse-toi porter par la pri\u00e8re. Tu as continu\u00e9 \u00e0 te pr\u00e9senter.", es: "Deja que oren por ti. Seguiste apareciendo.", pt: "Seja alvo de ora\u00e7\u00e3o. Voc\u00ea continuou aparecendo." },
+  ],
+  waiting: [
+    { en: "Name what you\u2019re waiting for. Say it plainly.", fr: "Nomme ce que tu attends. Dis-le simplement.", es: "Nombra lo que est\u00e1s esperando. Dilo con sencillez.", pt: "D\u00ea nome ao que voc\u00ea est\u00e1 esperando. Diga com simplicidade." },
+    { en: "Pray in the meantime, not just for the end of it.", fr: "Prie entre-temps, pas seulement pour la fin.", es: "Ora mientras tanto, no solo por el final.", pt: "Ore enquanto isso, n\u00e3o s\u00f3 pelo fim." },
+    { en: "Tell God the silence is hard.", fr: "Dis \u00e0 Dieu que le silence est dur.", es: "Dile a Dios que el silencio es dif\u00edcil.", pt: "Diga a Deus que o sil\u00eancio \u00e9 dif\u00edcil." },
+    { en: "Pray for one person who\u2019s also in a wait.", fr: "Prie pour une personne qui attend aussi.", es: "Ora por una persona que tambi\u00e9n est\u00e1 esperando.", pt: "Ore por uma pessoa que tamb\u00e9m est\u00e1 esperando." },
+    { en: "Name one thing you still trust, even now.", fr: "Nomme une chose en laquelle tu as encore confiance, m\u00eame maintenant.", es: "Nombra una cosa en la que a\u00fan conf\u00edas, incluso ahora.", pt: "D\u00ea nome a uma coisa em que voc\u00ea ainda confia, mesmo agora." },
+    { en: "A prayer to keep your heart soft in the wait.", fr: "Une pri\u00e8re pour garder ton c\u0153ur tendre dans l\u2019attente.", es: "Una oraci\u00f3n para mantener tu coraz\u00f3n tierno en la espera.", pt: "Uma ora\u00e7\u00e3o para manter seu cora\u00e7\u00e3o suave na espera." },
+    { en: "Be prayed for. You stayed in it.", fr: "Laisse-toi porter par la pri\u00e8re. Tu es rest\u00e9.", es: "Deja que oren por ti. Te quedaste.", pt: "Seja alvo de ora\u00e7\u00e3o. Voc\u00ea ficou." },
+  ],
+  relationships: [
+    { en: "Hold this person before God for one minute.", fr: "Tiens cette personne devant Dieu une minute.", es: "Sostén a esta persona ante Dios un minuto.", pt: "Segure esta pessoa diante de Deus por um minuto." },
+    { en: "Name what hurts, not who\u2019s right.", fr: "Nomme ce qui fait mal, pas qui a raison.", es: "Nombra lo que duele, no qui\u00e9n tiene raz\u00f3n.", pt: "D\u00ea nome ao que d\u00f3i, n\u00e3o a quem est\u00e1 certo." },
+    { en: "Ask God to show you your own part.", fr: "Demande \u00e0 Dieu de te montrer ta part.", es: "P\u00eddele a Dios que te muestre tu parte.", pt: "Pe\u00e7a a Deus que mostre a sua parte." },
+    { en: "Take one small step toward letting go.", fr: "Fais un petit pas vers le l\u00e2cher-prise.", es: "Da un peque\u00f1o paso hacia soltar.", pt: "D\u00ea um pequeno passo em dire\u00e7\u00e3o a soltar." },
+    { en: "Pray something genuinely good for them.", fr: "Prie quelque chose de sinc\u00e8rement bon pour eux.", es: "Ora algo genuinamente bueno por ellos.", pt: "Ore algo genuinamente bom por eles." },
+    { en: "Pray for restoration, then hand the result over.", fr: "Prie pour la restauration, puis remets le r\u00e9sultat.", es: "Ora por la restauraci\u00f3n, luego entrega el resultado.", pt: "Ore pela restaura\u00e7\u00e3o, depois entregue o resultado." },
+    { en: "Be prayed for. You chose love all week.", fr: "Laisse-toi porter par la pri\u00e8re. Tu as choisi l\u2019amour toute la semaine.", es: "Deja que oren por ti. Elegiste el amor toda la semana.", pt: "Seja alvo de ora\u00e7\u00e3o. Voc\u00ea escolheu o amor a semana toda." },
+  ],
 };
 
 // -- 3. REFLECTION_TEMPLATES (keyed by tone) -------------------------
@@ -1420,6 +1548,30 @@ const GRADUATION_MESSAGES: Record<string, Record<Lang, string>> = {
     fr: "Quarante semaines de pri\u00e8re. Quelle que soit la suite de ce chapitre, tu n\u2019as jamais \u00e9t\u00e9 sans pr\u00e9sence.",
     es: "Cuarenta semanas de oraci\u00f3n. Como sea que siga este cap\u00edtulo, nunca hubo soledad en el camino.",
     pt: "Quarenta semanas de ora\u00e7\u00e3o. Como quer que este cap\u00edtulo se desenrole, nunca houve solid\u00e3o no caminho.",
+  },
+  walking_through_grief: {
+    en: "Thirty days of sitting with you. However grief moves, you were never alone in it.",
+    fr: "Trente jours \u00e0 tes c\u00f4t\u00e9s. Quoi que le deuil apporte, tu n\u2019\u00e9tais jamais seul.",
+    es: "Treinta d\u00edas a tu lado. Sea como sea el duelo, nunca estuviste en soledad.",
+    pt: "Trinta dias ao seu lado. Seja como for o luto, voc\u00ea nunca esteve em solid\u00e3o.",
+  },
+  through_illness_and_healing: {
+    en: "Thirty days of showing up. Whatever this body carries, you carried it with company.",
+    fr: "Trente jours de pr\u00e9sence. Quoi que ce corps porte, tu l\u2019as port\u00e9 accompagn\u00e9.",
+    es: "Treinta d\u00edas de presentarte. Lo que sea que este cuerpo cargue, lo cargaste acompa\u00f1ado.",
+    pt: "Trinta dias de presen\u00e7a. O que quer que este corpo carregue, voc\u00ea o carregou acompanhado.",
+  },
+  the_season_of_waiting: {
+    en: "Thirty days of staying in it. Whatever the answer becomes, you waited with God.",
+    fr: "Trente jours de pers\u00e9v\u00e9rance. Quelle que soit la r\u00e9ponse, tu as attendu avec Dieu.",
+    es: "Treinta d\u00edas de perseverancia. Sea cual sea la respuesta, esperaste con Dios.",
+    pt: "Trinta dias de perseveran\u00e7a. Seja qual for a resposta, voc\u00ea esperou com Deus.",
+  },
+  praying_for_someone: {
+    en: "Thirty days of choosing love. Whatever happens between you, you brought it to God first.",
+    fr: "Trente jours \u00e0 choisir l\u2019amour. Quoi qu\u2019il advienne entre vous, tu l\u2019as d\u2019abord port\u00e9 devant Dieu.",
+    es: "Treinta d\u00edas de elegir el amor. Pase lo que pase entre ustedes, lo llevaste primero ante Dios.",
+    pt: "Trinta dias de escolher o amor. Aconte\u00e7a o que acontecer entre voc\u00eas, voc\u00ea levou primeiro a Deus.",
   },
 };
 
@@ -5156,7 +5308,10 @@ const INTAKE_TO_FAMILY: Record<string, JourneyFamily> = {
 function templateForFamily(family: JourneyFamily): string {
   if (family === "new_life") return "expecting";
   if (family === "hardship") return "through_a_hard_season";
-  // loss, health, waiting, relationships → drawing_closer (no template yet)
+  if (family === "loss") return "walking_through_grief";
+  if (family === "health") return "through_illness_and_healing";
+  if (family === "waiting") return "the_season_of_waiting";
+  if (family === "relationships") return "praying_for_someone";
   return "drawing_closer";
 }
 
@@ -5756,6 +5911,53 @@ async function start() {
       await loadAllFromDb();
       console.log("[v5.16.6] Community circle families tagged + cache reloaded");
     } catch (err: any) { console.error("[v5.16.6 community families]", err.message); }
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.16.9 — Create community circles for 3 missing journey families
+  // Only creates if no circle with that family already exists.
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const NEEDED: { code: string; name: string; family: string; emoji: string; topic: string }[] = [
+      { code: "GRIEF1", name: "Walking Through Grief", family: "loss", emoji: "🕊️", topic: "grief, loss, and being carried through sorrow" },
+      { code: "HEAL01", name: "Prayers for Healing", family: "health", emoji: "🤲", topic: "illness, healing, and grace for today" },
+      { code: "NEWLF1", name: "Expecting Together", family: "new_life", emoji: "🌱", topic: "expecting a child and praying through pregnancy" },
+    ];
+    try {
+      for (const { code, name, family, emoji, topic } of NEEDED) {
+        // Skip if a circle with this family already exists
+        if (circleForFamily(family)) {
+          console.log(`[v5.16.9] Circle for family "${family}" already exists — skipping`);
+          continue;
+        }
+        // Skip if this specific code already exists
+        if (circles.has(code)) {
+          console.log(`[v5.16.9] Circle ${code} already exists — skipping`);
+          continue;
+        }
+        const now = new Date().toISOString();
+        const circleData: StoredCircle = {
+          id: code,
+          name,
+          code,
+          emoji,
+          creatorUserId: "system",
+          members: [],
+          prayerRequests: [],
+          createdAt: now,
+        };
+        await pool.query(
+          "INSERT INTO circles (code, data, family) VALUES ($1, $2, $3) ON CONFLICT (code) DO NOTHING",
+          [code, JSON.stringify(circleData), family]
+        );
+        circles.set(code, circleData);
+        // Register in COMMUNITY_CIRCLE_TOPICS so isCommunityCircle works
+        COMMUNITY_CIRCLE_TOPICS[code] = topic;
+        console.log(`[v5.16.9] Created community circle: ${code} "${name}" (family: ${family})`);
+      }
+      await loadAllFromDb();
+      console.log("[v5.16.9] Community circles for missing families — done");
+    } catch (err: any) { console.error("[v5.16.9 community circles]", err.message); }
   })();
 
   // ═══════════════════════════════════════════════════════════════════
