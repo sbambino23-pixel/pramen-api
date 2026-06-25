@@ -1271,22 +1271,10 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Uma ora\u00e7\u00e3o di\u00e1ria simples, um dia de cada vez.",
     },
     phases: [
-      { label: { en: "Arrive", fr: "Arriver", es: "Llegar", pt: "Chegar" }, dayStart: 1, dayEnd: 3, tone: "gentle", mix: ["prayer", "reflection", "scripture"] },
-      { label: { en: "Make space", fr: "Faire de la place", es: "Hacer espacio", pt: "Abrir espa\u00e7o" }, dayStart: 4, dayEnd: 7, tone: "gentle", mix: ["prayer", "scripture", "small_act", "gratitude"] },
-      { label: { en: "Give thanks", fr: "Rendre gr\u00e2ce", es: "Dar gracias", pt: "Dar gra\u00e7as" }, dayStart: 8, dayEnd: 11, tone: "grateful", mix: ["prayer", "reflection", "small_act", "journal", "gratitude", "encouragement"] },
-      { label: { en: "Carry it with you", fr: "Le garder en toi", es: "Ll\u00e9valo contigo", pt: "Leve com voc\u00ea" }, dayStart: 12, dayEnd: 9999, tone: "steadying", mix: ["prayer", "reflection", "scripture", "small_act", "gratitude", "journal", "rest", "encouragement"] },
-    ],
-    script: [
-      { day: 1, type: "prayer", content: { en: { title: "Today's prayer", body: "God, I'm here. That's my whole prayer today. I don't have fancy words. I have a willing heart. Meet me here." } } },
-      { day: 2, type: "scripture", content: { en: { title: "Scripture", body: "Be still and know that I am God.", scriptureRef: "Psalm 46:10" } } },
-      { day: 3, type: "reflection", content: { en: { title: "Reflection", body: "When did you last feel close to God? What was different then?", prompt: "When did you last feel close to God? What was different then?" } } },
-      { day: 4, type: "small_act", content: { en: { title: "Act", body: "Sit in silence for 5 minutes. No phone. No music. Just stillness." } } },
-      { day: 5, type: "gratitude", content: { en: { title: "Gratitude", body: "Three things you didn't earn but received anyway." } } },
-      { day: 6, type: "journal", content: { en: { title: "Journal", body: "What question would you ask God if you knew He'd answer out loud?" } } },
-      { day: 7, type: "prayer", content: { en: { title: "Today's prayer", body: "God, I want to want You more. Start with that." } } },
-      { day: 8, type: "reflection", content: { en: { title: "Reflection", body: "What habit is keeping you from the person you want to become?", prompt: "What habit is keeping you from the person you want to become?" } } },
-      { day: 9, type: "small_act", content: { en: { title: "Act", body: "Do one kind thing for someone today without telling anyone you did it." } } },
-      { day: 10, type: "encouragement", content: { en: { title: "Encouragement", body: "Faith isn't feeling certain. It's showing up uncertain and staying anyway." } } },
+      { label: { en: "Arrive", fr: "Arriver", es: "Llegar", pt: "Chegar" }, dayStart: 1, dayEnd: 3, tone: "gentle", mix: ["prayer", "reflection"] },
+      { label: { en: "Make space", fr: "Faire de la place", es: "Hacer espacio", pt: "Abrir espa\u00e7o" }, dayStart: 4, dayEnd: 7, tone: "gentle", mix: ["prayer", "meditation"] },
+      { label: { en: "Give thanks", fr: "Rendre gr\u00e2ce", es: "Dar gracias", pt: "Dar gra\u00e7as" }, dayStart: 8, dayEnd: 11, tone: "grateful", mix: ["prayer", "reflection", "small_act"] },
+      { label: { en: "Carry it with you", fr: "Le garder en toi", es: "Ll\u00e9valo contigo", pt: "Leve com voc\u00ea" }, dayStart: 12, dayEnd: 9999, tone: "steadying", mix: ["prayer", "reflection", "meditation"] },
     ],
   },
   through_a_hard_season: {
@@ -1307,23 +1295,11 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Quando a vida pesa: 30 dias para atravess\u00e1-la juntos.",
     },
     phases: [
-      { label: { en: "Steady", fr: "Tenir bon", es: "Af\u00edrmate", pt: "Firme-se" }, dayStart: 1, dayEnd: 6, tone: "steadying", mix: ["prayer", "reflection", "scripture", "small_act", "confession"] },
-      { label: { en: "Honest", fr: "En v\u00e9rit\u00e9", es: "Con verdad", pt: "Com verdade" }, dayStart: 7, dayEnd: 14, tone: "honest", mix: ["prayer", "reflection", "scripture", "rest", "gratitude", "confession"] },
-      { label: { en: "Held", fr: "Se laisser porter", es: "Dejarse sostener", pt: "Deixar-se amparar" }, dayStart: 15, dayEnd: 21, tone: "tender", mix: ["prayer", "scripture", "small_act", "gratitude", "encouragement"] },
-      { label: { en: "Turn", fr: "Le tournant", es: "El giro", pt: "A virada" }, dayStart: 22, dayEnd: 27, tone: "steadying", mix: ["prayer", "reflection", "small_act", "journal", "encouragement"] },
-      { label: { en: "Lift", fr: "Reprendre souffle", es: "Respirar de nuevo", pt: "Recobrar o f\u00f4lego" }, dayStart: 28, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection", "gratitude", "encouragement"] },
-    ],
-    script: [
-      { day: 1, type: "prayer", content: { en: { title: "Today's prayer", body: "Father, this season is heavier than I let on. Meet me here, not when I'm stronger, but now." } } },
-      { day: 2, type: "small_act", content: { en: { title: "Act", body: "Identify your trigger. Write it on paper. Look at it." } } },
-      { day: 3, type: "scripture", content: { en: { title: "Scripture", body: "My grace is sufficient for you, for my power is made perfect in weakness.", scriptureRef: "2 Corinthians 12:9" } } },
-      { day: 4, type: "reflection", content: { en: { title: "Reflection", body: "What does freedom actually look like for you? Not the absence of something. The presence of what?", prompt: "What does freedom actually look like for you?" } } },
-      { day: 5, type: "small_act", content: { en: { title: "Act", body: "Call your person. The one who knows. Just check in." } } },
-      { day: 6, type: "confession", content: { en: { title: "Confession", body: "When was the last time you almost gave in? What stopped you?", prompt: "When was the last time you almost gave in? What stopped you?" } } },
-      { day: 7, type: "rest", content: { en: { title: "Rest", body: "You don't have to white-knuckle today. Just don't pick it up. That's enough." } } },
-      { day: 8, type: "gratitude", content: { en: { title: "Gratitude", body: "One thing that's clearer now than it was a month ago." } } },
-      { day: 9, type: "prayer", content: { en: { title: "Today's prayer", body: "God, I'm tired of fighting. Fight for me today. I'll just show up." } } },
-      { day: 10, type: "encouragement", content: { en: { title: "Encouragement", body: "Ten days clean is ten victories. Not one long struggle. Ten separate wins." } } },
+      { label: { en: "Steady", fr: "Tenir bon", es: "Af\u00edrmate", pt: "Firme-se" }, dayStart: 1, dayEnd: 6, tone: "steadying", mix: ["prayer", "reflection"] },
+      { label: { en: "Honest", fr: "En v\u00e9rit\u00e9", es: "Con verdad", pt: "Com verdade" }, dayStart: 7, dayEnd: 14, tone: "honest", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Held", fr: "Se laisser porter", es: "Dejarse sostener", pt: "Deixar-se amparar" }, dayStart: 15, dayEnd: 21, tone: "tender", mix: ["prayer", "meditation", "small_act"] },
+      { label: { en: "Turn", fr: "Le tournant", es: "El giro", pt: "A virada" }, dayStart: 22, dayEnd: 27, tone: "steadying", mix: ["prayer", "reflection"] },
+      { label: { en: "Lift", fr: "Reprendre souffle", es: "Respirar de nuevo", pt: "Recobrar o f\u00f4lego" }, dayStart: 28, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection"] },
     ],
   },
   expecting: {
@@ -1339,22 +1315,10 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Uma ora\u00e7\u00e3o para cada semana, at\u00e9 a chegada do seu pequeno.",
     },
     phases: [
-      { label: { en: "Hidden beginnings", fr: "Les d\u00e9buts cach\u00e9s", es: "Comienzos ocultos", pt: "Come\u00e7os ocultos" }, dayStart: 1, dayEnd: 13, tone: "tender", mix: ["prayer", "reflection", "scripture", "gratitude", "journal", "rest", "confession", "encouragement"] },
-      { label: { en: "Growing", fr: "La croissance", es: "Creciendo", pt: "Crescendo" }, dayStart: 14, dayEnd: 27, tone: "grateful", mix: ["prayer", "reflection", "scripture", "small_act", "gratitude", "journal", "encouragement"] },
-      { label: { en: "Nearing", fr: "L'approche", es: "Se acerca", pt: "Aproximando-se" }, dayStart: 28, dayEnd: 39, tone: "steadying", mix: ["prayer", "scripture", "small_act", "gratitude", "rest", "confession", "encouragement"] },
-      { label: { en: "Arrival", fr: "L'arriv\u00e9e", es: "La llegada", pt: "A chegada" }, dayStart: 40, dayEnd: 40, tone: "lifting", mix: ["prayer", "reflection", "scripture", "gratitude", "encouragement"] },
-    ],
-    script: [
-      { day: 1, type: "prayer", content: { en: { title: "Today's prayer", body: "God, I place my hand on this new life. I don't know what's ahead. But You do." } } },
-      { day: 2, type: "reflection", content: { en: { title: "Reflection", body: "What kind of mother do you want to be? Not perfect. What kind?", prompt: "What kind of mother do you want to be? Not perfect. What kind?" } } },
-      { day: 3, type: "gratitude", content: { en: { title: "Gratitude", body: "One thing about this season that surprised you in a good way." } } },
-      { day: 4, type: "small_act", content: { en: { title: "Act", body: "Ask for help today. One specific thing. Let someone carry it with you." } } },
-      { day: 5, type: "scripture", content: { en: { title: "Scripture", body: "For you created my inmost being; you knit me together in my mother's womb.", scriptureRef: "Psalm 139:13" } } },
-      { day: 6, type: "journal", content: { en: { title: "Journal", body: "Write to your child. What do you want them to know about this time?" } } },
-      { day: 7, type: "rest", content: { en: { title: "Rest", body: "You are doing more than you think. Today, let 'enough' be enough." } } },
-      { day: 8, type: "prayer", content: { en: { title: "Today's prayer", body: "God, give me patience I don't have. Give me grace for the mess." } } },
-      { day: 9, type: "confession", content: { en: { title: "Confession", body: "What part of motherhood makes you feel guilty? Say it out loud.", prompt: "What part of motherhood makes you feel guilty? Say it out loud." } } },
-      { day: 10, type: "encouragement", content: { en: { title: "Encouragement", body: "Your child doesn't need a perfect mother. They need a present one. You're here." } } },
+      { label: { en: "Hidden beginnings", fr: "Les d\u00e9buts cach\u00e9s", es: "Comienzos ocultos", pt: "Come\u00e7os ocultos" }, dayStart: 1, dayEnd: 13, tone: "tender", mix: ["prayer", "reflection"] },
+      { label: { en: "Growing", fr: "La croissance", es: "Creciendo", pt: "Crescendo" }, dayStart: 14, dayEnd: 27, tone: "grateful", mix: ["prayer", "reflection", "small_act"] },
+      { label: { en: "Nearing", fr: "L'approche", es: "Se acerca", pt: "Aproximando-se" }, dayStart: 28, dayEnd: 39, tone: "steadying", mix: ["prayer", "meditation", "small_act"] },
+      { label: { en: "Arrival", fr: "L'arriv\u00e9e", es: "La llegada", pt: "A chegada" }, dayStart: 40, dayEnd: 40, tone: "lifting", mix: ["prayer", "reflection", "meditation"] },
     ],
   },
   walking_through_grief: {
@@ -1375,21 +1339,9 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Para algu\u00e9m carregando uma perda. Estamos com voc\u00ea.",
     },
     phases: [
-      { label: { en: "Just here", fr: "Simplement l\u00e0", es: "Solo aqu\u00ed", pt: "Apenas aqui" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection", "scripture", "journal", "rest", "gratitude", "confession", "encouragement"] },
-      { label: { en: "Carrying it", fr: "Le porter", es: "Carg\u00e1ndolo", pt: "Carregando" }, dayStart: 11, dayEnd: 20, tone: "tender", mix: ["prayer", "reflection", "scripture", "small_act", "gratitude", "confession", "encouragement"] },
-      { label: { en: "Carrying it forward", fr: "Le porter plus loin", es: "Llev\u00e1ndolo adelante", pt: "Levando adiante" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "reflection", "scripture", "small_act", "gratitude", "journal", "encouragement"] },
-    ],
-    script: [
-      { day: 1, type: "prayer", content: { en: { title: "Today's prayer", body: "God, I miss them. I don't have words for the weight of it. Just sit with me today." } } },
-      { day: 2, type: "journal", content: { en: { title: "Journal", body: "Write a letter to them. Say what you didn't get to say." } } },
-      { day: 3, type: "scripture", content: { en: { title: "Scripture", body: "Blessed are those who mourn, for they will be comforted.", scriptureRef: "Matthew 5:4" } } },
-      { day: 4, type: "reflection", content: { en: { title: "Reflection", body: "What's one thing they taught you that you carry every day?", prompt: "What's one thing they taught you that you carry every day?" } } },
-      { day: 5, type: "small_act", content: { en: { title: "Act", body: "Visit a place that reminds you of them. Stay as long as you need." } } },
-      { day: 6, type: "rest", content: { en: { title: "Rest", body: "Grief is exhausting. Today, you don't have to be strong." } } },
-      { day: 7, type: "prayer", content: { en: { title: "Today's prayer", body: "God, I don't understand why. I'm not asking You to explain. Just stay." } } },
-      { day: 8, type: "gratitude", content: { en: { title: "Gratitude", body: "One memory that still makes you smile." } } },
-      { day: 9, type: "confession", content: { en: { title: "Confession", body: "What emotion are you not letting yourself feel?", prompt: "What emotion are you not letting yourself feel?" } } },
-      { day: 10, type: "encouragement", content: { en: { title: "Encouragement", body: "They would be proud of you for doing this. For not running from it." } } },
+      { label: { en: "Just here", fr: "Simplement l\u00e0", es: "Solo aqu\u00ed", pt: "Apenas aqui" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection"] },
+      { label: { en: "Carrying it", fr: "Le porter", es: "Carg\u00e1ndolo", pt: "Carregando" }, dayStart: 11, dayEnd: 20, tone: "tender", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Carrying it forward", fr: "Le porter plus loin", es: "Llev\u00e1ndolo adelante", pt: "Levando adiante" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "reflection"] },
     ],
   },
   through_illness_and_healing: {
@@ -1410,21 +1362,9 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Para algu\u00e9m enfrentando uma luta de sa\u00fade. Gra\u00e7a para hoje.",
     },
     phases: [
-      { label: { en: "The weight of it", fr: "Le poids de tout cela", es: "El peso de todo", pt: "O peso de tudo isso" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection", "scripture", "small_act", "gratitude", "journal", "rest", "confession", "encouragement"] },
-      { label: { en: "Strength for today", fr: "La force pour aujourd\u2019hui", es: "Fuerza para hoy", pt: "For\u00e7a para hoje" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "reflection", "scripture", "small_act", "gratitude", "rest", "confession", "encouragement"] },
-      { label: { en: "Hope held honestly", fr: "L\u2019espoir tenu honn\u00eatement", es: "Esperanza sostenida con honestidad", pt: "Esperan\u00e7a mantida com honestidade" }, dayStart: 21, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection", "scripture", "gratitude", "journal", "encouragement"] },
-    ],
-    script: [
-      { day: 1, type: "prayer", content: { en: { title: "Today's prayer", body: "God, I pray for healing today. Not the whole road. Just today. Grace for today." } } },
-      { day: 2, type: "reflection", content: { en: { title: "Reflection", body: "What is your body telling you that you haven't been listening to?", prompt: "What is your body telling you that you haven't been listening to?" } } },
-      { day: 3, type: "scripture", content: { en: { title: "Scripture", body: "He heals the brokenhearted and binds up their wounds.", scriptureRef: "Psalm 147:3" } } },
-      { day: 4, type: "small_act", content: { en: { title: "Act", body: "Tell one person how you're really doing. Not 'I'm fine.' The real answer." } } },
-      { day: 5, type: "gratitude", content: { en: { title: "Gratitude", body: "One thing your body can still do that you're thankful for." } } },
-      { day: 6, type: "journal", content: { en: { title: "Journal", body: "Write about the version of yourself on the other side of this." } } },
-      { day: 7, type: "rest", content: { en: { title: "Rest", body: "Treatment is work. Recovery is work. Today, rest is the assignment." } } },
-      { day: 8, type: "prayer", content: { en: { title: "Today's prayer", body: "God, I'm scared. I don't want to pretend I'm not. Hold that with me." } } },
-      { day: 9, type: "confession", content: { en: { title: "Confession", body: "What are you not telling your loved ones about how you feel?", prompt: "What are you not telling your loved ones about how you feel?" } } },
-      { day: 10, type: "encouragement", content: { en: { title: "Encouragement", body: "You are not your diagnosis. You are the person fighting it." } } },
+      { label: { en: "The weight of it", fr: "Le poids de tout cela", es: "El peso de todo", pt: "O peso de tudo isso" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection", "small_act"] },
+      { label: { en: "Strength for today", fr: "La force pour aujourd\u2019hui", es: "Fuerza para hoy", pt: "For\u00e7a para hoje" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Hope held honestly", fr: "L\u2019espoir tenu honn\u00eatement", es: "Esperanza sostenida con honestidad", pt: "Esperan\u00e7a mantida com honestidade" }, dayStart: 21, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection", "meditation"] },
     ],
   },
   the_season_of_waiting: {
@@ -1468,21 +1408,9 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Para algu\u00e9m carregando um relacionamento tenso. Eleve-os primeiro.",
     },
     phases: [
-      { label: { en: "Bring them to God", fr: "Les porter devant Dieu", es: "Ll\u00e9valos ante Dios", pt: "Leve-os diante de Deus" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection", "scripture", "small_act", "journal", "rest", "gratitude", "confession", "encouragement"] },
-      { label: { en: "Your own heart first", fr: "Ton propre c\u0153ur d\u2019abord", es: "Tu propio coraz\u00f3n primero", pt: "Seu pr\u00f3prio cora\u00e7\u00e3o primeiro" }, dayStart: 11, dayEnd: 20, tone: "honest", mix: ["prayer", "reflection", "scripture", "small_act", "gratitude", "confession", "encouragement"] },
-      { label: { en: "Hope for restoration, held loosely", fr: "Esp\u00e9rer la restauration, sans forcer", es: "Esperanza de restauraci\u00f3n, sin forzar", pt: "Esperan\u00e7a de restaura\u00e7\u00e3o, sem for\u00e7ar" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "reflection", "scripture", "gratitude", "journal", "rest", "encouragement"] },
-    ],
-    script: [
-      { day: 1, type: "prayer", content: { en: { title: "Today's prayer", body: "God, my heart is broken. I don't know how to let go and hold on at the same time. Teach me. Start here." } } },
-      { day: 2, type: "reflection", content: { en: { title: "Reflection", body: "What part of yourself did you lose in that relationship?", prompt: "What part of yourself did you lose in that relationship?" } } },
-      { day: 3, type: "scripture", content: { en: { title: "Scripture", body: "The Lord is close to the brokenhearted and saves those who are crushed in spirit.", scriptureRef: "Psalm 34:18" } } },
-      { day: 4, type: "small_act", content: { en: { title: "Act", body: "Remove one thing that keeps pulling you back. A photo, a text thread, a saved voicemail." } } },
-      { day: 5, type: "journal", content: { en: { title: "Journal", body: "Write down three things you want in your next chapter that you didn't have in the last one." } } },
-      { day: 6, type: "prayer", content: { en: { title: "Today's prayer", body: "God, I forgive them. Not because they earned it. Because carrying it is breaking me." } } },
-      { day: 7, type: "rest", content: { en: { title: "Rest", body: "You've done hard work this week. Today, just exist. No processing. No progress. Just be." } } },
-      { day: 8, type: "gratitude", content: { en: { title: "Gratitude", body: "Name one friendship that got stronger through this." } } },
-      { day: 9, type: "confession", content: { en: { title: "Confession", body: "What are you afraid of now that you're alone?", prompt: "What are you afraid of now that you're alone?" } } },
-      { day: 10, type: "encouragement", content: { en: { title: "Encouragement", body: "Ten days. You're still here. You're still walking. That's not nothing." } } },
+      { label: { en: "Bring them to God", fr: "Les porter devant Dieu", es: "Ll\u00e9valos ante Dios", pt: "Leve-os diante de Deus" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection", "small_act"] },
+      { label: { en: "Your own heart first", fr: "Ton propre c\u0153ur d\u2019abord", es: "Tu propio coraz\u00f3n primero", pt: "Seu pr\u00f3prio cora\u00e7\u00e3o primeiro" }, dayStart: 11, dayEnd: 20, tone: "honest", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Hope for restoration, held loosely", fr: "Esp\u00e9rer la restauration, sans forcer", es: "Esperanza de restauraci\u00f3n, sin forzar", pt: "Esperan\u00e7a de restaura\u00e7\u00e3o, sem for\u00e7ar" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "reflection", "meditation"] },
     ],
   },
 };
@@ -7003,6 +6931,13 @@ async function start() {
   // Run 3 min after start, then every 2 hours
   setTimeout(() => { syncSubscriptionVisibility().catch(() => {}); }, 3 * 60 * 1000);
   setInterval(() => { syncSubscriptionVisibility().catch(() => {}); }, 2 * 60 * 60 * 1000);
+
+  // One-time cleanup: purge cached journey actions with new types that crash old apps
+  pool.query(
+    "DELETE FROM journey_daily_actions WHERE type NOT IN ('prayer', 'reflection', 'meditation', 'small_act')"
+  ).then(r => {
+    if (r.rowCount && r.rowCount > 0) console.log(`[Startup] Purged ${r.rowCount} cached actions with new types`);
+  }).catch(err => console.error("[Startup] Purge error:", err.message));
 
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API v5.10.9 on port ${info.port}`);
