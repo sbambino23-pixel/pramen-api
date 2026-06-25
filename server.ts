@@ -1241,6 +1241,21 @@ const COMPLETION_LABELS: Record<JourneyActionType, Record<Lang, string>> = {
   meditation:    { en: "I sat with this", fr: "J'ai médité", es: "Me quedé con esto", pt: "Fiquei com isso" },
 };
 
+// Legacy type mapper — old app versions only know prayer/reflection/meditation/small_act.
+// Map new types to the closest legacy equivalent so old apps don't crash on decode.
+const LEGACY_TYPE_MAP: Record<JourneyActionType, JourneyActionType> = {
+  prayer: "prayer",
+  reflection: "reflection",
+  meditation: "meditation",
+  small_act: "small_act",
+  scripture: "meditation",       // scripture → meditation (contemplative)
+  gratitude: "reflection",       // gratitude → reflection (prompt-based)
+  journal: "reflection",         // journal → reflection (prompt-based)
+  rest: "meditation",            // rest → meditation (contemplative)
+  confession: "reflection",      // confession → reflection (prompt-based)
+  encouragement: "prayer",       // encouragement → prayer (receive, don't do)
+};
+
 // -- 1. JOURNEY_TEMPLATES (3 Phase-1 starters) -----------------------
 
 const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
@@ -5410,9 +5425,11 @@ app.get("/journeys/:id/today", async (c) => {
       completedToday,
       lastCompletedAt,
       action: {
-        type: action.type,
+        type: LEGACY_TYPE_MAP[action.type] || action.type,  // safe for old apps
+        cardType: action.type,                               // real type for new apps
         phaseLabel: action.phaseLabel,
-        content: action.content
+        content: action.content,
+        completionLabel: action.completionLabel || COMPLETION_LABELS[action.type]?.[lang] || "Done"
       }
     });
   } catch (err: any) {
