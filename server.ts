@@ -5611,7 +5611,7 @@ app.post("/journeys/start", async (c) => {
 
       return c.json({
         instance: camelInstance(instance),
-        day1Action: { type: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content },
+        day1Action: { type: LEGACY_TYPE_MAP[day1Action.type] || day1Action.type, cardType: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content, completionLabel: day1Action.completionLabel || COMPLETION_LABELS[day1Action.type]?.[lang] || "Done" },
         circle,
         partnerSuggestions: [],
         isExisting: true
@@ -5654,7 +5654,7 @@ app.post("/journeys/start", async (c) => {
 
     return c.json({
       instance: camelInstance(instance),
-      day1Action: { type: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content },
+      day1Action: { type: LEGACY_TYPE_MAP[day1Action.type] || day1Action.type, cardType: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content, completionLabel: day1Action.completionLabel || COMPLETION_LABELS[day1Action.type]?.[lang] || "Done" },
       circle,
       partnerSuggestions: [],
       isExisting: false
