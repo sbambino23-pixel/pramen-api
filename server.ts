@@ -6073,10 +6073,36 @@ app.get("/users/:userId/active-journey", async (c) => {
   const lang: Lang = (["en", "fr", "es", "pt"] as string[]).includes(langRaw) ? (langRaw as Lang) : "en";
 
   try {
-    const result = await pool.query(
+    // Try direct userId match first, then check if userId is a device_user_id alias
+    let result = await pool.query(
       "SELECT * FROM journey_instances WHERE user_id=$1 AND status='active' ORDER BY started_at DESC LIMIT 1",
       [userId]
     );
+
+    if (result.rows.length === 0) {
+      // Try device_user_id alias: find the server user for this device, check their journeys
+      const aliasResult = await pool.query(
+        "SELECT id FROM users WHERE device_user_id=$1 LIMIT 1", [userId]
+      );
+      if (aliasResult.rows.length > 0) {
+        result = await pool.query(
+          "SELECT * FROM journey_instances WHERE user_id=$1 AND status='active' ORDER BY started_at DESC LIMIT 1",
+          [aliasResult.rows[0].id]
+        );
+      }
+      // Also try the reverse: userId is a server ID, check journeys created with device ID
+      if (result.rows.length === 0) {
+        const reverseResult = await pool.query(
+          "SELECT device_user_id FROM users WHERE id=$1 LIMIT 1", [userId]
+        );
+        if (reverseResult.rows.length > 0 && reverseResult.rows[0].device_user_id) {
+          result = await pool.query(
+            "SELECT * FROM journey_instances WHERE user_id=$1 AND status='active' ORDER BY started_at DESC LIMIT 1",
+            [reverseResult.rows[0].device_user_id]
+          );
+        }
+      }
+    }
 
     if (result.rows.length === 0) {
       return c.json({ instance: null });
