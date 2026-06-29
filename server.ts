@@ -6177,6 +6177,10 @@ async function start() {
       { code: "GRIEF1", name: "Walking Through Grief", family: "loss", emoji: "🕊️", topic: "grief, loss, and being carried through sorrow" },
       { code: "HEAL01", name: "Prayers for Healing", family: "health", emoji: "🤲", topic: "illness, healing, and grace for today" },
       { code: "NEWLF1", name: "Expecting Together", family: "new_life", emoji: "🌱", topic: "expecting a child and praying through pregnancy" },
+      { code: "HARD01", name: "Through a Hard Season", family: "hardship", emoji: "🛡️", topic: "hard seasons, addiction, anxiety, and perseverance" },
+      { code: "RELS01", name: "Starting Over", family: "relationships", emoji: "💛", topic: "breakups, divorce, and healing relationships" },
+      { code: "WAIT01", name: "The Season of Waiting", family: "waiting", emoji: "🕯️", topic: "waiting, uncertainty, and trusting God's timing" },
+      { code: "GROW01", name: "Drawing Closer", family: "drawing_closer", emoji: "✨", topic: "growing in faith, gratitude, and daily prayer" },
     ];
     try {
       for (const { code, name, family, emoji, topic } of NEEDED) {
