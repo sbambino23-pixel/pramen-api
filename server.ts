@@ -5509,9 +5509,10 @@ app.post("/journeys/start", async (c) => {
         resolvedUserId = byDevice.rows[0].id;
       } else {
         // Create a minimal user record so the FK constraint passes
+        const tempToken = `device_${userId}_${Date.now()}`;
         await pool.query(
-          "INSERT INTO users (id, device_user_id, name) VALUES ($1, $1, 'User') ON CONFLICT (id) DO NOTHING",
-          [userId]
+          "INSERT INTO users (id, device_user_id, name, auth_token) VALUES ($1, $1, 'User', $2) ON CONFLICT (id) DO NOTHING",
+          [userId, tempToken]
         );
       }
     }
