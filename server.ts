@@ -5497,6 +5497,25 @@ app.post("/journeys/start", async (c) => {
 
     if (!userId || !intake) return c.json({ error: "userId and intake required" }, 400);
 
+    // 0. Ensure user exists in the users table (foreign key constraint).
+    // The userId might be a deviceUserId that hasn't been registered yet.
+    // Also try resolving deviceUserId → serverUserId.
+    let resolvedUserId = userId;
+    const userCheck = await pool.query("SELECT id FROM users WHERE id=$1", [userId]);
+    if (userCheck.rows.length === 0) {
+      // Try finding user by device_user_id
+      const byDevice = await pool.query("SELECT id FROM users WHERE device_user_id=$1 LIMIT 1", [userId]);
+      if (byDevice.rows.length > 0) {
+        resolvedUserId = byDevice.rows[0].id;
+      } else {
+        // Create a minimal user record so the FK constraint passes
+        await pool.query(
+          "INSERT INTO users (id, device_user_id, name) VALUES ($1, $1, 'User') ON CONFLICT (id) DO NOTHING",
+          [userId]
+        );
+      }
+    }
+
     // 1. Map intake → family → template
     const family = intakeToFamily(intake);
     const templateKey = templateForFamily(family);
@@ -5506,7 +5525,7 @@ app.post("/journeys/start", async (c) => {
     // 2. Idempotency guard: if user already has an active instance of this template, return it
     const existing = await pool.query(
       "SELECT * FROM journey_instances WHERE user_id=$1 AND template_key=$2 AND status='active' LIMIT 1",
-      [userId, templateKey]
+      [resolvedUserId, templateKey]
     );
 
     // Helper: normalize raw DB row to camelCase instance
@@ -5553,7 +5572,7 @@ app.post("/journeys/start", async (c) => {
     const ins = await pool.query(
       `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [userId, templateKey, family, template.mode, unit, lengthDays, prayedForName || null]
+      [resolvedUserId, templateKey, family, template.mode, unit, lengthDays, prayedForName || null]
     );
     const instance = ins.rows[0];
 
