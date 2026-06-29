@@ -1,4 +1,4 @@
-// v5.16.9 — 7 journey templates (4 new: grief, health, waiting, relationships) + 3 community circles + routing fix
+// v5.18.0 — Journey reframe LIVE: expanded mix arrays (9 card types), removed startup purge
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -1271,10 +1271,10 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Uma ora\u00e7\u00e3o di\u00e1ria simples, um dia de cada vez.",
     },
     phases: [
-      { label: { en: "Arrive", fr: "Arriver", es: "Llegar", pt: "Chegar" }, dayStart: 1, dayEnd: 3, tone: "gentle", mix: ["prayer", "reflection"] },
-      { label: { en: "Make space", fr: "Faire de la place", es: "Hacer espacio", pt: "Abrir espa\u00e7o" }, dayStart: 4, dayEnd: 7, tone: "gentle", mix: ["prayer", "meditation"] },
-      { label: { en: "Give thanks", fr: "Rendre gr\u00e2ce", es: "Dar gracias", pt: "Dar gra\u00e7as" }, dayStart: 8, dayEnd: 11, tone: "grateful", mix: ["prayer", "reflection", "small_act"] },
-      { label: { en: "Carry it with you", fr: "Le garder en toi", es: "Ll\u00e9valo contigo", pt: "Leve com voc\u00ea" }, dayStart: 12, dayEnd: 9999, tone: "steadying", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Arrive", fr: "Arriver", es: "Llegar", pt: "Chegar" }, dayStart: 1, dayEnd: 3, tone: "gentle", mix: ["prayer", "scripture", "reflection"] },
+      { label: { en: "Make space", fr: "Faire de la place", es: "Hacer espacio", pt: "Abrir espa\u00e7o" }, dayStart: 4, dayEnd: 7, tone: "gentle", mix: ["prayer", "gratitude", "rest", "scripture"] },
+      { label: { en: "Give thanks", fr: "Rendre gr\u00e2ce", es: "Dar gracias", pt: "Dar gra\u00e7as" }, dayStart: 8, dayEnd: 11, tone: "grateful", mix: ["prayer", "gratitude", "small_act", "journal"] },
+      { label: { en: "Carry it with you", fr: "Le garder en toi", es: "Ll\u00e9valo contigo", pt: "Leve com voc\u00ea" }, dayStart: 12, dayEnd: 9999, tone: "steadying", mix: ["prayer", "scripture", "reflection", "encouragement", "small_act"] },
     ],
   },
   through_a_hard_season: {
@@ -1295,11 +1295,11 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Quando a vida pesa: 30 dias para atravess\u00e1-la juntos.",
     },
     phases: [
-      { label: { en: "Steady", fr: "Tenir bon", es: "Af\u00edrmate", pt: "Firme-se" }, dayStart: 1, dayEnd: 6, tone: "steadying", mix: ["prayer", "reflection"] },
-      { label: { en: "Honest", fr: "En v\u00e9rit\u00e9", es: "Con verdad", pt: "Com verdade" }, dayStart: 7, dayEnd: 14, tone: "honest", mix: ["prayer", "reflection", "meditation"] },
-      { label: { en: "Held", fr: "Se laisser porter", es: "Dejarse sostener", pt: "Deixar-se amparar" }, dayStart: 15, dayEnd: 21, tone: "tender", mix: ["prayer", "meditation", "small_act"] },
-      { label: { en: "Turn", fr: "Le tournant", es: "El giro", pt: "A virada" }, dayStart: 22, dayEnd: 27, tone: "steadying", mix: ["prayer", "reflection"] },
-      { label: { en: "Lift", fr: "Reprendre souffle", es: "Respirar de nuevo", pt: "Recobrar o f\u00f4lego" }, dayStart: 28, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection"] },
+      { label: { en: "Steady", fr: "Tenir bon", es: "Af\u00edrmate", pt: "Firme-se" }, dayStart: 1, dayEnd: 6, tone: "steadying", mix: ["prayer", "scripture", "rest"] },
+      { label: { en: "Honest", fr: "En v\u00e9rit\u00e9", es: "Con verdad", pt: "Com verdade" }, dayStart: 7, dayEnd: 14, tone: "honest", mix: ["prayer", "confession", "reflection", "journal"] },
+      { label: { en: "Held", fr: "Se laisser porter", es: "Dejarse sostener", pt: "Deixar-se amparar" }, dayStart: 15, dayEnd: 21, tone: "tender", mix: ["prayer", "rest", "small_act", "encouragement"] },
+      { label: { en: "Turn", fr: "Le tournant", es: "El giro", pt: "A virada" }, dayStart: 22, dayEnd: 27, tone: "steadying", mix: ["prayer", "scripture", "gratitude", "reflection"] },
+      { label: { en: "Lift", fr: "Reprendre souffle", es: "Respirar de nuevo", pt: "Recobrar o f\u00f4lego" }, dayStart: 28, dayEnd: 30, tone: "lifting", mix: ["prayer", "encouragement", "gratitude"] },
     ],
   },
   expecting: {
@@ -1315,10 +1315,10 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Uma ora\u00e7\u00e3o para cada semana, at\u00e9 a chegada do seu pequeno.",
     },
     phases: [
-      { label: { en: "Hidden beginnings", fr: "Les d\u00e9buts cach\u00e9s", es: "Comienzos ocultos", pt: "Come\u00e7os ocultos" }, dayStart: 1, dayEnd: 13, tone: "tender", mix: ["prayer", "reflection"] },
-      { label: { en: "Growing", fr: "La croissance", es: "Creciendo", pt: "Crescendo" }, dayStart: 14, dayEnd: 27, tone: "grateful", mix: ["prayer", "reflection", "small_act"] },
-      { label: { en: "Nearing", fr: "L'approche", es: "Se acerca", pt: "Aproximando-se" }, dayStart: 28, dayEnd: 39, tone: "steadying", mix: ["prayer", "meditation", "small_act"] },
-      { label: { en: "Arrival", fr: "L'arriv\u00e9e", es: "La llegada", pt: "A chegada" }, dayStart: 40, dayEnd: 40, tone: "lifting", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Hidden beginnings", fr: "Les d\u00e9buts cach\u00e9s", es: "Comienzos ocultos", pt: "Come\u00e7os ocultos" }, dayStart: 1, dayEnd: 13, tone: "tender", mix: ["prayer", "scripture", "journal", "reflection"] },
+      { label: { en: "Growing", fr: "La croissance", es: "Creciendo", pt: "Crescendo" }, dayStart: 14, dayEnd: 27, tone: "grateful", mix: ["prayer", "gratitude", "small_act", "encouragement"] },
+      { label: { en: "Nearing", fr: "L'approche", es: "Se acerca", pt: "Aproximando-se" }, dayStart: 28, dayEnd: 39, tone: "steadying", mix: ["prayer", "rest", "scripture", "small_act"] },
+      { label: { en: "Arrival", fr: "L'arriv\u00e9e", es: "La llegada", pt: "A chegada" }, dayStart: 40, dayEnd: 40, tone: "lifting", mix: ["prayer", "encouragement", "gratitude"] },
     ],
   },
   walking_through_grief: {
@@ -1339,9 +1339,9 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Para algu\u00e9m carregando uma perda. Estamos com voc\u00ea.",
     },
     phases: [
-      { label: { en: "Just here", fr: "Simplement l\u00e0", es: "Solo aqu\u00ed", pt: "Apenas aqui" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection"] },
-      { label: { en: "Carrying it", fr: "Le porter", es: "Carg\u00e1ndolo", pt: "Carregando" }, dayStart: 11, dayEnd: 20, tone: "tender", mix: ["prayer", "reflection", "meditation"] },
-      { label: { en: "Carrying it forward", fr: "Le porter plus loin", es: "Llev\u00e1ndolo adelante", pt: "Levando adiante" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "reflection"] },
+      { label: { en: "Just here", fr: "Simplement l\u00e0", es: "Solo aqu\u00ed", pt: "Apenas aqui" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "rest", "scripture"] },
+      { label: { en: "Carrying it", fr: "Le porter", es: "Carg\u00e1ndolo", pt: "Carregando" }, dayStart: 11, dayEnd: 20, tone: "tender", mix: ["prayer", "journal", "reflection", "rest"] },
+      { label: { en: "Carrying it forward", fr: "Le porter plus loin", es: "Llev\u00e1ndolo adelante", pt: "Levando adiante" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "scripture", "encouragement", "gratitude"] },
     ],
   },
   through_illness_and_healing: {
@@ -1362,9 +1362,9 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Para algu\u00e9m enfrentando uma luta de sa\u00fade. Gra\u00e7a para hoje.",
     },
     phases: [
-      { label: { en: "The weight of it", fr: "Le poids de tout cela", es: "El peso de todo", pt: "O peso de tudo isso" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection", "small_act"] },
-      { label: { en: "Strength for today", fr: "La force pour aujourd\u2019hui", es: "Fuerza para hoy", pt: "For\u00e7a para hoje" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "reflection", "meditation"] },
-      { label: { en: "Hope held honestly", fr: "L\u2019espoir tenu honn\u00eatement", es: "Esperanza sostenida con honestidad", pt: "Esperan\u00e7a mantida com honestidade" }, dayStart: 21, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "The weight of it", fr: "Le poids de tout cela", es: "El peso de todo", pt: "O peso de tudo isso" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "scripture", "small_act", "rest"] },
+      { label: { en: "Strength for today", fr: "La force pour aujourd\u2019hui", es: "Fuerza para hoy", pt: "For\u00e7a para hoje" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "encouragement", "journal", "reflection"] },
+      { label: { en: "Hope held honestly", fr: "L\u2019espoir tenu honn\u00eatement", es: "Esperanza sostenida con honestidad", pt: "Esperan\u00e7a mantida com honestidade" }, dayStart: 21, dayEnd: 30, tone: "lifting", mix: ["prayer", "gratitude", "scripture", "encouragement"] },
     ],
   },
   the_season_of_waiting: {
@@ -1385,9 +1385,9 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Para algu\u00e9m em um per\u00edodo sem resposta. Fique.",
     },
     phases: [
-      { label: { en: "The ache of unanswered", fr: "La douleur de l\u2019absence de r\u00e9ponse", es: "El dolor de lo sin respuesta", pt: "A dor do sem resposta" }, dayStart: 1, dayEnd: 10, tone: "honest", mix: ["prayer", "reflection"] },
-      { label: { en: "Faithful in the meantime", fr: "Fid\u00e8le entre-temps", es: "Fiel mientras tanto", pt: "Fiel enquanto isso" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "reflection"] },
-      { label: { en: "Trusting the timing", fr: "Faire confiance au temps", es: "Confiando en el tiempo", pt: "Confiando no tempo" }, dayStart: 21, dayEnd: 30, tone: "lifting", mix: ["prayer", "reflection"] },
+      { label: { en: "The ache of unanswered", fr: "La douleur de l\u2019absence de r\u00e9ponse", es: "El dolor de lo sin respuesta", pt: "A dor do sem resposta" }, dayStart: 1, dayEnd: 10, tone: "honest", mix: ["prayer", "confession", "scripture", "rest"] },
+      { label: { en: "Faithful in the meantime", fr: "Fid\u00e8le entre-temps", es: "Fiel mientras tanto", pt: "Fiel enquanto isso" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "journal", "scripture", "reflection"] },
+      { label: { en: "Trusting the timing", fr: "Faire confiance au temps", es: "Confiando en el tiempo", pt: "Confiando no tempo" }, dayStart: 21, dayEnd: 30, tone: "lifting", mix: ["prayer", "encouragement", "gratitude", "scripture"] },
     ],
   },
   praying_for_someone: {
@@ -1408,9 +1408,9 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       pt: "Para algu\u00e9m carregando um relacionamento tenso. Eleve-os primeiro.",
     },
     phases: [
-      { label: { en: "Bring them to God", fr: "Les porter devant Dieu", es: "Ll\u00e9valos ante Dios", pt: "Leve-os diante de Deus" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "reflection", "small_act"] },
-      { label: { en: "Your own heart first", fr: "Ton propre c\u0153ur d\u2019abord", es: "Tu propio coraz\u00f3n primero", pt: "Seu pr\u00f3prio cora\u00e7\u00e3o primeiro" }, dayStart: 11, dayEnd: 20, tone: "honest", mix: ["prayer", "reflection", "meditation"] },
-      { label: { en: "Hope for restoration, held loosely", fr: "Esp\u00e9rer la restauration, sans forcer", es: "Esperanza de restauraci\u00f3n, sin forzar", pt: "Esperan\u00e7a de restaura\u00e7\u00e3o, sem for\u00e7ar" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "reflection", "meditation"] },
+      { label: { en: "Bring them to God", fr: "Les porter devant Dieu", es: "Ll\u00e9valos ante Dios", pt: "Leve-os diante de Deus" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "scripture", "small_act", "journal"] },
+      { label: { en: "Your own heart first", fr: "Ton propre c\u0153ur d\u2019abord", es: "Tu propio coraz\u00f3n primero", pt: "Seu pr\u00f3prio cora\u00e7\u00e3o primeiro" }, dayStart: 11, dayEnd: 20, tone: "honest", mix: ["prayer", "confession", "reflection", "rest"] },
+      { label: { en: "Hope for restoration, held loosely", fr: "Esp\u00e9rer la restauration, sans forcer", es: "Esperanza de restauraci\u00f3n, sin forzar", pt: "Esperan\u00e7a de restaura\u00e7\u00e3o, sem for\u00e7ar" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "encouragement", "gratitude", "scripture"] },
     ],
   },
 };
@@ -6931,13 +6931,6 @@ async function start() {
   // Run 3 min after start, then every 2 hours
   setTimeout(() => { syncSubscriptionVisibility().catch(() => {}); }, 3 * 60 * 1000);
   setInterval(() => { syncSubscriptionVisibility().catch(() => {}); }, 2 * 60 * 60 * 1000);
-
-  // One-time cleanup: purge cached journey actions with new types that crash old apps
-  pool.query(
-    "DELETE FROM journey_daily_actions WHERE type NOT IN ('prayer', 'reflection', 'meditation', 'small_act')"
-  ).then(r => {
-    if (r.rowCount && r.rowCount > 0) console.log(`[Startup] Purged ${r.rowCount} cached actions with new types`);
-  }).catch(err => console.error("[Startup] Purge error:", err.message));
 
   serve({ fetch: app.fetch, port: PORT }, (info) => {
     console.log(`\n🙏 prAmen API v5.10.9 on port ${info.port}`);
