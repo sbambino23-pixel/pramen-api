@@ -5651,6 +5651,31 @@ app.get("/journeys/:id/circle", async (c) => {
   } catch (err: any) { return c.json({ error: err.message }, 500); }
 });
 
+// GET /journeys/:id/history — past days' card categories, so the app can let a
+// user look back on what kind of card they got each day. Reads the cached
+// daily actions (only days that were actually generated/completed). Returns the
+// requested lang's row per day when present, otherwise any cached lang.
+app.get("/journeys/:id/history", async (c) => {
+  const instanceId = c.req.param("id");
+  const lang = (c.req.query("lang") || "en") as Lang;
+  try {
+    const result = await pool.query(
+      `SELECT DISTINCT ON (day) day, type, phase_label
+         FROM journey_daily_actions
+        WHERE instance_id=$1
+        ORDER BY day ASC, (lang=$2) DESC`,
+      [instanceId, lang]
+    );
+    const days = result.rows.map((r: any) => ({
+      day: r.day,
+      type: r.type,
+      completionLabel: COMPLETION_LABELS[r.type as JourneyActionType]?.[lang] || COMPLETION_LABELS[r.type as JourneyActionType]?.en || "Done",
+      phaseLabel: r.phase_label,
+    }));
+    return c.json({ days });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
+
 // GET /journeys/:id/todays-request — select eligible circle prayer request for today's journey action
 function isReceivingPhase(templateKey: string, currentDay: number): boolean {
   // Grief Phase 1: days 1-10 are "receiving" — user is being carried, not carrying others
@@ -6263,6 +6288,60 @@ async function start() {
       await loadAllFromDb();
       console.log("[v5.16.9] Community circles for missing families — done");
     } catch (err: any) { console.error("[v5.16.9 community circles]", err.message); }
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.19.0 — Seed community circles with members so they feel populated.
+  // A journey's family circle used to show "1 person" (just the user), which
+  // reads as empty/lonely. This seeds each community circle with a stable set
+  // of members (deterministic per code, idempotent — skips if already seeded).
+  // Seed users are prefixed "seed-" so they can be identified/removed later.
+  // NOTE: these count toward circle member/active stats on the dashboard.
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const FIRST = ["Maria","John","Grace","David","Sarah","Peter","Anna","Michael","Ruth","James",
+      "Hannah","Daniel","Rebecca","Joseph","Esther","Samuel","Naomi","Andrew","Leah","Thomas",
+      "Miriam","Paul","Abigail","Stephen","Martha","Philip","Lydia","Simon","Priscilla","Mark",
+      "Joanna","Luke","Deborah","Nathan","Rachel","Aaron","Elizabeth","Caleb","Sofia","Isaac",
+      "Gabriela","Matthew","Camila","Elias","Lucia","Tobias","Clara","Josiah","Noa","Ezra"];
+    const LASTI = ["A.","B.","C.","D.","F.","G.","H.","K.","L.","M.","N.","P.","R.","S.","T.","V.","W."];
+    const nowMs = Date.now();
+    const strHash = (s: string): number => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0; return h; };
+    try {
+      for (const code of Object.keys(COMMUNITY_CIRCLE_TOPICS)) {
+        const circle = circles.get(code.toUpperCase()) || circles.get(code);
+        if (!circle) continue;
+        if (circle.members.some(m => m.userId.startsWith("seed-"))) {
+          console.log(`[v5.19.0] ${code} already seeded — skipping`);
+          continue;
+        }
+        const base = strHash(code);
+        const target = 22 + (base % 27); // 22–48 members
+        for (let i = 0; i < target; i++) {
+          const seed = strHash(`${code}:${i}`);
+          const first = FIRST[seed % FIRST.length];
+          const li = LASTI[(seed >> 5) % LASTI.length];
+          const prayedToday = (seed % 5) < 2; // ~40% prayed today
+          const daysSeen = seed % 3;          // seen within last 0–2 days
+          const member: StoredMember = {
+            userId: `seed-${code}-${i}`,
+            name: `${first} ${li}`,
+            streakCount: 1 + (seed % 45),
+            lastPrayedDate: prayedToday
+              ? new Date(nowMs - (seed % 12) * 3600e3).toISOString()
+              : new Date(nowMs - (1 + (seed % 6)) * 86400e3).toISOString(),
+            joinedAt: new Date(nowMs - (5 + (seed % 150)) * 86400e3).toISOString(),
+            lastSeenAt: new Date(nowMs - daysSeen * 86400e3 - (seed % 20) * 3600e3).toISOString(),
+            role: "member",
+            visible: true,
+          };
+          circle.members.push(member);
+        }
+        await saveCircleToDb(circle);
+        console.log(`[v5.19.0] Seeded ${target} members into ${code} "${circle.name}"`);
+      }
+      console.log("[v5.19.0] Community member seeding — done");
+    } catch (err: any) { console.error("[v5.19.0 seed members]", err.message); }
   })();
 
   // ═══════════════════════════════════════════════════════════════════
