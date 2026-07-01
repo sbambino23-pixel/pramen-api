@@ -1087,11 +1087,17 @@ const FALLBACK_CIRCLE_PRAYERS_BY_LANG: Record<Lang, Record<string, string[]>> = 
 },
 };
 
+const PRAYER_BUCKET_KEYS = ["night", "morning", "hardDays", "stillness", "intercession", "general"];
+
 function fallbackBucketForTopic(topic: string): string {
+  // Journey days pass a bucket key directly (e.g. "hardDays") — use it as-is.
+  // (Previously "hardDays" fell through to "general" because the keyword check
+  // below looks for "hard days" with a space, which never matches the key.)
+  if (PRAYER_BUCKET_KEYS.includes(topic)) return topic;
   const t = topic.toLowerCase();
   if (t.includes("night") || t.includes("evening")) return "night";
   if (t.includes("morning")) return "morning";
-  if (t.includes("hard days") || t.includes("difficult")) return "hardDays";
+  if (t.includes("hard days") || t.includes("hard day") || t.includes("difficult") || t.includes("hardship")) return "hardDays";
   if (t.includes("stillness") || t.includes("rest")) return "stillness";
   if (t.includes("each other") || t.includes("intercession")) return "intercession";
   return "general";
