@@ -5600,12 +5600,44 @@ function intakeToFamily(intake: string): JourneyFamily {
   return "drawing_closer";
 }
 
+// ── SHARED ROUTER (single source of truth) ──────────────────────────
+// v5.20.0: both the in-app onboarding and the web quiz POST to /journeys/start.
+// Prefer an explicit manifest `door` (Michael's 50+ taxonomy); fall back to the
+// legacy free-text `intake` keyword match. The door carries a length override
+// (e.g. test-results = 10 days) resolved here so clients never duplicate routing.
+interface ResolvedJourney {
+  templateKey: string;
+  family: JourneyFamily;
+  mode: "fixed" | "open";
+  lengthDays: number | null;   // in `unit`
+  unit: "day" | "week";
+  door: string | null;
+}
+function resolveJourney(input: { door?: string; intake?: string }): ResolvedJourney {
+  if (input.door && TIER1_DOORS[input.door]) {
+    const d = TIER1_DOORS[input.door];
+    const tmpl = JOURNEY_TEMPLATES[d.templateKey];
+    const lengthDays = d.length != null ? d.length : (tmpl?.lengthDays ?? null);
+    return { templateKey: d.templateKey, family: d.family, mode: d.mode, lengthDays, unit: d.unit, door: d.key };
+  }
+  const family = intakeToFamily(input.intake || "");
+  const templateKey = templateForFamily(family);
+  const tmpl = JOURNEY_TEMPLATES[templateKey];
+  return {
+    templateKey, family,
+    mode: tmpl?.mode ?? "open",
+    lengthDays: tmpl?.lengthDays ?? null,
+    unit: templateKey === "expecting" ? "week" : "day",
+    door: null,
+  };
+}
+
 app.post("/journeys/start", async (c) => {
   try {
     const body = await c.req.json();
-    const { userId, intake, prayedForName, lengthDays: bodyLengthDays } = body;
+    const { userId, intake, door, prayedForName, lengthDays: bodyLengthDays } = body;
 
-    if (!userId || !intake) return c.json({ error: "userId and intake required" }, 400);
+    if (!userId || (!intake && !door)) return c.json({ error: "userId and (intake or door) required" }, 400);
 
     // 0. Ensure user exists in the users table (foreign key constraint).
     // The userId might be a deviceUserId that hasn't been registered yet.
@@ -5627,9 +5659,10 @@ app.post("/journeys/start", async (c) => {
       }
     }
 
-    // 1. Map intake → family → template
-    const family = intakeToFamily(intake);
-    const templateKey = templateForFamily(family);
+    // 1. Shared router: door (manifest) preferred, intake (legacy) fallback
+    const resolved = resolveJourney({ door, intake });
+    const family = resolved.family;
+    const templateKey = resolved.templateKey;
     const template = JOURNEY_TEMPLATES[templateKey];
     if (!template) return c.json({ error: `Template resolution failed for family=${family}` }, 500);
 
@@ -5672,13 +5705,14 @@ app.post("/journeys/start", async (c) => {
         day1Action: { type: LEGACY_TYPE_MAP[day1Action.type] || day1Action.type, cardType: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content, completionLabel: day1Action.completionLabel || COMPLETION_LABELS[day1Action.type]?.[lang] || "Done" },
         circle,
         partnerSuggestions: [],
+        door: resolved.door,
         isExisting: true
       });
     }
 
-    // 3. Create new journey instance
-    const unit = templateKey === "expecting" ? "week" : "day";
-    const lengthDays = bodyLengthDays || template.lengthDays || null;
+    // 3. Create new journey instance (length override comes from the manifest door)
+    const unit = resolved.unit;
+    const lengthDays = bodyLengthDays || resolved.lengthDays || template.lengthDays || null;
 
     const ins = await pool.query(
       `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name)
@@ -5705,16 +5739,18 @@ app.post("/journeys/start", async (c) => {
       family,
       template: templateKey,
       mode: template.mode,
-      intake
+      door: resolved.door,
+      intake: intake || null
     });
 
-    console.log(`[Journey] Started: user=${userId.substring(0, 8)}... intake="${intake}" → family=${family} template=${templateKey} instance=${instance.id}`);
+    console.log(`[Journey] Started: user=${userId.substring(0, 8)}... ${resolved.door ? `door="${resolved.door}"` : `intake="${intake}"`} → family=${family} template=${templateKey} instance=${instance.id}`);
 
     return c.json({
       instance: camelInstance(instance),
       day1Action: { type: LEGACY_TYPE_MAP[day1Action.type] || day1Action.type, cardType: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content, completionLabel: day1Action.completionLabel || COMPLETION_LABELS[day1Action.type]?.[lang] || "Done" },
       circle,
       partnerSuggestions: [],
+      door: resolved.door,
       isExisting: false
     }, 201);
   } catch (err: any) {
