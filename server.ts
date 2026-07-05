@@ -1262,6 +1262,110 @@ const LEGACY_TYPE_MAP: Record<JourneyActionType, JourneyActionType> = {
   encouragement: "prayer",       // encouragement → prayer (receive, don't do)
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// v5.20.0 — TIER 1 SPINE MODEL + JOURNEY MANIFEST (single source of truth)
+// Michael's 50+ taxonomy: 7 marketing "doors" collapse to 3 content SPINES.
+// A door = one manifest row → an existing spine/template. Adding a future ad
+// angle later = one new row, NOT a newly authored journey. Dedicated per-door
+// content pools + verified scripture (indexed by emotional core) land in
+// Phase 2; this slice establishes the model and propagates grief-safety by
+// safety_class. The app never sees a catalog — one journey at a time.
+// ═══════════════════════════════════════════════════════════════════
+
+type JourneySpine = "in_my_body" | "grieving_loss" | "carrying_someone" | "drawing_closer";
+type SafetyClass = "crisis" | "loss" | "carrying" | "standard";
+
+interface JourneyDoor {
+  key: string;                 // route key, e.g. "body/diagnosis"
+  name: Record<Lang, string>;  // ad-facing emotional label (the exact sentence the user is living)
+  spine: JourneySpine;
+  templateKey: string;         // resolves to JOURNEY_TEMPLATES (closest existing template for now; dedicated ones in Phase 2)
+  family: JourneyFamily;
+  mode: "fixed" | "open";
+  length?: number;             // in `unit`; omit for open/ongoing
+  unit: "day" | "week";
+  pacing: "acute" | "standard" | "ongoing";
+  safetyClass: SafetyClass;
+  tokens: string[];            // tokens the shared router must capture for this door
+  adExclude?: boolean;         // true = in-app only, never in paid creative (Motherhood)
+  scriptureCores: string[];    // emotional cores this door needs verified verses for (gap tracker)
+}
+
+const EN = (s: string): Record<Lang, string> => ({ en: s, fr: s, es: s, pt: s }); // localized door names authored in Phase 2
+
+const TIER1_DOORS: Record<string, JourneyDoor> = {
+  // ── SPINE 1 — "In my own body": fear + strength-for-today-only, never the whole road, never promise a cure
+  "body/diagnosis": {
+    key: "body/diagnosis", name: EN("Facing a Serious Health Diagnosis"), spine: "in_my_body",
+    templateKey: "through_illness_and_healing", family: "health", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "crisis",
+    tokens: ["who_self", "dominant_emotion", "phase"], scriptureCores: ["fear", "strength_for_today"],
+  },
+  "body/results": {
+    key: "body/results", name: EN("Waiting for Medical Test Results"), spine: "in_my_body",
+    templateKey: "through_illness_and_healing", family: "health", mode: "fixed", length: 10, unit: "day",
+    pacing: "acute", safetyClass: "crisis",
+    tokens: ["who_self", "dominant_emotion"], scriptureCores: ["anxiety", "waiting", "peace"],
+  },
+  "body/chronic": {
+    key: "body/chronic", name: EN("Living With Chronic Pain or Illness"), spine: "in_my_body",
+    templateKey: "through_illness_and_healing", family: "health", mode: "open", unit: "day",
+    pacing: "ongoing", safetyClass: "crisis",
+    tokens: ["who_self", "dominant_emotion"], scriptureCores: ["endurance", "presence", "strength_for_today"],
+  },
+  // ── SPINE 2 — "Grieving a loss": the existing grief engine + ALL its safety rules, unchanged
+  "grief/spouse": {
+    key: "grief/spouse", name: EN("Grieving the Loss of a Spouse"), spine: "grieving_loss",
+    templateKey: "walking_through_grief", family: "loss", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "loss",
+    tokens: ["who_self", "phase"], scriptureCores: ["grief", "comfort", "loneliness"],
+  },
+  // ── SPINE 3 — "Carrying someone I love": love + helplessness + tend-your-own-heart, no restoration promise, no guilt
+  "carry/child": {
+    key: "carry/child", name: EN("Praying for an Adult Child Who Has Walked Away"), spine: "carrying_someone",
+    templateKey: "praying_for_someone", family: "relationships", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "carrying",
+    tokens: ["who_someone", "carrying_name", "dominant_emotion"], scriptureCores: ["helplessness", "surrender", "hope_held_loosely"],
+  },
+  "carry/addiction": {
+    key: "carry/addiction", name: EN("Watching Someone You Love Fight Addiction"), spine: "carrying_someone",
+    templateKey: "praying_for_someone", family: "relationships", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "carrying",
+    tokens: ["who_someone", "carrying_name", "dominant_emotion"], scriptureCores: ["helplessness", "boundaries", "tend_own_heart"],
+  },
+  "carry/caregiver": {
+    key: "carry/caregiver", name: EN("Caring for a Sick Spouse"), spine: "carrying_someone",
+    templateKey: "praying_for_someone", family: "relationships", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "carrying",
+    tokens: ["who_someone", "carrying_name", "dominant_emotion"], scriptureCores: ["exhaustion", "being_seen", "strength"],
+  },
+  // ── In-app only — routing preserved, EXCLUDED from all paid creative
+  "faith/motherhood": {
+    key: "faith/motherhood", name: EN("Motherhood"), spine: "drawing_closer",
+    templateKey: "expecting", family: "new_life", mode: "fixed", length: 40, unit: "week",
+    pacing: "standard", safetyClass: "standard",
+    tokens: ["who_self"], adExclude: true, scriptureCores: ["belovedness"],
+  },
+  "faith/grow": {
+    key: "faith/grow", name: EN("Grow in my faith"), spine: "drawing_closer",
+    templateKey: "drawing_closer", family: "drawing_closer", mode: "open", unit: "day",
+    pacing: "ongoing", safetyClass: "standard",
+    tokens: ["who_self"], scriptureCores: ["presence"],
+  },
+};
+
+function doorForKey(key: string): JourneyDoor | null { return TIER1_DOORS[key] || null; }
+function doorsForSpine(spine: JourneySpine): JourneyDoor[] { return Object.values(TIER1_DOORS).filter(d => d.spine === spine); }
+
+// Templates that host any loss/crisis door inherit the grief "receiving phase"
+// safety window (days 1-10 = held, not tasked with outward action). Derived from
+// the manifest so future crisis doors get the protection automatically.
+const RECEIVING_SAFETY_TEMPLATES: Set<string> = new Set(
+  Object.values(TIER1_DOORS)
+    .filter(d => d.safetyClass === "loss" || d.safetyClass === "crisis")
+    .map(d => d.templateKey)
+);
+
 // -- 1. JOURNEY_TEMPLATES (3 Phase-1 starters) -----------------------
 
 const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
@@ -5684,9 +5788,13 @@ app.get("/journeys/:id/history", async (c) => {
 
 // GET /journeys/:id/todays-request — select eligible circle prayer request for today's journey action
 function isReceivingPhase(templateKey: string, currentDay: number): boolean {
-  // Grief Phase 1: days 1-10 are "receiving" — user is being carried, not carrying others
-  if (templateKey === "walking_through_grief" && currentDay <= 10) return true;
-  // All other phases are "outward"
+  // Days 1-10 are "receiving" — the user is being carried, not tasked with
+  // carrying others. Originally grief-only; now propagated to every loss/crisis
+  // template via the Tier-1 manifest safety_class (diagnosis, test-results,
+  // chronic all inherit it). Someone on day 1 of a diagnosis is held, not asked
+  // to pray for a stranger. Carrying-spine journeys are outward by design, so
+  // their safety is language/content-based (Phase 2), not this day-gate.
+  if (RECEIVING_SAFETY_TEMPLATES.has(templateKey) && currentDay <= 10) return true;
   return false;
 }
 
