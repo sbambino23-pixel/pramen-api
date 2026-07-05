@@ -1689,6 +1689,43 @@ const SCRIPTURE_TEMPLATES: Record<JourneyTone, Record<Lang, { body: string; scri
   lifting:   { en: { body: "For you created my inmost being; you knit me together in my mother's womb.", scriptureRef: "Psalm 139:13" }, fr: { body: "C'est toi qui as formé mes reins, qui m'as tissé dans le sein de ma mère.", scriptureRef: "Psaume 139:13" }, es: { body: "Tú creaste mis entrañas; me formaste en el vientre de mi madre.", scriptureRef: "Salmo 139:13" }, pt: { body: "Tu criaste o meu íntimo e me teceste no ventre de minha mãe.", scriptureRef: "Salmo 139:13" } },
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// v5.20.0 — VERIFIED SCRIPTURE POOL, INDEXED BY EMOTIONAL CORE
+// Bright line: NO AI-generated verses. Every entry is exact NIV text sourced
+// from a verified source (Bible Gateway), so the same fear/grief/anxiety verse
+// serves multiple Tier-1 doors. en is verified now; fr/es/pt verified
+// translations are a Phase-2 authoring task (NOT to be generated). This pool is
+// the library the Phase-2 content matrix will select from by {spine × phase ×
+// dominant-emotion}; getTodayAction still uses the tone pool until then.
+// ═══════════════════════════════════════════════════════════════════
+const SCRIPTURE_BY_CORE: Record<string, { en: { body: string; scriptureRef: string } }> = {
+  fear:              { en: { body: "So do not fear, for I am with you; do not be dismayed, for I am your God. I will strengthen you and help you.", scriptureRef: "Isaiah 41:10" } },
+  strength_for_today:{ en: { body: "Because of the Lord's great love we are not consumed, for his compassions never fail. They are new every morning.", scriptureRef: "Lamentations 3:22-23" } },
+  anxiety:           { en: { body: "Do not be anxious about anything, but in every situation, by prayer and petition, with thanksgiving, present your requests to God.", scriptureRef: "Philippians 4:6" } },
+  waiting:           { en: { body: "Wait for the Lord; be strong and take heart and wait for the Lord.", scriptureRef: "Psalm 27:14" } },
+  peace:             { en: { body: "You will keep in perfect peace those whose minds are steadfast, because they trust in you.", scriptureRef: "Isaiah 26:3" } },
+  endurance:         { en: { body: "Therefore we do not lose heart. Though outwardly we are wasting away, yet inwardly we are being renewed day by day.", scriptureRef: "2 Corinthians 4:16" } },
+  presence:          { en: { body: "And surely I am with you always, to the very end of the age.", scriptureRef: "Matthew 28:20" } },
+  loneliness:        { en: { body: "God sets the lonely in families.", scriptureRef: "Psalm 68:6" } },
+  helplessness:      { en: { body: "Cast all your anxiety on him because he cares for you.", scriptureRef: "1 Peter 5:7" } },
+  surrender:         { en: { body: "Trust in the Lord with all your heart and lean not on your own understanding; in all your ways submit to him, and he will make your paths straight.", scriptureRef: "Proverbs 3:5-6" } },
+  hope_held_loosely: { en: { body: "Be joyful in hope, patient in affliction, faithful in prayer.", scriptureRef: "Romans 12:12" } },
+  boundaries:        { en: { body: "For each one should carry their own load.", scriptureRef: "Galatians 6:5" } },
+  tend_own_heart:    { en: { body: "Above all else, guard your heart, for everything you do flows from it.", scriptureRef: "Proverbs 4:23" } },
+  exhaustion:        { en: { body: "Come to me, all you who are weary and burdened, and I will give you rest.", scriptureRef: "Matthew 11:28" } },
+  being_seen:        { en: { body: "You are the God who sees me.", scriptureRef: "Genesis 16:13" } },
+  strength:          { en: { body: "But those who hope in the Lord will renew their strength. They will soar on wings like eagles; they will run and not grow weary.", scriptureRef: "Isaiah 40:31" } },
+  // already present in the tone pool — mirrored here so the core index is complete
+  grief:             { en: { body: "He is close to the brokenhearted and saves those who are crushed in spirit.", scriptureRef: "Psalm 34:18" } },
+  comfort:           { en: { body: "Blessed are those who mourn, for they will be comforted.", scriptureRef: "Matthew 5:4" } },
+  belovedness:       { en: { body: "For you created my inmost being; you knit me together in my mother's womb.", scriptureRef: "Psalm 139:13" } },
+};
+
+function scriptureForCore(core: string, _lang: Lang = "en"): { body: string; scriptureRef: string } | null {
+  // en verified now; fr/es/pt verified translations pending (Phase 2, never generated).
+  return SCRIPTURE_BY_CORE[core]?.en ?? null;
+}
+
 const GRATITUDE_TEMPLATES: Record<JourneyTone, Record<Lang, string>> = {
   gentle:    { en: "Name one thing you didn't lose in all of this.", fr: "Nomme une chose que tu n'as pas perdue dans tout cela.", es: "Nombra una cosa que no perdiste en todo esto.", pt: "Diga uma coisa que você não perdeu em tudo isso." },
   grateful:  { en: "Three things you didn't earn but received anyway.", fr: "Trois choses que tu n'as pas méritées mais que tu as reçues quand même.", es: "Tres cosas que no te ganaste pero recibiste de todas formas.", pt: "Três coisas que você não mereceu mas recebeu assim mesmo." },
