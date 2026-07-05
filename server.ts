@@ -762,6 +762,10 @@ async function initDb(): Promise<void> {
     // v5.16.3 — JOURNEYS Phase 3: partner privacy + blocks
     // ═══════════════════════════════════════════════════════════════════
     await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS open_to_partner BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+    // v5.20.0 — Tier-1: record the manifest door + dominant emotion so the content
+    // matrix can select scripture by {spine x phase x emotion}. Nullable/additive.
+    await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS door TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS dominant_emotion TEXT`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS partner_blocks (
       blocker TEXT NOT NULL REFERENCES users(id),
       blocked TEXT NOT NULL REFERENCES users(id),
@@ -1726,6 +1730,20 @@ function scriptureForCore(core: string, _lang: Lang = "en"): { body: string; scr
   return SCRIPTURE_BY_CORE[core]?.en ?? null;
 }
 
+// Content matrix: choose the scripture emotional core for a scripture card by
+// {door × phase × dominant-emotion}. Prefer the user's named emotion when the
+// door serves it; else cycle the door's cores by phase. null → no door → caller
+// falls back to the tone pool.
+function pickScriptureCore(door: string | null | undefined, phaseIndex: number, dominantEmotion: string | null | undefined): string | null {
+  if (!door) return null;
+  const d = TIER1_DOORS[door];
+  if (!d || !d.scriptureCores.length) return null;
+  if (dominantEmotion && d.scriptureCores.includes(dominantEmotion)) return dominantEmotion;
+  const n = d.scriptureCores.length;
+  const idx = ((phaseIndex % n) + n) % n;
+  return d.scriptureCores[idx];
+}
+
 const GRATITUDE_TEMPLATES: Record<JourneyTone, Record<Lang, string>> = {
   gentle:    { en: "Name one thing you didn't lose in all of this.", fr: "Nomme une chose que tu n'as pas perdue dans tout cela.", es: "Nombra una cosa que no perdiste en todo esto.", pt: "Diga uma coisa que você não perdeu em tudo isso." },
   grateful:  { en: "Three things you didn't earn but received anyway.", fr: "Trois choses que tu n'as pas méritées mais que tu as reçues quand même.", es: "Tres cosas que no te ganaste pero recibiste de todas formas.", pt: "Três coisas que você não mereceu mas recebeu assim mesmo." },
@@ -1941,7 +1959,14 @@ async function getTodayAction(instance: any, lang: Lang): Promise<JourneyDailyAc
       break;
     }
     case "scripture": {
-      const scrData = SCRIPTURE_TEMPLATES[phase.tone]?.[lang] || SCRIPTURE_TEMPLATES[phase.tone]?.en || SCRIPTURE_TEMPLATES.gentle.en;
+      // Tier-1 content matrix: prefer a verse chosen by the door's emotional core
+      // {spine × phase × dominant-emotion}. en verified now; other langs fall back
+      // to the localized tone pool until verified translations land. Legacy
+      // instances (no door) also fall back → unchanged behavior.
+      const phaseIndex = template.phases.indexOf(phase);
+      const core = pickScriptureCore(instance.door, phaseIndex, instance.dominant_emotion);
+      const byCore = (lang === "en" && core) ? scriptureForCore(core, lang) : null;
+      const scrData = byCore || SCRIPTURE_TEMPLATES[phase.tone]?.[lang] || SCRIPTURE_TEMPLATES[phase.tone]?.en || SCRIPTURE_TEMPLATES.gentle.en;
       const scrTitle = lang === "fr" ? "Écriture" : lang === "es" ? "Escritura" : lang === "pt" ? "Escritura" : "Scripture";
       content = { title: scrTitle, body: scrData.body, scriptureRef: scrData.scriptureRef };
       break;
@@ -5672,7 +5697,7 @@ function resolveJourney(input: { door?: string; intake?: string }): ResolvedJour
 app.post("/journeys/start", async (c) => {
   try {
     const body = await c.req.json();
-    const { userId, intake, door, prayedForName, lengthDays: bodyLengthDays } = body;
+    const { userId, intake, door, dominantEmotion, prayedForName, lengthDays: bodyLengthDays } = body;
 
     if (!userId || (!intake && !door)) return c.json({ error: "userId and (intake or door) required" }, 400);
 
@@ -5752,9 +5777,9 @@ app.post("/journeys/start", async (c) => {
     const lengthDays = bodyLengthDays || resolved.lengthDays || template.lengthDays || null;
 
     const ins = await pool.query(
-      `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [resolvedUserId, templateKey, family, template.mode, unit, lengthDays, prayedForName || null]
+      `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name, door, dominant_emotion)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [resolvedUserId, templateKey, family, template.mode, unit, lengthDays, prayedForName || null, resolved.door, dominantEmotion || null]
     );
     const instance = ins.rows[0];
 
