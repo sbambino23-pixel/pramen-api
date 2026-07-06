@@ -2240,7 +2240,8 @@ app.post("/api/admin/upload-video", async (c) => {
   } catch (err: any) { return c.json({ error: "Internal error", detail: err.message }, 500); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.0-p0b", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+let p0PurgeReport: any = null; // v5.20.1 — raw counts from the one-time phase0proof purge
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.1", p0_purge: p0PurgeReport, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -6592,6 +6593,49 @@ async function start() {
         if (c) console.log(`[Cleanup] FLAGGED for Samy: ${code} "${c.name}" — confirm delete`);
       }
     } catch (err: any) { console.error("[Cleanup]", err.message); }
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.20.1 — One-time purge of Phase-0 runtime-test users (phase0proof-*).
+  // These were created by the byte-identical snapshot and auto-joined REAL
+  // circles (GRIEF1/HEAL01). Remove every trace + expose raw per-table counts
+  // at "/" (p0_purge). Prefix-scoped, idempotent, safe. FK-ordered deletes.
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const PREFIX = "phase0proof-%";
+    try {
+      const inst = await pool.query("SELECT id FROM journey_instances WHERE user_id LIKE $1", [PREFIX]);
+      const instIds = inst.rows.map((r: any) => r.id);
+      let daCount = 0;
+      if (instIds.length) {
+        const da = await pool.query("DELETE FROM journey_daily_actions WHERE instance_id = ANY($1)", [instIds]);
+        daCount = da.rowCount || 0;
+      }
+      const pr = await pool.query("DELETE FROM partner_requests WHERE from_user LIKE $1 OR to_user LIKE $1", [PREFIX]);
+      const pb = await pool.query("DELETE FROM partner_blocks WHERE blocker LIKE $1 OR blocked LIKE $1", [PREFIX]);
+      const ji = await pool.query("DELETE FROM journey_instances WHERE user_id LIKE $1", [PREFIX]);
+      const ud = await pool.query("DELETE FROM user_data WHERE user_id LIKE $1", [PREFIX]);
+      // Strip from denormalized circle member arrays (in-memory + DB).
+      let memberRemovals = 0, circlesTouched = 0;
+      for (const [, ci] of circles) {
+        const before = ci.members.length;
+        ci.members = ci.members.filter((m: any) => !(m.userId || "").startsWith("phase0proof-"));
+        if (ci.members.length !== before) { memberRemovals += before - ci.members.length; circlesTouched++; await saveCircleToDb(ci); }
+      }
+      const us = await pool.query("DELETE FROM users WHERE id LIKE $1", [PREFIX]);
+      p0PurgeReport = {
+        journey_daily_actions: daCount,
+        partner_requests: pr.rowCount || 0,
+        partner_blocks: pb.rowCount || 0,
+        journey_instances: ji.rowCount || 0,
+        user_data: ud.rowCount || 0,
+        circle_members_removed: memberRemovals,
+        circles_touched: circlesTouched,
+        users: us.rowCount || 0,
+        ranAt: new Date().toISOString(),
+      };
+      console.log("[v5.20.1] phase0proof purge:", JSON.stringify(p0PurgeReport));
+    } catch (err: any) { console.error("[v5.20.1 purge]", err.message); p0PurgeReport = { error: err.message }; }
   })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
