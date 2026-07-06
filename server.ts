@@ -2265,7 +2265,7 @@ app.post("/api/admin/upload-video", async (c) => {
 
 let p0PurgeReport: any = null; // v5.20.1 — raw counts from the one-time phase0proof purge
 let normSelfTest: any = null;  // v5.20.2 — email normalization self-test result
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.2", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.3", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2433,6 +2433,33 @@ app.post("/api/admin/migrate-circles", async (c) => {
 
 app.put("/api/user/email-opt-in", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { optIn } = await c.req.json(); await pool.query("UPDATE users SET email_opt_in=$1,updated_at=NOW() WHERE id=$2", [!!optIn, u.id]); if (optIn) trackEvent(u.id, "email_opt_in", { email: u.email }); return c.json({ success: true }); });
 app.get("/api/admin/user-lookup", async (c) => { const key = c.req.query("key") || c.req.header("X-Admin-Secret"); if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403); const q = c.req.query("q") || ""; if (!q) return c.json({ error: "?q= required (email, userId, or deviceUserId)" }, 400); const r = await pool.query("SELECT id,name,email,auth_provider,created_at,subscription_status,trial_start_date,trial_end_date,device_user_id,avatar_url FROM users WHERE id=$1 OR lower(trim(email))=lower(trim($1)) OR device_user_id=$1", [q]); if (r.rows.length === 0) return c.json({ error: "User not found" }, 404); return c.json({ user: r.rows[0] }); });
+
+// v5.20.3 — TEMPORARY: duplicate-email collision list, reviewed before the
+// UNIQUE constraint lands, then this endpoint is removed. Key = ADMIN_SECRET
+// (env). Minimal fields only: normalized email, count, per-account uuid /
+// created_at / auth_provider. No names, no journey data, no tokens.
+app.get("/admin/email-collisions", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  try {
+    const rows = (await pool.query(`
+      SELECT lower(trim(email)) AS norm_email, count(*)::int AS count,
+             json_agg(json_build_object('uuid', id, 'created_at', created_at, 'auth_provider', auth_provider) ORDER BY created_at) AS accounts
+        FROM users
+       WHERE email IS NOT NULL AND trim(email) <> ''
+         AND lower(trim(email)) NOT LIKE '%@privaterelay.appleid.com'
+       GROUP BY lower(trim(email))
+      HAVING count(*) > 1
+       ORDER BY count(*) DESC, norm_email
+    `)).rows;
+    return c.json({
+      collision_groups: rows.length,
+      total_accounts_involved: rows.reduce((s: number, r: any) => s + r.count, 0),
+      collisions: rows,
+      note: "grouped by lower(trim(email)); Apple relay excluded; UNIQUE not yet applied",
+    });
+  } catch (err: any) { return c.json({ error: err.message }, 500); }
+});
 app.get("/api/admin/user-deep", async (c) => {
   const key = c.req.query("key") || c.req.header("X-Admin-Secret");
   if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
