@@ -584,6 +584,10 @@ async function initDb(): Promise<void> {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT`).catch(() => {});
     // v5.9.1 — store user's selected app language for server-side push notification localization
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS language TEXT DEFAULT 'en'`).catch(() => {});
+    // v5.20.2 — normalized, matchable email (null for Apple relay). Entitlement/
+    // answer matching (Phase 3) runs exclusively on this. Additive, nullable,
+    // metadata-only. Stored `email` keeps the raw provider value as-is.
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verified_email TEXT`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, streak_count INTEGER DEFAULT 0, highest_streak INTEGER DEFAULT 0, total_prayers INTEGER DEFAULT 0, total_minutes INTEGER DEFAULT 0, last_prayed_date TIMESTAMPTZ, sessions JSONB DEFAULT '[]'::jsonb, preferences JSONB DEFAULT '{}'::jsonb, circle_codes TEXT[] DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_local_date TEXT`).catch(() => {});
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_timezone TEXT`).catch(() => {});
@@ -789,7 +793,26 @@ function generateAuthToken(): string { return randomUUID() + "-" + randomUUID();
 async function getUserByToken(token: string) { if (!token) return null; try { const r = await pool.query("SELECT * FROM users WHERE auth_token=$1", [token]); return r.rows[0] || null; } catch { return null; } }
 async function getUserByAppleId(id: string) { try { const r = await pool.query("SELECT * FROM users WHERE apple_user_id=$1", [id]); return r.rows[0] || null; } catch { return null; } }
 async function getUserByGoogleId(id: string) { try { const r = await pool.query("SELECT * FROM users WHERE google_user_id=$1", [id]); return r.rows[0] || null; } catch { return null; } }
-async function getUserByEmail(email: string) { try { const r = await pool.query("SELECT * FROM users WHERE email=$1", [email]); return r.rows[0] || null; } catch { return null; } }
+// v5.20.2 — Email normalization + verified-email semantics (locked).
+//   normalizeEmail: trim + lowercase (null-safe). Used on BOTH sides of every
+//     email comparison; stored values are NOT backfilled yet (waits for the
+//     collision-review + UNIQUE constraint).
+//   verifiedEmailFor: the matchable email. Google → verified; Apple non-relay →
+//     verified; Apple relay (@privaterelay.appleid.com) → null (never matchable,
+//     recovery-flow only); magic-link → verified.
+function normalizeEmail(e?: string | null): string | null {
+  if (!e) return null;
+  const t = e.trim().toLowerCase();
+  return t || null;
+}
+function verifiedEmailFor(provider: string, rawEmail?: string | null): string | null {
+  const norm = normalizeEmail(rawEmail);
+  if (!norm) return null;
+  if (provider === "apple" && norm.endsWith("@privaterelay.appleid.com")) return null;
+  return norm; // google, apple-non-relay, magic → matchable
+}
+// Comparison uses lower(trim()) on BOTH sides so it matches legacy un-normalized rows.
+async function getUserByEmail(email: string) { try { const r = await pool.query("SELECT * FROM users WHERE lower(trim(email))=lower(trim($1))", [email]); return r.rows[0] || null; } catch { return null; } }
 async function getUserData(userId: string) { try { const r = await pool.query("SELECT * FROM user_data WHERE user_id=$1", [userId]); if (r.rows[0]) { const d = r.rows[0]; let streakCount = d.streak_count || 0; if (streakCount > 0 && d.last_prayed_date) { const now = new Date(); const lastPrayed = new Date(d.last_prayed_date); const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()); const yesterday = new Date(today.getTime() - 86400000); const lastPrayedDay = new Date(lastPrayed.getFullYear(), lastPrayed.getMonth(), lastPrayed.getDate()); if (lastPrayedDay < yesterday) { streakCount = 0; await pool.query("UPDATE user_data SET streak_count=0, updated_at=NOW() WHERE user_id=$1", [userId]); } } return { streakCount, highestStreak: d.highest_streak, totalPrayers: d.total_prayers, totalMinutes: d.total_minutes, lastPrayedDate: d.last_prayed_date, sessions: d.sessions || [], preferences: d.preferences || {}, circleCodes: d.circle_codes || [] }; } return null; } catch { return null; } }
 function getUserCircleCodes(...userIds: string[]): string[] { const ids = new Set(userIds.filter(Boolean)); const codes: string[] = []; for (const [code, circle] of circles) { if (circle.members.some(m => ids.has(m.userId))) codes.push(code); } return codes; }
 async function migrateCircleMembership(oldId: string, newId: string, name: string) { for (const [, c] of circles) { const m = c.members.find(m => m.userId === oldId); if (m) { m.userId = newId; if (name) m.name = name; await saveCircleToDb(c); } if (c.creatorUserId === oldId) { c.creatorUserId = newId; await saveCircleToDb(c); } } }
@@ -2241,7 +2264,8 @@ app.post("/api/admin/upload-video", async (c) => {
 });
 
 let p0PurgeReport: any = null; // v5.20.1 — raw counts from the one-time phase0proof purge
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.1", p0_purge: p0PurgeReport, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+let normSelfTest: any = null;  // v5.20.2 — email normalization self-test result
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.2", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2350,7 +2374,7 @@ app.post("/api/auth/apple", async (c) => {
     let oldDeviceUserId: string | null = null;
     if (user) {
       if (fullName && !user.name) { await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [fullName, user.id]); user.name = fullName; }
-      if (email && !user.email) { await pool.query("UPDATE users SET email=$1,updated_at=NOW() WHERE id=$2", [email, user.id]); user.email = email; }
+      if (email && !user.email) { const ve = verifiedEmailFor("apple", email); await pool.query("UPDATE users SET email=$1,verified_email=COALESCE(verified_email,$2),updated_at=NOW() WHERE id=$3", [email, ve, user.id]); user.email = email; user.verified_email = ve; }
       oldDeviceUserId = user.device_user_id;
       if (deviceUserId && deviceUserId !== user.device_user_id) {
         if (user.device_user_id) await migrateCircleMembership(user.device_user_id, user.id, user.name || "");
@@ -2359,7 +2383,7 @@ app.post("/api/auth/apple", async (c) => {
     } else {
       isNewUser = true; const authToken = generateAuthToken(); const userId = randomUUID(); const userName = fullName || "";
       // v5.13.7 — new users start as 'none'. Real trial status comes from RevenueCat webhooks only.
-      await pool.query(`INSERT INTO users (id,apple_user_id,email,name,auth_token,device_user_id,subscription_status) VALUES ($1,$2,$3,$4,$5,$6,'none')`, [userId, appleUserId, email||null, userName, authToken, deviceUserId||null]);
+      await pool.query(`INSERT INTO users (id,apple_user_id,email,verified_email,name,auth_token,device_user_id,subscription_status) VALUES ($1,$2,$3,$4,$5,$6,$7,'none')`, [userId, appleUserId, email||null, verifiedEmailFor("apple", email), userName, authToken, deviceUserId||null]);
       await pool.query(`INSERT INTO user_data (user_id) VALUES ($1)`, [userId]);
       user = { id: userId, apple_user_id: appleUserId, email, name: userName, auth_token: authToken, device_user_id: deviceUserId, trial_start_date: null, trial_end_date: null, subscription_status: "none" };
       trackEvent(userId, "user_signed_up", { auth_provider: "apple", has_email: !!email, has_device_migration: !!deviceUserId });
@@ -2375,7 +2399,7 @@ app.post("/api/auth/google", async (c) => {
     if (!googleUserId || !email) return c.json({ error: "googleUserId and email required" }, 400);
     let verified = !idToken; if (idToken) { try { const tr = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`); if (tr.ok) { const td = (await tr.json()) as any; if (td.sub === googleUserId) verified = true; } } catch {} }
     let user = await getUserByGoogleId(googleUserId); let isNewUser = false;
-    if (!user) { const ex = await getUserByEmail(email); if (ex) { await pool.query("UPDATE users SET google_user_id=$1,auth_provider=CASE WHEN auth_provider='apple' THEN 'apple+google' ELSE 'google' END,updated_at=NOW() WHERE id=$2", [googleUserId, ex.id]); user = ex; } }
+    if (!user) { const ex = await getUserByEmail(email); if (ex) { await pool.query("UPDATE users SET google_user_id=$1,verified_email=COALESCE(verified_email,$2),auth_provider=CASE WHEN auth_provider='apple' THEN 'apple+google' ELSE 'google' END,updated_at=NOW() WHERE id=$3", [googleUserId, verifiedEmailFor("google", email), ex.id]); user = ex; } }
     let oldDeviceUserIdG: string | null = null;
     if (user) {
       if (fullName && !user.name) { await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [fullName, user.id]); user.name = fullName; }
@@ -2387,7 +2411,7 @@ app.post("/api/auth/google", async (c) => {
     } else {
       isNewUser = true; const authToken = generateAuthToken(); const userId = randomUUID(); const userName = fullName || email.split("@")[0];
       // v5.13.7 — new users start as 'none'. Real trial status comes from RevenueCat webhooks only.
-      await pool.query(`INSERT INTO users (id,google_user_id,email,name,auth_provider,auth_token,device_user_id,subscription_status) VALUES ($1,$2,$3,$4,'google',$5,$6,'none')`, [userId, googleUserId, email, userName, authToken, deviceUserId||null]);
+      await pool.query(`INSERT INTO users (id,google_user_id,email,verified_email,name,auth_provider,auth_token,device_user_id,subscription_status) VALUES ($1,$2,$3,$4,$5,'google',$6,$7,'none')`, [userId, googleUserId, email, verifiedEmailFor("google", email), userName, authToken, deviceUserId||null]);
       await pool.query(`INSERT INTO user_data (user_id) VALUES ($1)`, [userId]);
       user = { id: userId, google_user_id: googleUserId, email, name: userName, auth_token: authToken, device_user_id: deviceUserId, trial_start_date: null, trial_end_date: null, subscription_status: "none" };
       trackEvent(userId, "user_signed_up", { auth_provider: "google", has_email: true, has_device_migration: !!deviceUserId });
@@ -2408,13 +2432,13 @@ app.post("/api/admin/migrate-circles", async (c) => {
 });
 
 app.put("/api/user/email-opt-in", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ error: "Unauthorized" }, 401); const { optIn } = await c.req.json(); await pool.query("UPDATE users SET email_opt_in=$1,updated_at=NOW() WHERE id=$2", [!!optIn, u.id]); if (optIn) trackEvent(u.id, "email_opt_in", { email: u.email }); return c.json({ success: true }); });
-app.get("/api/admin/user-lookup", async (c) => { const key = c.req.query("key") || c.req.header("X-Admin-Secret"); if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403); const q = c.req.query("q") || ""; if (!q) return c.json({ error: "?q= required (email, userId, or deviceUserId)" }, 400); const r = await pool.query("SELECT id,name,email,auth_provider,created_at,subscription_status,trial_start_date,trial_end_date,device_user_id,avatar_url FROM users WHERE id=$1 OR email=$1 OR device_user_id=$1", [q]); if (r.rows.length === 0) return c.json({ error: "User not found" }, 404); return c.json({ user: r.rows[0] }); });
+app.get("/api/admin/user-lookup", async (c) => { const key = c.req.query("key") || c.req.header("X-Admin-Secret"); if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403); const q = c.req.query("q") || ""; if (!q) return c.json({ error: "?q= required (email, userId, or deviceUserId)" }, 400); const r = await pool.query("SELECT id,name,email,auth_provider,created_at,subscription_status,trial_start_date,trial_end_date,device_user_id,avatar_url FROM users WHERE id=$1 OR lower(trim(email))=lower(trim($1)) OR device_user_id=$1", [q]); if (r.rows.length === 0) return c.json({ error: "User not found" }, 404); return c.json({ user: r.rows[0] }); });
 app.get("/api/admin/user-deep", async (c) => {
   const key = c.req.query("key") || c.req.header("X-Admin-Secret");
   if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
   const q = c.req.query("q") || "";
   if (!q) return c.json({ error: "?q= required" }, 400);
-  const user = await pool.query("SELECT * FROM users WHERE id=$1 OR email=$1 OR device_user_id=$1", [q]);
+  const user = await pool.query("SELECT * FROM users WHERE id=$1 OR lower(trim(email))=lower(trim($1)) OR device_user_id=$1", [q]);
   if (!user.rows[0]) return c.json({ error: "User not found" }, 404);
   const u = user.rows[0];
   const referralCode = await pool.query("SELECT * FROM referral_codes WHERE user_id=$1", [u.id]);
@@ -2801,7 +2825,7 @@ app.post("/webhooks/loops", async (c) => {
     const email = identity.email || "";
 
     if (!userId && email) {
-      const res = await pool.query("SELECT id FROM users WHERE email = $1 LIMIT 1", [email]);
+      const res = await pool.query("SELECT id FROM users WHERE lower(trim(email)) = lower(trim($1)) LIMIT 1", [email]);
       if (res.rows.length > 0) userId = res.rows[0].id;
     }
 
@@ -3472,7 +3496,7 @@ app.post("/api/admin/grant-trial", async (c) => {
   if (!validDurations.includes(dur)) return c.json({ error: `Invalid duration. Valid: ${validDurations.join(", ")}` }, 400);
   let targetUserId = userId;
   if (!targetUserId && email) {
-    const userResult = await pool.query("SELECT id FROM users WHERE email=$1", [email.toLowerCase()]);
+    const userResult = await pool.query("SELECT id FROM users WHERE lower(trim(email))=lower(trim($1))", [email.toLowerCase()]);
     if (!userResult.rows[0]) return c.json({ error: `No user found with email: ${email}` }, 404);
     targetUserId = userResult.rows[0].id;
   }
@@ -3648,7 +3672,7 @@ app.post("/api/referrals/invite-batch", async (c) => {
   for (const inv of invites) {
     const name = (inv.name || "").trim(); const email = (inv.email || "").trim().toLowerCase();
     if (!name || name.length < 2 || !emailRegex.test(email)) { failed.push({ email: email || "invalid", reason: "Invalid name or email" }); continue; }
-    const existing = await pool.query("SELECT id FROM users WHERE email=$1", [email]);
+    const existing = await pool.query("SELECT id FROM users WHERE lower(trim(email))=lower(trim($1))", [email]);
     if (existing.rows.length > 0) { alreadyMembers.push({ email }); continue; }
     if (RESEND_API_KEY) {
       try {
@@ -6636,6 +6660,43 @@ async function start() {
       };
       console.log("[v5.20.1] phase0proof purge:", JSON.stringify(p0PurgeReport));
     } catch (err: any) { console.error("[v5.20.1 purge]", err.message); p0PurgeReport = { error: err.message }; }
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.20.2 — Email normalization self-test. Self-cleaning (throwaway users,
+  // NO circles per the standing rule). Result exposed at "/" (norm_selftest):
+  //   (1) verifiedEmailFor semantics, (2) write mixed-case → read normalized,
+  //   (3) lower(trim) comparison matches a LEGACY un-normalized stored row.
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const r: any = { assertions: {}, write_read: {}, legacy_match: {} };
+    const wid = "normselftest-write", lid = "normselftest-legacy";
+    try {
+      r.assertions.google_mixed_to_norm = verifiedEmailFor("google", "  Test.User@GMAIL.com ") === "test.user@gmail.com";
+      r.assertions.apple_nonrelay_verified = verifiedEmailFor("apple", "Real@Me.COM") === "real@me.com";
+      r.assertions.apple_relay_null = verifiedEmailFor("apple", "abc123@privaterelay.appleid.com") === null;
+
+      const raw = "  Write.MixedCase@Example.COM  ";
+      await pool.query("DELETE FROM users WHERE id IN ($1,$2)", [wid, lid]);
+      await pool.query("INSERT INTO users (id,email,verified_email,name,auth_token,auth_provider) VALUES ($1,$2,$3,'selftest',$4,'selftest')",
+        [wid, raw, verifiedEmailFor("google", raw), "tok-" + wid]);
+      const rd = await pool.query("SELECT email, verified_email FROM users WHERE id=$1", [wid]);
+      r.write_read = { input_raw: raw, stored_email_kept_raw: rd.rows[0].email, verified_email: rd.rows[0].verified_email, normalized_ok: rd.rows[0].verified_email === "write.mixedcase@example.com" };
+
+      // Legacy row: verified_email stored RAW/mixed (simulates a pre-normalization row).
+      await pool.query("INSERT INTO users (id,email,verified_email,name,auth_token,auth_provider) VALUES ($1,$2,$2,'selftest',$3,'selftest')",
+        [lid, "Legacy.MIXED@Example.Com", "tok-" + lid]);
+      const m = await pool.query("SELECT id FROM users WHERE lower(trim(verified_email))=lower(trim($1))", ["  legacy.mixed@EXAMPLE.com  "]);
+      r.legacy_match = { stored_raw: "Legacy.MIXED@Example.Com", query_input: "  legacy.mixed@EXAMPLE.com  ", matched: m.rows.some((x: any) => x.id === lid) };
+
+      await pool.query("DELETE FROM users WHERE id IN ($1,$2)", [wid, lid]);
+      r.cleaned = true; r.ranAt = new Date().toISOString();
+    } catch (err: any) {
+      r.error = err.message;
+      try { await pool.query("DELETE FROM users WHERE id IN ($1,$2)", [wid, lid]); } catch {}
+    }
+    normSelfTest = r;
+    console.log("[v5.20.2] norm self-test:", JSON.stringify(r));
   })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
