@@ -1370,6 +1370,11 @@ const RECEIVING_SAFETY_TEMPLATES: Set<string> = new Set(
     .map(d => d.templateKey)
 );
 
+// Master gate for the Tier-1 spine re-architecture. Default OFF ⇒ byte-identical
+// to pre-Tier-1 behavior: legacy intake routing, grief-only receiving phase,
+// tone-pool scripture. Flip with env TIER1_ENABLED=true.
+const TIER1_ENABLED = process.env.TIER1_ENABLED === "true";
+
 // -- 1. JOURNEY_TEMPLATES (3 Phase-1 starters) -----------------------
 
 const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
@@ -1964,7 +1969,7 @@ async function getTodayAction(instance: any, lang: Lang): Promise<JourneyDailyAc
       // to the localized tone pool until verified translations land. Legacy
       // instances (no door) also fall back → unchanged behavior.
       const phaseIndex = template.phases.indexOf(phase);
-      const core = pickScriptureCore(instance.door, phaseIndex, instance.dominant_emotion);
+      const core = TIER1_ENABLED ? pickScriptureCore(instance.door, phaseIndex, instance.dominant_emotion) : null;
       const byCore = (lang === "en" && core) ? scriptureForCore(core, lang) : null;
       const scrData = byCore || SCRIPTURE_TEMPLATES[phase.tone]?.[lang] || SCRIPTURE_TEMPLATES[phase.tone]?.en || SCRIPTURE_TEMPLATES.gentle.en;
       const scrTitle = lang === "fr" ? "Écriture" : lang === "es" ? "Escritura" : lang === "pt" ? "Escritura" : "Scripture";
@@ -5676,7 +5681,7 @@ interface ResolvedJourney {
   door: string | null;
 }
 function resolveJourney(input: { door?: string; intake?: string }): ResolvedJourney {
-  if (input.door && TIER1_DOORS[input.door]) {
+  if (TIER1_ENABLED && input.door && TIER1_DOORS[input.door]) {
     const d = TIER1_DOORS[input.door];
     const tmpl = JOURNEY_TEMPLATES[d.templateKey];
     const lengthDays = d.length != null ? d.length : (tmpl?.lengthDays ?? null);
@@ -5892,7 +5897,12 @@ function isReceivingPhase(templateKey: string, currentDay: number): boolean {
   // chronic all inherit it). Someone on day 1 of a diagnosis is held, not asked
   // to pray for a stranger. Carrying-spine journeys are outward by design, so
   // their safety is language/content-based (Phase 2), not this day-gate.
-  if (RECEIVING_SAFETY_TEMPLATES.has(templateKey) && currentDay <= 10) return true;
+  if (TIER1_ENABLED) {
+    if (RECEIVING_SAFETY_TEMPLATES.has(templateKey) && currentDay <= 10) return true;
+    return false;
+  }
+  // Flag OFF → original grief-only behavior (byte-identical to pre-Tier-1).
+  if (templateKey === "walking_through_grief" && currentDay <= 10) return true;
   return false;
 }
 
