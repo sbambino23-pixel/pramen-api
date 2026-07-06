@@ -762,6 +762,10 @@ async function initDb(): Promise<void> {
     // v5.16.3 — JOURNEYS Phase 3: partner privacy + blocks
     // ═══════════════════════════════════════════════════════════════════
     await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS open_to_partner BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+    // v5.20.0 — Tier-1: record the manifest door + dominant emotion so the content
+    // matrix can select scripture by {spine x phase x emotion}. Nullable/additive.
+    await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS door TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS dominant_emotion TEXT`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS partner_blocks (
       blocker TEXT NOT NULL REFERENCES users(id),
       blocked TEXT NOT NULL REFERENCES users(id),
@@ -1262,6 +1266,115 @@ const LEGACY_TYPE_MAP: Record<JourneyActionType, JourneyActionType> = {
   encouragement: "prayer",       // encouragement → prayer (receive, don't do)
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// v5.20.0 — TIER 1 SPINE MODEL + JOURNEY MANIFEST (single source of truth)
+// Michael's 50+ taxonomy: 7 marketing "doors" collapse to 3 content SPINES.
+// A door = one manifest row → an existing spine/template. Adding a future ad
+// angle later = one new row, NOT a newly authored journey. Dedicated per-door
+// content pools + verified scripture (indexed by emotional core) land in
+// Phase 2; this slice establishes the model and propagates grief-safety by
+// safety_class. The app never sees a catalog — one journey at a time.
+// ═══════════════════════════════════════════════════════════════════
+
+type JourneySpine = "in_my_body" | "grieving_loss" | "carrying_someone" | "drawing_closer";
+type SafetyClass = "crisis" | "loss" | "carrying" | "standard";
+
+interface JourneyDoor {
+  key: string;                 // route key, e.g. "body/diagnosis"
+  name: Record<Lang, string>;  // ad-facing emotional label (the exact sentence the user is living)
+  spine: JourneySpine;
+  templateKey: string;         // resolves to JOURNEY_TEMPLATES (closest existing template for now; dedicated ones in Phase 2)
+  family: JourneyFamily;
+  mode: "fixed" | "open";
+  length?: number;             // in `unit`; omit for open/ongoing
+  unit: "day" | "week";
+  pacing: "acute" | "standard" | "ongoing";
+  safetyClass: SafetyClass;
+  tokens: string[];            // tokens the shared router must capture for this door
+  adExclude?: boolean;         // true = in-app only, never in paid creative (Motherhood)
+  scriptureCores: string[];    // emotional cores this door needs verified verses for (gap tracker)
+}
+
+const EN = (s: string): Record<Lang, string> => ({ en: s, fr: s, es: s, pt: s }); // localized door names authored in Phase 2
+
+const TIER1_DOORS: Record<string, JourneyDoor> = {
+  // ── SPINE 1 — "In my own body": fear + strength-for-today-only, never the whole road, never promise a cure
+  "body/diagnosis": {
+    key: "body/diagnosis", name: EN("Facing a Serious Health Diagnosis"), spine: "in_my_body",
+    templateKey: "through_illness_and_healing", family: "health", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "crisis",
+    tokens: ["who_self", "dominant_emotion", "phase"], scriptureCores: ["fear", "strength_for_today"],
+  },
+  "body/results": {
+    key: "body/results", name: EN("Waiting for Medical Test Results"), spine: "in_my_body",
+    templateKey: "through_illness_and_healing", family: "health", mode: "fixed", length: 10, unit: "day",
+    pacing: "acute", safetyClass: "crisis",
+    tokens: ["who_self", "dominant_emotion"], scriptureCores: ["anxiety", "waiting", "peace"],
+  },
+  "body/chronic": {
+    key: "body/chronic", name: EN("Living With Chronic Pain or Illness"), spine: "in_my_body",
+    templateKey: "through_illness_and_healing", family: "health", mode: "open", unit: "day",
+    pacing: "ongoing", safetyClass: "crisis",
+    tokens: ["who_self", "dominant_emotion"], scriptureCores: ["endurance", "presence", "strength_for_today"],
+  },
+  // ── SPINE 2 — "Grieving a loss": the existing grief engine + ALL its safety rules, unchanged
+  "grief/spouse": {
+    key: "grief/spouse", name: EN("Grieving the Loss of a Spouse"), spine: "grieving_loss",
+    templateKey: "walking_through_grief", family: "loss", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "loss",
+    tokens: ["who_self", "phase"], scriptureCores: ["grief", "comfort", "loneliness"],
+  },
+  // ── SPINE 3 — "Carrying someone I love": love + helplessness + tend-your-own-heart, no restoration promise, no guilt
+  "carry/child": {
+    key: "carry/child", name: EN("Praying for an Adult Child Who Has Walked Away"), spine: "carrying_someone",
+    templateKey: "praying_for_someone", family: "relationships", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "carrying",
+    tokens: ["who_someone", "carrying_name", "dominant_emotion"], scriptureCores: ["helplessness", "surrender", "hope_held_loosely"],
+  },
+  "carry/addiction": {
+    key: "carry/addiction", name: EN("Watching Someone You Love Fight Addiction"), spine: "carrying_someone",
+    templateKey: "praying_for_someone", family: "relationships", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "carrying",
+    tokens: ["who_someone", "carrying_name", "dominant_emotion"], scriptureCores: ["helplessness", "boundaries", "tend_own_heart"],
+  },
+  "carry/caregiver": {
+    key: "carry/caregiver", name: EN("Caring for a Sick Spouse"), spine: "carrying_someone",
+    templateKey: "praying_for_someone", family: "relationships", mode: "fixed", length: 30, unit: "day",
+    pacing: "standard", safetyClass: "carrying",
+    tokens: ["who_someone", "carrying_name", "dominant_emotion"], scriptureCores: ["exhaustion", "being_seen", "strength"],
+  },
+  // ── In-app only — routing preserved, EXCLUDED from all paid creative
+  "faith/motherhood": {
+    key: "faith/motherhood", name: EN("Motherhood"), spine: "drawing_closer",
+    templateKey: "expecting", family: "new_life", mode: "fixed", length: 40, unit: "week",
+    pacing: "standard", safetyClass: "standard",
+    tokens: ["who_self"], adExclude: true, scriptureCores: ["belovedness"],
+  },
+  "faith/grow": {
+    key: "faith/grow", name: EN("Grow in my faith"), spine: "drawing_closer",
+    templateKey: "drawing_closer", family: "drawing_closer", mode: "open", unit: "day",
+    pacing: "ongoing", safetyClass: "standard",
+    tokens: ["who_self"], scriptureCores: ["presence"],
+  },
+};
+
+function doorForKey(key: string): JourneyDoor | null { return TIER1_DOORS[key] || null; }
+function doorsForSpine(spine: JourneySpine): JourneyDoor[] { return Object.values(TIER1_DOORS).filter(d => d.spine === spine); }
+
+// Templates that host any loss/crisis door inherit the grief "receiving phase"
+// safety window (days 1-10 = held, not tasked with outward action). Derived from
+// the manifest so future crisis doors get the protection automatically.
+const RECEIVING_SAFETY_TEMPLATES: Set<string> = new Set(
+  Object.values(TIER1_DOORS)
+    .filter(d => d.safetyClass === "loss" || d.safetyClass === "crisis")
+    .map(d => d.templateKey)
+);
+
+// Master gate for the Tier-1 spine re-architecture. Default OFF ⇒ byte-identical
+// to pre-Tier-1 behavior: legacy intake routing, grief-only receiving phase,
+// tone-pool scripture. Flip with env TIER1_ENABLED=true.
+const TIER1_ENABLED = process.env.TIER1_ENABLED === "true";
+
 // -- 1. JOURNEY_TEMPLATES (3 Phase-1 starters) -----------------------
 
 const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
@@ -1585,6 +1698,57 @@ const SCRIPTURE_TEMPLATES: Record<JourneyTone, Record<Lang, { body: string; scri
   lifting:   { en: { body: "For you created my inmost being; you knit me together in my mother's womb.", scriptureRef: "Psalm 139:13" }, fr: { body: "C'est toi qui as formé mes reins, qui m'as tissé dans le sein de ma mère.", scriptureRef: "Psaume 139:13" }, es: { body: "Tú creaste mis entrañas; me formaste en el vientre de mi madre.", scriptureRef: "Salmo 139:13" }, pt: { body: "Tu criaste o meu íntimo e me teceste no ventre de minha mãe.", scriptureRef: "Salmo 139:13" } },
 };
 
+// ═══════════════════════════════════════════════════════════════════
+// v5.20.0 — VERIFIED SCRIPTURE POOL, INDEXED BY EMOTIONAL CORE
+// Bright line: NO AI-generated verses. Every entry is exact NIV text sourced
+// from a verified source (Bible Gateway), so the same fear/grief/anxiety verse
+// serves multiple Tier-1 doors. en is verified now; fr/es/pt verified
+// translations are a Phase-2 authoring task (NOT to be generated). This pool is
+// the library the Phase-2 content matrix will select from by {spine × phase ×
+// dominant-emotion}; getTodayAction still uses the tone pool until then.
+// ═══════════════════════════════════════════════════════════════════
+const SCRIPTURE_BY_CORE: Record<string, { en: { body: string; scriptureRef: string } }> = {
+  fear:              { en: { body: "So do not fear, for I am with you; do not be dismayed, for I am your God. I will strengthen you and help you.", scriptureRef: "Isaiah 41:10" } },
+  strength_for_today:{ en: { body: "Because of the Lord's great love we are not consumed, for his compassions never fail. They are new every morning.", scriptureRef: "Lamentations 3:22-23" } },
+  anxiety:           { en: { body: "Do not be anxious about anything, but in every situation, by prayer and petition, with thanksgiving, present your requests to God.", scriptureRef: "Philippians 4:6" } },
+  waiting:           { en: { body: "Wait for the Lord; be strong and take heart and wait for the Lord.", scriptureRef: "Psalm 27:14" } },
+  peace:             { en: { body: "You will keep in perfect peace those whose minds are steadfast, because they trust in you.", scriptureRef: "Isaiah 26:3" } },
+  endurance:         { en: { body: "Therefore we do not lose heart. Though outwardly we are wasting away, yet inwardly we are being renewed day by day.", scriptureRef: "2 Corinthians 4:16" } },
+  presence:          { en: { body: "And surely I am with you always, to the very end of the age.", scriptureRef: "Matthew 28:20" } },
+  loneliness:        { en: { body: "God sets the lonely in families.", scriptureRef: "Psalm 68:6" } },
+  helplessness:      { en: { body: "Cast all your anxiety on him because he cares for you.", scriptureRef: "1 Peter 5:7" } },
+  surrender:         { en: { body: "Trust in the Lord with all your heart and lean not on your own understanding; in all your ways submit to him, and he will make your paths straight.", scriptureRef: "Proverbs 3:5-6" } },
+  hope_held_loosely: { en: { body: "Be joyful in hope, patient in affliction, faithful in prayer.", scriptureRef: "Romans 12:12" } },
+  boundaries:        { en: { body: "For each one should carry their own load.", scriptureRef: "Galatians 6:5" } },
+  tend_own_heart:    { en: { body: "Above all else, guard your heart, for everything you do flows from it.", scriptureRef: "Proverbs 4:23" } },
+  exhaustion:        { en: { body: "Come to me, all you who are weary and burdened, and I will give you rest.", scriptureRef: "Matthew 11:28" } },
+  being_seen:        { en: { body: "You are the God who sees me.", scriptureRef: "Genesis 16:13" } },
+  strength:          { en: { body: "But those who hope in the Lord will renew their strength. They will soar on wings like eagles; they will run and not grow weary.", scriptureRef: "Isaiah 40:31" } },
+  // already present in the tone pool — mirrored here so the core index is complete
+  grief:             { en: { body: "He is close to the brokenhearted and saves those who are crushed in spirit.", scriptureRef: "Psalm 34:18" } },
+  comfort:           { en: { body: "Blessed are those who mourn, for they will be comforted.", scriptureRef: "Matthew 5:4" } },
+  belovedness:       { en: { body: "For you created my inmost being; you knit me together in my mother's womb.", scriptureRef: "Psalm 139:13" } },
+};
+
+function scriptureForCore(core: string, _lang: Lang = "en"): { body: string; scriptureRef: string } | null {
+  // en verified now; fr/es/pt verified translations pending (Phase 2, never generated).
+  return SCRIPTURE_BY_CORE[core]?.en ?? null;
+}
+
+// Content matrix: choose the scripture emotional core for a scripture card by
+// {door × phase × dominant-emotion}. Prefer the user's named emotion when the
+// door serves it; else cycle the door's cores by phase. null → no door → caller
+// falls back to the tone pool.
+function pickScriptureCore(door: string | null | undefined, phaseIndex: number, dominantEmotion: string | null | undefined): string | null {
+  if (!door) return null;
+  const d = TIER1_DOORS[door];
+  if (!d || !d.scriptureCores.length) return null;
+  if (dominantEmotion && d.scriptureCores.includes(dominantEmotion)) return dominantEmotion;
+  const n = d.scriptureCores.length;
+  const idx = ((phaseIndex % n) + n) % n;
+  return d.scriptureCores[idx];
+}
+
 const GRATITUDE_TEMPLATES: Record<JourneyTone, Record<Lang, string>> = {
   gentle:    { en: "Name one thing you didn't lose in all of this.", fr: "Nomme une chose que tu n'as pas perdue dans tout cela.", es: "Nombra una cosa que no perdiste en todo esto.", pt: "Diga uma coisa que você não perdeu em tudo isso." },
   grateful:  { en: "Three things you didn't earn but received anyway.", fr: "Trois choses que tu n'as pas méritées mais que tu as reçues quand même.", es: "Tres cosas que no te ganaste pero recibiste de todas formas.", pt: "Três coisas que você não mereceu mas recebeu assim mesmo." },
@@ -1800,7 +1964,14 @@ async function getTodayAction(instance: any, lang: Lang): Promise<JourneyDailyAc
       break;
     }
     case "scripture": {
-      const scrData = SCRIPTURE_TEMPLATES[phase.tone]?.[lang] || SCRIPTURE_TEMPLATES[phase.tone]?.en || SCRIPTURE_TEMPLATES.gentle.en;
+      // Tier-1 content matrix: prefer a verse chosen by the door's emotional core
+      // {spine × phase × dominant-emotion}. en verified now; other langs fall back
+      // to the localized tone pool until verified translations land. Legacy
+      // instances (no door) also fall back → unchanged behavior.
+      const phaseIndex = template.phases.indexOf(phase);
+      const core = TIER1_ENABLED ? pickScriptureCore(instance.door, phaseIndex, instance.dominant_emotion) : null;
+      const byCore = (lang === "en" && core) ? scriptureForCore(core, lang) : null;
+      const scrData = byCore || SCRIPTURE_TEMPLATES[phase.tone]?.[lang] || SCRIPTURE_TEMPLATES[phase.tone]?.en || SCRIPTURE_TEMPLATES.gentle.en;
       const scrTitle = lang === "fr" ? "Écriture" : lang === "es" ? "Escritura" : lang === "pt" ? "Escritura" : "Scripture";
       content = { title: scrTitle, body: scrData.body, scriptureRef: scrData.scriptureRef };
       break;
@@ -2069,7 +2240,7 @@ app.post("/api/admin/upload-video", async (c) => {
   } catch (err: any) { return c.json({ error: "Internal error", detail: err.message }, 500); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.16.8", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.0-p0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -5496,12 +5667,44 @@ function intakeToFamily(intake: string): JourneyFamily {
   return "drawing_closer";
 }
 
+// ── SHARED ROUTER (single source of truth) ──────────────────────────
+// v5.20.0: both the in-app onboarding and the web quiz POST to /journeys/start.
+// Prefer an explicit manifest `door` (Michael's 50+ taxonomy); fall back to the
+// legacy free-text `intake` keyword match. The door carries a length override
+// (e.g. test-results = 10 days) resolved here so clients never duplicate routing.
+interface ResolvedJourney {
+  templateKey: string;
+  family: JourneyFamily;
+  mode: "fixed" | "open";
+  lengthDays: number | null;   // in `unit`
+  unit: "day" | "week";
+  door: string | null;
+}
+function resolveJourney(input: { door?: string; intake?: string }): ResolvedJourney {
+  if (TIER1_ENABLED && input.door && TIER1_DOORS[input.door]) {
+    const d = TIER1_DOORS[input.door];
+    const tmpl = JOURNEY_TEMPLATES[d.templateKey];
+    const lengthDays = d.length != null ? d.length : (tmpl?.lengthDays ?? null);
+    return { templateKey: d.templateKey, family: d.family, mode: d.mode, lengthDays, unit: d.unit, door: d.key };
+  }
+  const family = intakeToFamily(input.intake || "");
+  const templateKey = templateForFamily(family);
+  const tmpl = JOURNEY_TEMPLATES[templateKey];
+  return {
+    templateKey, family,
+    mode: tmpl?.mode ?? "open",
+    lengthDays: tmpl?.lengthDays ?? null,
+    unit: templateKey === "expecting" ? "week" : "day",
+    door: null,
+  };
+}
+
 app.post("/journeys/start", async (c) => {
   try {
     const body = await c.req.json();
-    const { userId, intake, prayedForName, lengthDays: bodyLengthDays } = body;
+    const { userId, intake, door, dominantEmotion, prayedForName, lengthDays: bodyLengthDays } = body;
 
-    if (!userId || !intake) return c.json({ error: "userId and intake required" }, 400);
+    if (!userId || (!intake && !door)) return c.json({ error: "userId and (intake or door) required" }, 400);
 
     // 0. Ensure user exists in the users table (foreign key constraint).
     // The userId might be a deviceUserId that hasn't been registered yet.
@@ -5523,9 +5726,10 @@ app.post("/journeys/start", async (c) => {
       }
     }
 
-    // 1. Map intake → family → template
-    const family = intakeToFamily(intake);
-    const templateKey = templateForFamily(family);
+    // 1. Shared router: door (manifest) preferred, intake (legacy) fallback
+    const resolved = resolveJourney({ door, intake });
+    const family = resolved.family;
+    const templateKey = resolved.templateKey;
     const template = JOURNEY_TEMPLATES[templateKey];
     if (!template) return c.json({ error: `Template resolution failed for family=${family}` }, 500);
 
@@ -5568,18 +5772,19 @@ app.post("/journeys/start", async (c) => {
         day1Action: { type: LEGACY_TYPE_MAP[day1Action.type] || day1Action.type, cardType: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content, completionLabel: day1Action.completionLabel || COMPLETION_LABELS[day1Action.type]?.[lang] || "Done" },
         circle,
         partnerSuggestions: [],
+        door: resolved.door,
         isExisting: true
       });
     }
 
-    // 3. Create new journey instance
-    const unit = templateKey === "expecting" ? "week" : "day";
-    const lengthDays = bodyLengthDays || template.lengthDays || null;
+    // 3. Create new journey instance (length override comes from the manifest door)
+    const unit = resolved.unit;
+    const lengthDays = bodyLengthDays || resolved.lengthDays || template.lengthDays || null;
 
     const ins = await pool.query(
-      `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [resolvedUserId, templateKey, family, template.mode, unit, lengthDays, prayedForName || null]
+      `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name, door, dominant_emotion)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [resolvedUserId, templateKey, family, template.mode, unit, lengthDays, prayedForName || null, resolved.door, dominantEmotion || null]
     );
     const instance = ins.rows[0];
 
@@ -5601,16 +5806,18 @@ app.post("/journeys/start", async (c) => {
       family,
       template: templateKey,
       mode: template.mode,
-      intake
+      door: resolved.door,
+      intake: intake || null
     });
 
-    console.log(`[Journey] Started: user=${userId.substring(0, 8)}... intake="${intake}" → family=${family} template=${templateKey} instance=${instance.id}`);
+    console.log(`[Journey] Started: user=${userId.substring(0, 8)}... ${resolved.door ? `door="${resolved.door}"` : `intake="${intake}"`} → family=${family} template=${templateKey} instance=${instance.id}`);
 
     return c.json({
       instance: camelInstance(instance),
       day1Action: { type: LEGACY_TYPE_MAP[day1Action.type] || day1Action.type, cardType: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content, completionLabel: day1Action.completionLabel || COMPLETION_LABELS[day1Action.type]?.[lang] || "Done" },
       circle,
       partnerSuggestions: [],
+      door: resolved.door,
       isExisting: false
     }, 201);
   } catch (err: any) {
@@ -5684,9 +5891,18 @@ app.get("/journeys/:id/history", async (c) => {
 
 // GET /journeys/:id/todays-request — select eligible circle prayer request for today's journey action
 function isReceivingPhase(templateKey: string, currentDay: number): boolean {
-  // Grief Phase 1: days 1-10 are "receiving" — user is being carried, not carrying others
+  // Days 1-10 are "receiving" — the user is being carried, not tasked with
+  // carrying others. Originally grief-only; now propagated to every loss/crisis
+  // template via the Tier-1 manifest safety_class (diagnosis, test-results,
+  // chronic all inherit it). Someone on day 1 of a diagnosis is held, not asked
+  // to pray for a stranger. Carrying-spine journeys are outward by design, so
+  // their safety is language/content-based (Phase 2), not this day-gate.
+  if (TIER1_ENABLED) {
+    if (RECEIVING_SAFETY_TEMPLATES.has(templateKey) && currentDay <= 10) return true;
+    return false;
+  }
+  // Flag OFF → original grief-only behavior (byte-identical to pre-Tier-1).
   if (templateKey === "walking_through_grief" && currentDay <= 10) return true;
-  // All other phases are "outward"
   return false;
 }
 
