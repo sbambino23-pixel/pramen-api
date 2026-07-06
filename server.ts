@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { serve } from "@hono/node-server";
-import { randomUUID, createHash, createSign, createHmac } from "crypto";
+import { randomUUID, createHash, createSign, createHmac, randomBytes, timingSafeEqual } from "crypto";
 import { gunzipSync } from "zlib";
 import { readFileSync } from "fs";
 import http2 from "http2";
@@ -588,6 +588,18 @@ async function initDb(): Promise<void> {
     // answer matching (Phase 3) runs exclusively on this. Additive, nullable,
     // metadata-only. Stored `email` keeps the raw provider value as-is.
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verified_email TEXT`).catch(() => {});
+    // v5.20.4 — magic-link sign-in tokens. Token hashed at rest, single-use
+    // (used_at), short expiry. Additive table.
+    await client.query(`CREATE TABLE IF NOT EXISTS magic_links (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      email TEXT NOT NULL,
+      token_hash TEXT NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      ip TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ml_email ON magic_links(email)`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, streak_count INTEGER DEFAULT 0, highest_streak INTEGER DEFAULT 0, total_prayers INTEGER DEFAULT 0, total_minutes INTEGER DEFAULT 0, last_prayed_date TIMESTAMPTZ, sessions JSONB DEFAULT '[]'::jsonb, preferences JSONB DEFAULT '{}'::jsonb, circle_codes TEXT[] DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_local_date TEXT`).catch(() => {});
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_timezone TEXT`).catch(() => {});
@@ -813,6 +825,96 @@ function verifiedEmailFor(provider: string, rawEmail?: string | null): string | 
 }
 // Comparison uses lower(trim()) on BOTH sides so it matches legacy un-normalized rows.
 async function getUserByEmail(email: string) { try { const r = await pool.query("SELECT * FROM users WHERE lower(trim(email))=lower(trim($1))", [email]); return r.rows[0] || null; } catch { return null; } }
+
+// ═══════════════════════════════════════════════════════════════════
+// v5.20.4 — Reusable mail module + magic-link sign-in.
+// Provider-agnostic: MAIL_PROVIDER env ("resend" default | "postmark"), key
+// from env only. Resend→Postmark is a config swap. Dark until a key is set
+// (send() no-ops + logs; endpoints still function). Serves magic-link now,
+// recovery-merge + lifecycle email later.
+// ═══════════════════════════════════════════════════════════════════
+const MAIL_PROVIDER = process.env.MAIL_PROVIDER || "resend";
+const MAIL_FROM = process.env.MAIL_FROM || "prAmen <signin@pramen.app>";
+async function sendMail(opts: { to: string; subject: string; html: string; text: string }): Promise<{ ok: boolean; provider: string; skipped?: boolean; error?: string }> {
+  try {
+    const resendKey = process.env.RESEND_API_KEY;
+    const postmarkKey = process.env.POSTMARK_API_KEY;
+    if (MAIL_PROVIDER === "resend" && resendKey) {
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ from: MAIL_FROM, to: [opts.to], subject: opts.subject, html: opts.html, text: opts.text }),
+      });
+      if (!res.ok) return { ok: false, provider: "resend", error: `HTTP ${res.status}` };
+      return { ok: true, provider: "resend" };
+    }
+    if (MAIL_PROVIDER === "postmark" && postmarkKey) {
+      const res = await fetch("https://api.postmarkapp.com/email", {
+        method: "POST",
+        headers: { "X-Postmark-Server-Token": postmarkKey, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ From: MAIL_FROM, To: opts.to, Subject: opts.subject, HtmlBody: opts.html, TextBody: opts.text }),
+      });
+      if (!res.ok) return { ok: false, provider: "postmark", error: `HTTP ${res.status}` };
+      return { ok: true, provider: "postmark" };
+    }
+    console.log(`[mail] SKIPPED (no ${MAIL_PROVIDER} key) → ${opts.to}: ${opts.subject}`);
+    return { ok: false, provider: MAIL_PROVIDER, skipped: true };
+  } catch (err: any) { return { ok: false, provider: MAIL_PROVIDER, error: err.message }; }
+}
+function mailConfigured(): boolean {
+  return (MAIL_PROVIDER === "resend" && !!process.env.RESEND_API_KEY) || (MAIL_PROVIDER === "postmark" && !!process.env.POSTMARK_API_KEY);
+}
+
+// ── Magic-link security primitives ──────────────────────────────────
+const MAGIC_TTL_MS = 10 * 60 * 1000; // 10 minutes
+function hashToken(raw: string): string { return createHash("sha256").update(raw).digest("hex"); }
+function constantTimeEqualHex(a: string, b: string): boolean {
+  try { const ba = Buffer.from(a, "hex"), bb = Buffer.from(b, "hex"); if (ba.length !== bb.length) return false; return timingSafeEqual(ba, bb); } catch { return false; }
+}
+// In-memory rate limiter (single instance): per-email + per-IP sliding window.
+const magicRate = { byEmail: new Map<string, number[]>(), byIp: new Map<string, number[]>() };
+function rateOk(map: Map<string, number[]>, key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const arr = (map.get(key) || []).filter(t => now - t < windowMs);
+  if (arr.length >= max) { map.set(key, arr); return false; }
+  arr.push(now); map.set(key, arr); return true;
+}
+async function issueMagicLink(normEmail: string, ip: string): Promise<string> {
+  const raw = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + MAGIC_TTL_MS).toISOString();
+  await pool.query("INSERT INTO magic_links (email, token_hash, expires_at, ip) VALUES ($1,$2,$3,$4)", [normEmail, hashToken(raw), expiresAt, ip]);
+  return raw;
+}
+// Verify + single-use consume; create-or-link the user (magic-link → verified email).
+async function consumeMagicToken(normEmail: string, rawToken: string, deviceUserId?: string | null): Promise<{ user?: any; isNewUser?: boolean; error?: string }> {
+  const th = hashToken(rawToken);
+  const rows = (await pool.query("SELECT id, token_hash FROM magic_links WHERE email=$1 AND used_at IS NULL AND expires_at > now() ORDER BY created_at DESC LIMIT 5", [normEmail])).rows;
+  let match: any = null;
+  for (const r of rows) if (constantTimeEqualHex(r.token_hash, th)) { match = r; break; }
+  if (!match) return { error: "invalid_or_expired" };
+  const upd = await pool.query("UPDATE magic_links SET used_at=now() WHERE id=$1 AND used_at IS NULL RETURNING id", [match.id]);
+  if (upd.rows.length === 0) return { error: "already_used" }; // race guard → single-use
+  let user = await getUserByEmail(normEmail);
+  let isNewUser = false;
+  const ve = verifiedEmailFor("magic", normEmail);
+  if (!user) {
+    isNewUser = true; const authToken = generateAuthToken(); const userId = randomUUID();
+    await pool.query("INSERT INTO users (id,email,verified_email,name,auth_provider,auth_token,device_user_id,subscription_status) VALUES ($1,$2,$3,'','email',$4,$5,'none')", [userId, normEmail, ve, authToken, deviceUserId || null]);
+    await pool.query("INSERT INTO user_data (user_id) VALUES ($1)", [userId]);
+    user = { id: userId, email: normEmail, name: "", auth_token: authToken, subscription_status: "none", trial_start_date: null, trial_end_date: null, device_user_id: deviceUserId || null };
+    trackEvent(userId, "user_signed_up", { auth_provider: "magic" });
+  } else {
+    await pool.query("UPDATE users SET verified_email=COALESCE(verified_email,$1),updated_at=NOW() WHERE id=$2", [ve, user.id]);
+  }
+  return { user, isNewUser };
+}
+function magicEmailHtml(link: string): string {
+  return `<div style="font-family:Georgia,serif;color:#2b2118;max-width:440px;margin:0 auto;padding:24px">
+    <p style="font-size:20px">Your prAmen sign-in link</p>
+    <p style="color:#6a5c48">Tap below to sign in. This link works once and expires in 10 minutes.</p>
+    <p style="margin:24px 0"><a href="${link}" style="background:#b9612d;color:#fff;padding:14px 24px;border-radius:12px;text-decoration:none">Sign in to prAmen</a></p>
+    <p style="color:#9c8f7c;font-size:12px">If you didn't request this, you can ignore it.</p></div>`;
+}
 async function getUserData(userId: string) { try { const r = await pool.query("SELECT * FROM user_data WHERE user_id=$1", [userId]); if (r.rows[0]) { const d = r.rows[0]; let streakCount = d.streak_count || 0; if (streakCount > 0 && d.last_prayed_date) { const now = new Date(); const lastPrayed = new Date(d.last_prayed_date); const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()); const yesterday = new Date(today.getTime() - 86400000); const lastPrayedDay = new Date(lastPrayed.getFullYear(), lastPrayed.getMonth(), lastPrayed.getDate()); if (lastPrayedDay < yesterday) { streakCount = 0; await pool.query("UPDATE user_data SET streak_count=0, updated_at=NOW() WHERE user_id=$1", [userId]); } } return { streakCount, highestStreak: d.highest_streak, totalPrayers: d.total_prayers, totalMinutes: d.total_minutes, lastPrayedDate: d.last_prayed_date, sessions: d.sessions || [], preferences: d.preferences || {}, circleCodes: d.circle_codes || [] }; } return null; } catch { return null; } }
 function getUserCircleCodes(...userIds: string[]): string[] { const ids = new Set(userIds.filter(Boolean)); const codes: string[] = []; for (const [code, circle] of circles) { if (circle.members.some(m => ids.has(m.userId))) codes.push(code); } return codes; }
 async function migrateCircleMembership(oldId: string, newId: string, name: string) { for (const [, c] of circles) { const m = c.members.find(m => m.userId === oldId); if (m) { m.userId = newId; if (name) m.name = name; await saveCircleToDb(c); } if (c.creatorUserId === oldId) { c.creatorUserId = newId; await saveCircleToDb(c); } } }
@@ -2265,7 +2367,8 @@ app.post("/api/admin/upload-video", async (c) => {
 
 let p0PurgeReport: any = null; // v5.20.1 — raw counts from the one-time phase0proof purge
 let normSelfTest: any = null;  // v5.20.2 — email normalization self-test result
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.3", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.4", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2517,6 +2620,36 @@ app.post("/api/admin/nudge-billing-zombies", async (c) => {
 app.get("/api/admin/email-list", async (c) => { if (c.req.header("X-Admin-Secret") !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403); const r = await pool.query("SELECT email,name,auth_provider,created_at FROM users WHERE email_opt_in=true AND email IS NOT NULL AND email NOT LIKE '%privaterelay.appleid.com' ORDER BY created_at DESC"); return c.json({ count: r.rows.length, emails: r.rows }); });
 app.post("/api/auth/verify", async (c) => { const ah = c.req.header("Authorization"); if (!ah?.startsWith("Bearer ")) return c.json({ valid: false }, 401); const u = await getUserByToken(ah.replace("Bearer ", "")); if (!u) return c.json({ valid: false }, 401); return c.json({ valid: true, user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id) }); });
 app.post("/api/auth/logout", async (c) => { const ah = c.req.header("Authorization"); if (!ah) return c.json({ success: true }); await pool.query("UPDATE users SET auth_token=$1,updated_at=NOW() WHERE auth_token=$2", [generateAuthToken(), ah.replace("Bearer ", "")]); return c.json({ success: true }); });
+
+// v5.20.4 — Magic-link "Continue with Email". Deployed DARK (endpoints live but
+// no UI path until the iOS flag + RESEND_API_KEY land). Single-use, 10-min TTL,
+// token hashed at rest, constant-time verify, rate-limited per email + per IP.
+app.post("/api/auth/magic-link/request", async (c) => {
+  try {
+    const { email } = await c.req.json();
+    const norm = normalizeEmail(email);
+    if (!norm || !norm.includes("@")) return c.json({ error: "Valid email required" }, 400);
+    const ip = (c.req.header("x-forwarded-for") || "").split(",")[0].trim() || c.req.header("x-real-ip") || "unknown";
+    if (!rateOk(magicRate.byEmail, norm, 3, MAGIC_TTL_MS)) return c.json({ error: "Too many requests. Try again in a few minutes." }, 429);
+    if (!rateOk(magicRate.byIp, ip, 10, MAGIC_TTL_MS)) return c.json({ error: "Too many requests. Try again in a few minutes." }, 429);
+    const raw = await issueMagicLink(norm, ip);
+    const link = `https://pramen.app/auth/magic?token=${raw}&email=${encodeURIComponent(norm)}`;
+    const mail = await sendMail({ to: norm, subject: "Your prAmen sign-in link", html: magicEmailHtml(link), text: `Sign in to prAmen: ${link}\nThis link works once and expires in 10 minutes.` });
+    // Anti-enumeration: always generic success regardless of whether the user exists.
+    return c.json({ ok: true, delivered: mail.ok, mailConfigured: mailConfigured() });
+  } catch { return c.json({ error: "Request failed" }, 500); }
+});
+app.post("/api/auth/magic-link/verify", async (c) => {
+  try {
+    const { email, token, deviceUserId } = await c.req.json();
+    const norm = normalizeEmail(email);
+    if (!norm || !token) return c.json({ error: "email and token required" }, 400);
+    const r = await consumeMagicToken(norm, String(token), deviceUserId);
+    if (r.error || !r.user) return c.json({ error: "Invalid or expired link" }, 401);
+    const u = r.user;
+    return c.json({ user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null, isNewUser: r.isNewUser }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id || "") });
+  } catch (err: any) { return c.json({ error: "Verify failed", detail: err.message }, 500); }
+});
 app.delete("/api/auth/account", async (c) => {
   const ah = c.req.header("Authorization");
   if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401);
@@ -6724,6 +6857,39 @@ async function start() {
     }
     normSelfTest = r;
     console.log("[v5.20.2] norm self-test:", JSON.stringify(r));
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.20.4 — Magic-link round-trip self-test. Self-cleaning, NO email, NO
+  // circles. Proves: issue→verify creates user + sets verified_email; single-
+  // use (reuse rejected); expiry rejected; wrong token rejected. Result at /
+  // (magic_selftest).
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const r: any = {};
+    const email = "magicselftest@example.test";
+    const clean = async () => { await pool.query("DELETE FROM magic_links WHERE email=$1", [email]); await pool.query("DELETE FROM users WHERE lower(trim(email))=lower(trim($1))", [email]); };
+    try {
+      await clean();
+      const raw = await issueMagicLink(email, "selftest");
+      const v1 = await consumeMagicToken(email, raw);
+      const uRow = v1.user ? (await pool.query("SELECT verified_email FROM users WHERE id=$1", [v1.user.id])).rows[0] : null;
+      r.issue_verify = { created: !!v1.user, isNewUser: v1.isNewUser === true, verified_email: uRow?.verified_email, verified_ok: uRow?.verified_email === email };
+      const v2 = await consumeMagicToken(email, raw);
+      r.single_use = { reuse_rejected: !!v2.error, error: v2.error };
+      const expiredRaw = randomBytes(16).toString("base64url");
+      await pool.query("INSERT INTO magic_links (email, token_hash, expires_at, ip) VALUES ($1,$2, now() - interval '1 minute', 'selftest')", [email, hashToken(expiredRaw)]);
+      const v3 = await consumeMagicToken(email, expiredRaw);
+      r.expiry = { expired_rejected: v3.error === "invalid_or_expired" };
+      await issueMagicLink(email, "selftest");
+      const v4 = await consumeMagicToken(email, "not-the-real-token");
+      r.wrong_token = { rejected: !!v4.error };
+      await clean();
+      r.mail_configured = mailConfigured();
+      r.cleaned = true; r.ranAt = new Date().toISOString();
+    } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
+    magicSelfTest = r;
+    console.log("[v5.20.4] magic-link self-test:", JSON.stringify(r));
   })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
