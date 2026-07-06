@@ -2240,7 +2240,7 @@ app.post("/api/admin/upload-video", async (c) => {
   } catch (err: any) { return c.json({ error: "Internal error", detail: err.message }, 500); }
 });
 
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.0-p0", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.0-p0b", circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -5772,7 +5772,7 @@ app.post("/journeys/start", async (c) => {
         day1Action: { type: LEGACY_TYPE_MAP[day1Action.type] || day1Action.type, cardType: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content, completionLabel: day1Action.completionLabel || COMPLETION_LABELS[day1Action.type]?.[lang] || "Done" },
         circle,
         partnerSuggestions: [],
-        door: resolved.door,
+        ...(resolved.door ? { door: resolved.door } : {}),
         isExisting: true
       });
     }
@@ -5817,7 +5817,7 @@ app.post("/journeys/start", async (c) => {
       day1Action: { type: LEGACY_TYPE_MAP[day1Action.type] || day1Action.type, cardType: day1Action.type, phaseLabel: day1Action.phaseLabel, content: day1Action.content, completionLabel: day1Action.completionLabel || COMPLETION_LABELS[day1Action.type]?.[lang] || "Done" },
       circle,
       partnerSuggestions: [],
-      door: resolved.door,
+      ...(resolved.door ? { door: resolved.door } : {}),
       isExisting: false
     }, 201);
   } catch (err: any) {
