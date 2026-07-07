@@ -2402,7 +2402,7 @@ let normSelfTest: any = null;  // v5.20.2 — email normalization self-test resu
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
 let rcGraceProof: any = null;  // v5.20.7 — live RC grace-lifecycle proof
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.10", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, rc_grace_proof: rcGraceProof, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.11", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, rc_grace_proof: rcGraceProof, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -7155,12 +7155,15 @@ async function start() {
       for (let i = 0; i < tries; i++) { last = await getEnt(); const a = active(last); if ((want === "active" && a) || (want === "cleared" && !a)) return last; await sleep(gap); }
       return last;
     };
+    // Re-grant until RC reflects (cold-start on a brand-new subscriber lags reads).
+    const grantUntilActive = async (tries = 12, gap = 2500) => {
+      let last: any = null;
+      for (let i = 0; i < tries; i++) { await grant(); await sleep(gap); last = await getEnt(); if (active(last)) return last; }
+      return last;
+    };
     const proof: any = {};
     try {
-      // No pre-delete (it raced and swallowed the first grant). Grant on a fresh
-      // subscriber; end-delete cleans up. Poll generously for the cold-start grant.
-      await grant();
-      const e1 = await pollUntil("active", 16, 2000); proof.step1_grant_active = { entitlement: e1, is_active: active(e1) };
+      const e1 = await grantUntilActive(); proof.step1_grant_active = { entitlement: e1, is_active: active(e1) };
       await grant(); // auto-renew re-grant (simulates the 6h loop)
       const e2 = await pollUntil("active"); proof.step2_after_autorenew = { entitlement: e2, is_active: active(e2) };
       await revoke(); // resolution → loser's grant revoked
