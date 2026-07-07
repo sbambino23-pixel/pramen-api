@@ -2402,7 +2402,7 @@ let normSelfTest: any = null;  // v5.20.2 — email normalization self-test resu
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
 let rcGraceProof: any = null;  // v5.20.7 — live RC grace-lifecycle proof
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.7", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, rc_grace_proof: rcGraceProof, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.8", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, rc_grace_proof: rcGraceProof, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -7143,18 +7143,22 @@ async function start() {
     const probe = "rcgraceproof-probe";
     const H: any = { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" };
     const base = `https://api.revenuecat.com/v1/subscribers/${probe}`;
+    const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
     const entOf = (j: any) => { const e = j?.subscriber?.entitlements?.premium; return e ? { expires_date: e.expires_date, product_identifier: e.product_identifier, purchase_date: e.purchase_date } : null; };
+    const active = (e: any) => !!e && new Date(e.expires_date).getTime() > Date.now();
     const grant = async () => (await (await fetch(`${base}/entitlements/premium/promotional`, { method: "POST", headers: H, body: JSON.stringify({ duration: "weekly" }) })).json());
     const getSub = async () => (await (await fetch(base, { headers: H })).json());
     const proof: any = {};
     try {
-      await fetch(base, { method: "DELETE", headers: H }).catch(() => {}); // clean any prior
-      proof.step1_grant = entOf(await grant());
-      proof.step2_active = entOf(await getSub());
-      proof.step3_autorenew = entOf(await grant()); // simulate the 6h re-grant
-      await fetch(`${base}/entitlements/premium/promotional`, { method: "DELETE", headers: H }); // resolution → revoke
-      proof.step4_after_revoke = entOf(await getSub()); // expect null / expired = no entitlement retained
-      proof.step5_subscriber_deleted = (await fetch(base, { method: "DELETE", headers: H })).ok;
+      await fetch(base, { method: "DELETE", headers: H }).catch(() => {}); await sleep(2500); // clean any prior
+      await grant(); await sleep(3500);
+      const e1 = entOf(await getSub()); proof.step1_active = { entitlement: e1, is_active: active(e1) };
+      await grant(); await sleep(3500); // auto-renew re-grant
+      const e2 = entOf(await getSub()); proof.step2_after_autorenew = { entitlement: e2, is_active: active(e2) };
+      await fetch(`${base}/entitlements/premium/promotional`, { method: "DELETE", headers: H }); await sleep(3500); // resolution → revoke
+      const e3 = entOf(await getSub()); proof.step3_after_revoke = { entitlement: e3, is_active: active(e3), cleared: !active(e3) };
+      proof.step4_subscriber_deleted = (await fetch(base, { method: "DELETE", headers: H })).ok;
+      proof.PASS = active(e1) && active(e2) && !active(e3);
       proof.ranAt = new Date().toISOString();
     } catch (err: any) { proof.error = err.message; try { await fetch(base, { method: "DELETE", headers: H }); } catch {} }
     rcGraceProof = proof;
