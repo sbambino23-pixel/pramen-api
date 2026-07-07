@@ -2402,7 +2402,7 @@ let normSelfTest: any = null;  // v5.20.2 — email normalization self-test resu
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
 let rcGraceProof: any = null;  // v5.20.7 — live RC grace-lifecycle proof
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.8", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, rc_grace_proof: rcGraceProof, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.9", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, rc_grace_proof: rcGraceProof, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2745,7 +2745,7 @@ async function mergeAccounts(loserId: string, survivorId: string, email: string)
   // A tombstoned account must never retain entitlement: revoke any grace promo on the loser.
   // The survivor keeps its own entitlement — we never grant the survivor here, so no double-grant.
   if (REVENUECAT_SECRET_KEY && !loserId.startsWith("mergeselftest-")) {
-    fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(loserId)}/entitlements/premium/promotional`, { method: "DELETE", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}` } }).catch(() => {});
+    fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(loserId)}/entitlements/premium/revoke_promotionals`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" } }).catch(() => {});
   }
   return { merged: true };
 }
@@ -7146,23 +7146,30 @@ async function start() {
     const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
     const entOf = (j: any) => { const e = j?.subscriber?.entitlements?.premium; return e ? { expires_date: e.expires_date, product_identifier: e.product_identifier, purchase_date: e.purchase_date } : null; };
     const active = (e: any) => !!e && new Date(e.expires_date).getTime() > Date.now();
-    const grant = async () => (await (await fetch(`${base}/entitlements/premium/promotional`, { method: "POST", headers: H, body: JSON.stringify({ duration: "weekly" }) })).json());
-    const getSub = async () => (await (await fetch(base, { headers: H })).json());
+    const grant = async () => (await fetch(`${base}/entitlements/premium/promotional`, { method: "POST", headers: H, body: JSON.stringify({ duration: "weekly" }) }));
+    const revoke = async () => (await fetch(`${base}/entitlements/premium/revoke_promotionals`, { method: "POST", headers: H }));
+    const getEnt = async () => entOf(await (await fetch(base, { headers: H })).json());
+    // Poll for RC's eventually-consistent state instead of guessing a fixed delay.
+    const pollUntil = async (want: "active" | "cleared", tries = 10, gap = 1800) => {
+      let last: any = null;
+      for (let i = 0; i < tries; i++) { last = await getEnt(); const a = active(last); if ((want === "active" && a) || (want === "cleared" && !a)) return last; await sleep(gap); }
+      return last;
+    };
     const proof: any = {};
     try {
       await fetch(base, { method: "DELETE", headers: H }).catch(() => {}); await sleep(2500); // clean any prior
-      await grant(); await sleep(3500);
-      const e1 = entOf(await getSub()); proof.step1_active = { entitlement: e1, is_active: active(e1) };
-      await grant(); await sleep(3500); // auto-renew re-grant
-      const e2 = entOf(await getSub()); proof.step2_after_autorenew = { entitlement: e2, is_active: active(e2) };
-      await fetch(`${base}/entitlements/premium/promotional`, { method: "DELETE", headers: H }); await sleep(3500); // resolution → revoke
-      const e3 = entOf(await getSub()); proof.step3_after_revoke = { entitlement: e3, is_active: active(e3), cleared: !active(e3) };
+      await grant();
+      const e1 = await pollUntil("active"); proof.step1_grant_active = { entitlement: e1, is_active: active(e1) };
+      await grant(); // auto-renew re-grant (simulates the 6h loop)
+      const e2 = await pollUntil("active"); proof.step2_after_autorenew = { entitlement: e2, is_active: active(e2) };
+      await revoke(); // resolution → loser's grant revoked
+      const e3 = await pollUntil("cleared"); proof.step3_after_revoke = { entitlement: e3, is_active: active(e3), cleared: !active(e3) };
       proof.step4_subscriber_deleted = (await fetch(base, { method: "DELETE", headers: H })).ok;
       proof.PASS = active(e1) && active(e2) && !active(e3);
       proof.ranAt = new Date().toISOString();
     } catch (err: any) { proof.error = err.message; try { await fetch(base, { method: "DELETE", headers: H }); } catch {} }
     rcGraceProof = proof;
-    console.log("[v5.20.7] RC grace proof:", JSON.stringify(proof));
+    console.log("[v5.20.8] RC grace proof:", JSON.stringify(proof));
   })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
