@@ -2401,7 +2401,8 @@ let p0PurgeReport: any = null; // v5.20.1 — raw counts from the one-time phase
 let normSelfTest: any = null;  // v5.20.2 — email normalization self-test result
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.6", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+let rcGraceProof: any = null;  // v5.20.7 — live RC grace-lifecycle proof
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.7", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, rc_grace_proof: rcGraceProof, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2739,8 +2740,13 @@ async function mergeAccounts(loserId: string, survivorId: string, email: string)
     if (changed) await saveCircleToDb(ci);
   }
   posthogAlias(loserId, survivorId);
-  await pool.query("UPDATE users SET account_status='merged', merged_into=$1, verified_email=NULL, auth_token=$2, updated_at=NOW() WHERE id=$3", [survivorId, generateAuthToken(), loserId]);
+  await pool.query("UPDATE users SET account_status='merged', merged_into=$1, verified_email=NULL, grace_until=NULL, auth_token=$2, updated_at=NOW() WHERE id=$3", [survivorId, generateAuthToken(), loserId]);
   await pool.query("UPDATE users SET verified_email=$1, account_status='active', updated_at=NOW() WHERE id=$2", [email, survivorId]);
+  // A tombstoned account must never retain entitlement: revoke any grace promo on the loser.
+  // The survivor keeps its own entitlement — we never grant the survivor here, so no double-grant.
+  if (REVENUECAT_SECRET_KEY && !loserId.startsWith("mergeselftest-")) {
+    fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(loserId)}/entitlements/premium/promotional`, { method: "DELETE", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}` } }).catch(() => {});
+  }
   return { merged: true };
 }
 async function reportConflict(A: any, B: any, reason: string, states: any): Promise<any> {
@@ -7124,6 +7130,35 @@ async function start() {
     } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
     mergeSelfTest = r;
     console.log("[v5.20.6] merge self-test:", JSON.stringify(r));
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.20.7 — LIVE RC grace-lifecycle proof on ONE throwaway subscriber:
+  // grant → active → auto-renew re-grant → revoke (resolution) → delete.
+  // Proves the grace really lands in RC and that revocation leaves no
+  // entitlement behind. Self-deleting. Result at / (rc_grace_proof).
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    if (!REVENUECAT_SECRET_KEY) { rcGraceProof = { skipped: "no RC key" }; return; }
+    const probe = "rcgraceproof-probe";
+    const H: any = { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" };
+    const base = `https://api.revenuecat.com/v1/subscribers/${probe}`;
+    const entOf = (j: any) => { const e = j?.subscriber?.entitlements?.premium; return e ? { expires_date: e.expires_date, product_identifier: e.product_identifier, purchase_date: e.purchase_date } : null; };
+    const grant = async () => (await (await fetch(`${base}/entitlements/premium/promotional`, { method: "POST", headers: H, body: JSON.stringify({ duration: "weekly" }) })).json());
+    const getSub = async () => (await (await fetch(base, { headers: H })).json());
+    const proof: any = {};
+    try {
+      await fetch(base, { method: "DELETE", headers: H }).catch(() => {}); // clean any prior
+      proof.step1_grant = entOf(await grant());
+      proof.step2_active = entOf(await getSub());
+      proof.step3_autorenew = entOf(await grant()); // simulate the 6h re-grant
+      await fetch(`${base}/entitlements/premium/promotional`, { method: "DELETE", headers: H }); // resolution → revoke
+      proof.step4_after_revoke = entOf(await getSub()); // expect null / expired = no entitlement retained
+      proof.step5_subscriber_deleted = (await fetch(base, { method: "DELETE", headers: H })).ok;
+      proof.ranAt = new Date().toISOString();
+    } catch (err: any) { proof.error = err.message; try { await fetch(base, { method: "DELETE", headers: H }); } catch {} }
+    rcGraceProof = proof;
+    console.log("[v5.20.7] RC grace proof:", JSON.stringify(proof));
   })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
