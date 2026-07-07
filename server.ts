@@ -603,6 +603,20 @@ async function initDb(): Promise<void> {
     // v5.20.5 — 6-digit code fallback (desktop-email / 50+ case). Same row, same
     // TTL + single-use. Hashed at rest like the token.
     await client.query(`ALTER TABLE magic_links ADD COLUMN IF NOT EXISTS code_hash TEXT`).catch(() => {});
+    // v5.20.6 — Recovery-merge: tombstone + grace columns; conflict queue.
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS account_status TEXT DEFAULT 'active'`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS merged_into TEXT`).catch(() => {});
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS grace_until TIMESTAMPTZ`).catch(() => {});
+    await client.query(`CREATE TABLE IF NOT EXISTS merge_conflicts (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      uuid_a TEXT NOT NULL,
+      uuid_b TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      data_states JSONB,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      resolved_at TIMESTAMPTZ
+    )`);
     await client.query(`CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, streak_count INTEGER DEFAULT 0, highest_streak INTEGER DEFAULT 0, total_prayers INTEGER DEFAULT 0, total_minutes INTEGER DEFAULT 0, last_prayed_date TIMESTAMPTZ, sessions JSONB DEFAULT '[]'::jsonb, preferences JSONB DEFAULT '{}'::jsonb, circle_codes TEXT[] DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_local_date TEXT`).catch(() => {});
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_timezone TEXT`).catch(() => {});
@@ -893,7 +907,7 @@ async function issueMagicLink(normEmail: string, ip: string): Promise<{ raw: str
 // Verify + single-use consume via token OR 6-digit code; create-or-link the
 // user (magic-link → verified email). Prefetch-safe: only THIS (called from a
 // POST) consumes — GET/prefetch never touches token state.
-async function consumeMagicToken(normEmail: string, rawToken?: string | null, code?: string | null, deviceUserId?: string | null): Promise<{ user?: any; isNewUser?: boolean; error?: string }> {
+async function consumeMagicToken(normEmail: string, rawToken?: string | null, code?: string | null, deviceUserId?: string | null, createIfMissing: boolean = true): Promise<{ user?: any; isNewUser?: boolean; verified?: boolean; error?: string }> {
   const tokenH = rawToken ? hashToken(rawToken) : null;
   const codeH = code ? hashToken(String(code)) : null;
   if (!tokenH && !codeH) return { error: "missing_credential" };
@@ -909,6 +923,8 @@ async function consumeMagicToken(normEmail: string, rawToken?: string | null, co
   let user = await getUserByEmail(normEmail);
   let isNewUser = false;
   const ve = verifiedEmailFor("magic", normEmail);
+  // Recovery mode: credential proven, but don't fabricate an account.
+  if (!user && !createIfMissing) return { verified: true, user: null };
   if (!user) {
     isNewUser = true; const authToken = generateAuthToken(); const userId = randomUUID();
     await pool.query("INSERT INTO users (id,email,verified_email,name,auth_provider,auth_token,device_user_id,subscription_status) VALUES ($1,$2,$3,'','email',$4,$5,'none')", [userId, normEmail, ve, authToken, deviceUserId || null]);
@@ -2384,7 +2400,8 @@ app.post("/api/admin/upload-video", async (c) => {
 let p0PurgeReport: any = null; // v5.20.1 — raw counts from the one-time phase0proof purge
 let normSelfTest: any = null;  // v5.20.2 — email normalization self-test result
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.5", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.6", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2667,6 +2684,120 @@ app.post("/api/auth/magic-link/verify", async (c) => {
     const u = r.user;
     return c.json({ user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null, isNewUser: r.isNewUser }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id || "") });
   } catch (err: any) { return c.json({ error: "Verify failed", detail: err.message }, 500); }
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// v5.20.6 — RECOVERY-MERGE ("Already purchased on our website?"). Dark: the
+// iOS paywall entry is flag-gated; the server merge runs only after proven
+// email control. Implements the approved decision table exactly.
+// ═══════════════════════════════════════════════════════════════════
+const MERGE_ALERT_EMAIL = process.env.MERGE_ALERT_EMAIL || "sbambino23@gmail.com";
+function hasEntitlement(u: any): boolean {
+  const s = (u?.subscription_status || "").toLowerCase();
+  return !!s && !["none", "expired", "cancelled", "canceled", "unknown", ""].includes(s);
+}
+async function hasJourney(userId: string): Promise<boolean> {
+  const r = await pool.query("SELECT 1 FROM journey_instances WHERE user_id=$1 AND status='active' LIMIT 1", [userId]);
+  return r.rows.length > 0;
+}
+function posthogAlias(loserId: string, survivorId: string): void {
+  if (!POSTHOG_API_KEY) return;
+  fetch("https://us.i.posthog.com/capture/", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: POSTHOG_API_KEY, event: "$create_alias", distinct_id: survivorId, properties: { alias: loserId } }),
+  }).catch(() => {});
+}
+async function grantMergeGrace(rcUserId: string): Promise<boolean> {
+  await pool.query("UPDATE users SET grace_until = now() + interval '7 days', updated_at=NOW() WHERE id=$1", [rcUserId]).catch(() => {});
+  if (rcUserId.startsWith("mergeselftest-")) return false; // self-test: DB grace only, never touch RC
+  if (!REVENUECAT_SECRET_KEY) return false;
+  try {
+    const r = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(rcUserId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "weekly" }) });
+    return r.ok;
+  } catch { return false; }
+}
+// Atomic transfer loser → survivor; idempotent (tombstone check); single-homes email.
+async function mergeAccounts(loserId: string, survivorId: string, email: string): Promise<{ merged: boolean; alreadyMerged?: boolean }> {
+  if (loserId === survivorId) return { merged: false };
+  const l = (await pool.query("SELECT account_status FROM users WHERE id=$1", [loserId])).rows[0];
+  if (l?.account_status === "merged") return { merged: false, alreadyMerged: true };
+  await pool.query("UPDATE journey_instances SET user_id=$1 WHERE user_id=$2", [survivorId, loserId]);
+  await pool.query("UPDATE partner_requests SET from_user=$1 WHERE from_user=$2", [survivorId, loserId]).catch(() => {});
+  await pool.query("UPDATE partner_requests SET to_user=$1 WHERE to_user=$2", [survivorId, loserId]).catch(() => {});
+  await pool.query("UPDATE partner_blocks SET blocker=$1 WHERE blocker=$2", [survivorId, loserId]).catch(() => {});
+  await pool.query("UPDATE partner_blocks SET blocked=$1 WHERE blocked=$2", [survivorId, loserId]).catch(() => {});
+  const ld = (await pool.query("SELECT * FROM user_data WHERE user_id=$1", [loserId])).rows[0];
+  if (ld) {
+    await pool.query("INSERT INTO user_data (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [survivorId]);
+    await pool.query(`UPDATE user_data SET streak_count=GREATEST(streak_count,$1), highest_streak=GREATEST(highest_streak,$2), total_prayers=total_prayers+$3, total_minutes=total_minutes+$4, updated_at=NOW() WHERE user_id=$5`, [ld.streak_count || 0, ld.highest_streak || 0, ld.total_prayers || 0, ld.total_minutes || 0, survivorId]);
+    await pool.query("DELETE FROM user_data WHERE user_id=$1", [loserId]);
+  }
+  for (const [, ci] of circles) {
+    let changed = false;
+    for (const m of ci.members) if (m.userId === loserId) { m.userId = survivorId; changed = true; }
+    const seen = new Set<string>(); ci.members = ci.members.filter((m: any) => { if (seen.has(m.userId)) return false; seen.add(m.userId); return true; });
+    if (changed) await saveCircleToDb(ci);
+  }
+  posthogAlias(loserId, survivorId);
+  await pool.query("UPDATE users SET account_status='merged', merged_into=$1, verified_email=NULL, auth_token=$2, updated_at=NOW() WHERE id=$3", [survivorId, generateAuthToken(), loserId]);
+  await pool.query("UPDATE users SET verified_email=$1, account_status='active', updated_at=NOW() WHERE id=$2", [email, survivorId]);
+  return { merged: true };
+}
+async function reportConflict(A: any, B: any, reason: string, states: any): Promise<any> {
+  const existing = (await pool.query("SELECT id FROM merge_conflicts WHERE ((uuid_a=$1 AND uuid_b=$2) OR (uuid_a=$2 AND uuid_b=$1)) AND status='open' LIMIT 1", [A.id, B.id])).rows[0];
+  let conflictId = existing?.id;
+  if (!conflictId) {
+    conflictId = (await pool.query("INSERT INTO merge_conflicts (uuid_a, uuid_b, reason, data_states, status) VALUES ($1,$2,$3,$4,'open') RETURNING id", [A.id, B.id, reason, JSON.stringify(states)])).rows[0].id;
+    if (mailConfigured()) sendMail({ to: MERGE_ALERT_EMAIL, subject: `prAmen merge conflict (${reason})`, html: `<p>${reason}</p><p>A=${A.id}<br>B=${B.id}</p><p>${JSON.stringify(states)}</p>`, text: `${reason}: A=${A.id} B=${B.id} ${JSON.stringify(states)}` }).catch(() => {});
+  }
+  // Grace never locks out a proven payer: if the verified-email account is entitled, grant B.
+  let graceGranted = false;
+  if (hasEntitlement(A)) graceGranted = await grantMergeGrace(B.id);
+  return { action: "report", reason, conflictId, graceGranted, accessImmediate: graceGranted || hasEntitlement(B) };
+}
+// The decision table, encoded.
+async function resolveRecovery(normEmail: string, bUserId: string): Promise<any> {
+  const A = (await pool.query("SELECT * FROM users WHERE lower(trim(verified_email))=lower(trim($1)) AND COALESCE(account_status,'active')<>'merged' ORDER BY created_at LIMIT 1", [normEmail])).rows[0] || null;
+  const B = (await pool.query("SELECT * FROM users WHERE id=$1", [bUserId])).rows[0];
+  if (!B) return { error: "no_session" };
+  if (!A) { await pool.query("UPDATE users SET verified_email=$1, updated_at=NOW() WHERE id=$2", [normEmail, bUserId]); return { action: "set_email", survivor: bUserId }; } // P1
+  if (A.id === B.id) return { action: "noop", survivor: B.id }; // P2
+  const aEnt = hasEntitlement(A), bEnt = hasEntitlement(B);
+  const aJrny = await hasJourney(A.id), bJrny = await hasJourney(B.id);
+  if (aEnt && bEnt) return await reportConflict(A, B, "dual_entitlement", { aEnt, bEnt, aJrny, bJrny }); // step 3
+  if (aJrny && bJrny) return await reportConflict(A, B, "dual_journey", { aEnt, bEnt, aJrny, bJrny }); // step 4
+  const survivor = aEnt ? A.id : (bEnt ? B.id : B.id); // step 5: entitled one, else B
+  const loser = survivor === A.id ? B.id : A.id;
+  const res = await mergeAccounts(loser, survivor, normEmail);
+  return { action: "merge", survivor, loser, ...res };
+}
+// Recovery endpoint: prove email control (no account fabricated), then resolve.
+app.post("/api/auth/recover/verify", async (c) => {
+  try {
+    const ah = c.req.header("Authorization");
+    const B = ah?.startsWith("Bearer ") ? await getUserByToken(ah.replace("Bearer ", "")) : null;
+    if (!B) return c.json({ error: "auth required" }, 401);
+    const { email, token, code } = await c.req.json();
+    const norm = normalizeEmail(email);
+    if (!norm || (!token && !code)) return c.json({ error: "email and (token or code) required" }, 400);
+    if (!rateOk(magicVerifyRate, norm, 5, MAGIC_TTL_MS)) return c.json({ error: "Too many attempts. Request a new link." }, 429);
+    const cred = await consumeMagicToken(norm, token ? String(token) : null, code ? String(code) : null, null, false);
+    if (cred.error || !cred.verified) return c.json({ error: "Invalid or expired link" }, 401);
+    const outcome = await resolveRecovery(norm, B.id);
+    let survivor: any = outcome.survivor;
+    if (survivor && (outcome.action === "merge" || outcome.action === "set_email" || outcome.action === "noop")) {
+      const s = (await pool.query("SELECT id, auth_token FROM users WHERE id=$1", [survivor])).rows[0];
+      if (s) survivor = { userId: s.id, authToken: s.auth_token }; // app re-fires RC logIn on this id
+    }
+    return c.json({ ...outcome, survivor });
+  } catch (err: any) { return c.json({ error: "Recovery failed", detail: err.message }, 500); }
+});
+// v5.20.6 — TEMPORARY conflict queue (same ADMIN_SECRET pattern, minimal fields).
+app.get("/admin/merge-conflicts", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const rows = (await pool.query("SELECT id, uuid_a, uuid_b, reason, data_states, status, created_at, resolved_at FROM merge_conflicts ORDER BY created_at DESC LIMIT 200")).rows;
+  return c.json({ open: rows.filter((r: any) => r.status === "open").length, total: rows.length, conflicts: rows });
 });
 app.delete("/api/auth/account", async (c) => {
   const ah = c.req.header("Authorization");
@@ -6922,6 +7053,77 @@ async function start() {
     } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
     magicSelfTest = r;
     console.log("[v5.20.5] magic-link self-test:", JSON.stringify(r));
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.20.6 — Grace auto-renew: while a conflict is open, the merge_pending
+  // grace never silently expires (SLA, not a fuse). Re-grant when within 2
+  // days of expiry. Every 6h.
+  // ═══════════════════════════════════════════════════════════════════
+  setInterval(async () => {
+    try {
+      const rows = (await pool.query(`SELECT DISTINCT u.id FROM users u JOIN merge_conflicts mc ON (mc.uuid_a=u.id OR mc.uuid_b=u.id) WHERE mc.status='open' AND u.grace_until IS NOT NULL AND u.grace_until < now() + interval '2 days'`)).rows;
+      for (const row of rows) await grantMergeGrace(row.id);
+      if (rows.length) console.log(`[v5.20.6] grace auto-renewed for ${rows.length} pending-merge user(s)`);
+    } catch (err: any) { console.error("[v5.20.6 grace-renew]", err.message); }
+  }, 6 * 60 * 60 * 1000);
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.20.6 — Recovery-merge E2E self-test (synthetic, self-cleaning, NO real
+  // circles/RC). Proves: normal merge, row-7 merge, dual-journey report+grace,
+  // idempotency. Result at / (merge_selftest).
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const r: any = {};
+    const P = "mergeselftest-";
+    const clean = async () => {
+      await pool.query("DELETE FROM journey_daily_actions WHERE instance_id IN (SELECT id FROM journey_instances WHERE user_id LIKE $1)", [P + "%"]);
+      await pool.query("DELETE FROM journey_instances WHERE user_id LIKE $1", [P + "%"]);
+      await pool.query("DELETE FROM merge_conflicts WHERE uuid_a LIKE $1 OR uuid_b LIKE $1", [P + "%"]);
+      await pool.query("DELETE FROM user_data WHERE user_id LIKE $1", [P + "%"]);
+      await pool.query("DELETE FROM users WHERE id LIKE $1", [P + "%"]);
+    };
+    const mkUser = async (id: string, ent: boolean, email: string | null) => {
+      await pool.query("INSERT INTO users (id, email, verified_email, name, auth_provider, auth_token, subscription_status, account_status) VALUES ($1,$2,$3,'st','email',$4,$5,'active')", [id, email, email, "tok-" + id, ent ? "active" : "none"]);
+      await pool.query("INSERT INTO user_data (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [id]);
+    };
+    const mkJourney = async (uid: string) => { await pool.query("INSERT INTO journey_instances (id, user_id, template_key, family, mode, status) VALUES ($1,$2,'through_illness_and_healing','health','fixed','active')", [P + "inst-" + uid, uid]); };
+    try {
+      // 1. NORMAL — A(ent,no jrny) + B(no ent, jrny) → merge B→A
+      await clean();
+      const emailN = "mergenormal@example.test";
+      await mkUser(P + "A1", true, emailN); await mkUser(P + "B1", false, null); await mkJourney(P + "B1");
+      const o1 = await resolveRecovery(emailN, P + "B1");
+      const jOnA = (await pool.query("SELECT user_id FROM journey_instances WHERE id=$1", [P + "inst-" + P + "B1"])).rows[0]?.user_id;
+      const bRow = (await pool.query("SELECT account_status, verified_email FROM users WHERE id=$1", [P + "B1"])).rows[0];
+      const aVE = (await pool.query("SELECT verified_email FROM users WHERE id=$1", [P + "A1"])).rows[0]?.verified_email;
+      const o1b = await mergeAccounts(P + "B1", P + "A1", emailN);
+      r.normal = { action: o1.action, survivor_is_A: o1.survivor === P + "A1", journey_moved_to_A: jOnA === P + "A1", B_tombstoned: bRow?.account_status === "merged", B_email_cleared: bRow?.verified_email === null, A_holds_email: aVE === emailN, idempotent_noop: o1b.alreadyMerged === true };
+
+      // 2. ROW-7 — A(no ent, jrny) + B(no ent, no jrny) → merge A→B
+      await clean();
+      const email7 = "merge7@example.test";
+      await mkUser(P + "A2", false, email7); await mkUser(P + "B2", false, null); await mkJourney(P + "A2");
+      const o2 = await resolveRecovery(email7, P + "B2");
+      const aRow = (await pool.query("SELECT account_status FROM users WHERE id=$1", [P + "A2"])).rows[0];
+      const bVE = (await pool.query("SELECT verified_email FROM users WHERE id=$1", [P + "B2"])).rows[0]?.verified_email;
+      const o2b = await mergeAccounts(P + "A2", P + "B2", email7);
+      r.row7 = { action: o2.action, survivor_is_B: o2.survivor === P + "B2", A_tombstoned: aRow?.account_status === "merged", B_single_homes_email: bVE === email7, idempotent_noop: o2b.alreadyMerged === true };
+
+      // 3. DUAL-JOURNEY with A.ent → report + grace + conflict row, no merge
+      await clean();
+      const emailD = "mergedual@example.test";
+      await mkUser(P + "A3", true, emailD); await mkUser(P + "B3", false, null); await mkJourney(P + "A3"); await mkJourney(P + "B3");
+      const o3 = await resolveRecovery(emailD, P + "B3");
+      const conflictRow = (await pool.query("SELECT reason FROM merge_conflicts WHERE (uuid_a=$1 OR uuid_b=$1) AND status='open'", [P + "A3"])).rows[0];
+      const graceB = (await pool.query("SELECT grace_until, account_status FROM users WHERE id=$1", [P + "B3"])).rows[0];
+      r.dual_journey = { action: o3.action, reason: o3.reason, conflict_row_created: !!conflictRow, grace_until_set: !!graceB?.grace_until, access_immediate: o3.accessImmediate === true, no_merge_B_still_active: graceB?.account_status !== "merged" };
+
+      await clean();
+      r.cleaned = true; r.ranAt = new Date().toISOString();
+    } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
+    mergeSelfTest = r;
+    console.log("[v5.20.6] merge self-test:", JSON.stringify(r));
   })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
