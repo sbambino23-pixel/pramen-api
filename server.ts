@@ -1735,7 +1735,7 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
     phases: [
       { label: { en: "Bring them to God", fr: "Les porter devant Dieu", es: "Ll\u00e9valos ante Dios", pt: "Leve-os diante de Deus" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "scripture", "small_act", "journal"] },
       { label: { en: "Your own heart first", fr: "Ton propre c\u0153ur d\u2019abord", es: "Tu propio coraz\u00f3n primero", pt: "Seu pr\u00f3prio cora\u00e7\u00e3o primeiro" }, dayStart: 11, dayEnd: 20, tone: "honest", mix: ["prayer", "confession", "reflection", "rest"] },
-      { label: { en: "Hope for restoration, held loosely", fr: "Esp\u00e9rer la restauration, sans forcer", es: "Esperanza de restauraci\u00f3n, sin forzar", pt: "Esperan\u00e7a de restaura\u00e7\u00e3o, sem for\u00e7ar" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "encouragement", "gratitude", "scripture"] },
+      { label: { en: "Hope for restoration, held loosely", fr: "Esp\u00e9rer la restauration, sans forcer", es: "Esperanza de restauraci\u00f3n, sin forzar", pt: "Esperan\u00e7a de restaura\u00e7\u00e3o, sem for\u00e7ar" }, dayStart: 21, dayEnd: 30, tone: "gentle", mix: ["prayer", "encouragement", "gratitude", "scripture"] },
     ],
   },
 };
@@ -1913,7 +1913,10 @@ const SCRIPTURE_TEMPLATES: Record<JourneyTone, Record<Lang, { body: string; scri
 // the library the Phase-2 content matrix will select from by {spine × phase ×
 // dominant-emotion}; getTodayAction still uses the tone pool until then.
 // ═══════════════════════════════════════════════════════════════════
-const SCRIPTURE_BY_CORE: Record<string, { en: { body: string; scriptureRef: string } }> = {
+// v5.20.15 — per-language verse slots. `en` filled/verified; fr/es/pt slots
+// added by Samy's sourcing. A language only serves core verses once ALL its
+// slots are filled (see TIER1_SCRIPTURE_READY) — a check, not a memory.
+const SCRIPTURE_BY_CORE: Record<string, Partial<Record<Lang, { body: string; scriptureRef: string }>>> = {
   fear:              { en: { body: "So do not fear, for I am with you; do not be dismayed, for I am your God. I will strengthen you and help you.", scriptureRef: "Isaiah 41:10" } },
   strength_for_today:{ en: { body: "Because of the Lord's great love we are not consumed, for his compassions never fail. They are new every morning.", scriptureRef: "Lamentations 3:22-23" } },
   anxiety:           { en: { body: "Do not be anxious about anything, but in every situation, by prayer and petition, with thanksgiving, present your requests to God.", scriptureRef: "Philippians 4:6" } },
@@ -1936,10 +1939,23 @@ const SCRIPTURE_BY_CORE: Record<string, { en: { body: string; scriptureRef: stri
   belovedness:       { en: { body: "For you created my inmost being; you knit me together in my mother's womb.", scriptureRef: "Psalm 139:13" } },
 };
 
-function scriptureForCore(core: string, _lang: Lang = "en"): { body: string; scriptureRef: string } | null {
-  // en verified now; fr/es/pt verified translations pending (Phase 2, never generated).
-  return SCRIPTURE_BY_CORE[core]?.en ?? null;
+function scriptureForCore(core: string, lang: Lang = "en"): { body: string; scriptureRef: string } | null {
+  const entry = SCRIPTURE_BY_CORE[core];
+  if (!entry) return null;
+  if (entry[lang]) return entry[lang]!;
+  // Loud, never silent: a missing localized slot is a sourcing gap, not a no-op.
+  if (entry.en) { console.warn(`[scripture] core "${core}" has no "${lang}" verse — English fallback; fill SCRIPTURE_BY_CORE.${core}.${lang}`); return entry.en; }
+  return null;
 }
+// Readiness CHECK (computed, not hardcoded): a language may serve core verses
+// only when EVERY core used by a Tier-1 door has that language's slot filled.
+// Flipping TIER1_ENABLED can never serve half-English scripture to fr/es/pt.
+const TIER1_CORES_IN_USE: string[] = Array.from(new Set(Object.values(TIER1_DOORS).flatMap((d: any) => d.scriptureCores || [])));
+const TIER1_SCRIPTURE_READY: Record<Lang, boolean> = (["en", "fr", "es", "pt"] as Lang[]).reduce((acc, lang) => {
+  acc[lang] = TIER1_CORES_IN_USE.length > 0 && TIER1_CORES_IN_USE.every((core) => !!SCRIPTURE_BY_CORE[core]?.[lang]);
+  return acc;
+}, {} as Record<Lang, boolean>);
+console.log(`[v5.20.15] Tier-1 scripture readiness:`, JSON.stringify(TIER1_SCRIPTURE_READY), `(cores in use: ${TIER1_CORES_IN_USE.length})`);
 
 // Content matrix: choose the scripture emotional core for a scripture card by
 // {door × phase × dominant-emotion}. Prefer the user's named emotion when the
@@ -1969,7 +1985,7 @@ const JOURNAL_TEMPLATES: Record<JourneyTone, Record<Lang, string>> = {
   grateful:  { en: "Write down three things you want in your next chapter.", fr: "Note trois choses que tu veux dans ton prochain chapitre.", es: "Escribe tres cosas que quieres en tu próximo capítulo.", pt: "Escreva três coisas que você quer no próximo capítulo." },
   steadying: { en: "What question would you ask God if you knew He'd answer out loud?", fr: "Quelle question poserais-tu à Dieu si tu savais qu'Il répondrait à voix haute?", es: "¿Qué pregunta le harías a Dios si supieras que respondería en voz alta?", pt: "Que pergunta você faria a Deus se soubesse que Ele responderia em voz alta?" },
   honest:    { en: "Write about the version of yourself on the other side of this.", fr: "Écris sur la version de toi-même de l'autre côté de tout cela.", es: "Escribe sobre la versión de ti mismo al otro lado de esto.", pt: "Escreva sobre a versão de si mesmo do outro lado disso tudo." },
-  tender:    { en: "Write to your child. What do you want them to know about this time?", fr: "Écris à ton enfant. Que veux-tu qu'il sache de cette période?", es: "Escribe a tu hijo. ¿Qué quieres que sepa de este tiempo?", pt: "Escreva para seu filho. O que você quer que ele saiba sobre este tempo?" },
+  tender:    { en: "Write to them. What do you want them to know?", fr: "Écris-leur. Que veux-tu qu'ils sachent?", es: "Escríbeles. ¿Qué quieres que sepan?", pt: "Escreva para eles. O que você quer que saibam?" },
   lifting:   { en: "Write about what freedom actually looks like for you.", fr: "Écris sur ce à quoi la liberté ressemble vraiment pour toi.", es: "Escribe sobre cómo se ve realmente la libertad para ti.", pt: "Escreva sobre como realmente é a liberdade para você." },
 };
 
@@ -2183,7 +2199,9 @@ async function getTodayAction(instance: any, lang: Lang): Promise<JourneyDailyAc
       // instances (no door) also fall back → unchanged behavior.
       const phaseIndex = template.phases.indexOf(phase);
       const core = TIER1_ENABLED ? pickScriptureCore(instance.door, phaseIndex, instance.dominant_emotion) : null;
-      const byCore = (lang === "en" && core) ? scriptureForCore(core, lang) : null;
+      // Core verses only for a language whose slots are ALL filled; else the
+      // localized tone pool (which IS translated). Readiness is a live check.
+      const byCore = (core && TIER1_SCRIPTURE_READY[lang]) ? scriptureForCore(core, lang) : null;
       const scrData = byCore || SCRIPTURE_TEMPLATES[phase.tone]?.[lang] || SCRIPTURE_TEMPLATES[phase.tone]?.en || SCRIPTURE_TEMPLATES.gentle.en;
       const scrTitle = lang === "fr" ? "Écriture" : lang === "es" ? "Escritura" : lang === "pt" ? "Escritura" : "Scripture";
       content = { title: scrTitle, body: scrData.body, scriptureRef: scrData.scriptureRef };
@@ -2196,7 +2214,16 @@ async function getTodayAction(instance: any, lang: Lang): Promise<JourneyDailyAc
       break;
     }
     case "journal": {
-      const jrnlText = JOURNAL_TEMPLATES[phase.tone]?.[lang] || JOURNAL_TEMPLATES[phase.tone]?.en || JOURNAL_TEMPLATES.gentle.en;
+      let jrnlText = JOURNAL_TEMPLATES[phase.tone]?.[lang] || JOURNAL_TEMPLATES[phase.tone]?.en || JOURNAL_TEMPLATES.gentle.en;
+      // v5.20.15 — the "Write to them…" tender prompt gets relationship-specific
+      // ONLY when a name was explicitly captured. No prayedForName ⇒ neutral wording.
+      // Never infer who this journey is about.
+      if (phase.tone === "tender" && prayedForName) {
+        jrnlText = lang === "fr" ? `Écris à ${prayedForName}. Que veux-tu qu'ils sachent?`
+          : lang === "es" ? `Escríbele a ${prayedForName}. ¿Qué quieres que sepan?`
+          : lang === "pt" ? `Escreva para ${prayedForName}. O que você quer que saibam?`
+          : `Write to ${prayedForName}. What do you want them to know?`;
+      }
       const jrnlTitle = lang === "fr" ? "Journal" : lang === "es" ? "Diario" : lang === "pt" ? "Diário" : "Journal";
       content = { title: jrnlTitle, body: jrnlText, prompt: jrnlText };
       break;
@@ -2459,13 +2486,14 @@ let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test re
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
 let worstDayPreview: any = null; // v5.20.13 — generated worst-day cards per door
 let griefWhoFlags: any = null;   // v5.20.14 — grief who-assumption audit flags
+let griefDay13Sample: any = null; // v5.20.15 — raw after-fix grief journal sample
 // v5.20.14 — behind ADMIN_SECRET (no unauthenticated generation output in prod).
 app.get("/journeys/worst-day-preview", (c) => {
   const key = c.req.query("key") || c.req.header("X-Admin-Secret");
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.14", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, grief_who_flags: griefWhoFlags, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.15", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, grief_who_flags: griefWhoFlags, grief_day13_sample: griefDay13Sample, tier1_scripture_ready: TIER1_SCRIPTURE_READY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -7262,6 +7290,13 @@ async function start() {
       }
       r.grief_who_audit = { days_scanned: 30, langs: 4, flags };
       griefWhoFlags = flags;
+      // Raw after-sample: the day-13 grief journal (was "Write to your child").
+      const s13: any = {};
+      for (const lang of ["en", "fr", "es", "pt"]) {
+        const card = await getTodayAction({ id: gInst, current_day: 13, family: "loss", template_key: "walking_through_grief", prayed_for_name: null }, lang as any);
+        s13[lang] = card.content.body;
+      }
+      griefDay13Sample = s13;
 
       await clean();
       r.cleaned = true; r.ranAt = new Date().toISOString();
