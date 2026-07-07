@@ -1464,13 +1464,13 @@ const TIER1_DOORS: Record<string, JourneyDoor> = {
   },
   "body/results": {
     key: "body/results", name: EN("Waiting for Medical Test Results"), spine: "in_my_body",
-    templateKey: "through_illness_and_healing", family: "health", mode: "fixed", length: 10, unit: "day",
+    templateKey: "body_test_results", family: "health", mode: "fixed", length: 14, unit: "day",
     pacing: "acute", safetyClass: "crisis",
     tokens: ["who_self", "dominant_emotion"], scriptureCores: ["anxiety", "waiting", "peace"],
   },
   "body/chronic": {
     key: "body/chronic", name: EN("Living With Chronic Pain or Illness"), spine: "in_my_body",
-    templateKey: "through_illness_and_healing", family: "health", mode: "open", unit: "day",
+    templateKey: "body_chronic", family: "health", mode: "open", unit: "day",
     pacing: "ongoing", safetyClass: "crisis",
     tokens: ["who_self", "dominant_emotion"], scriptureCores: ["endurance", "presence", "strength_for_today"],
   },
@@ -1641,6 +1641,55 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       { label: { en: "The weight of it", fr: "Le poids de tout cela", es: "El peso de todo", pt: "O peso de tudo isso" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "scripture", "small_act", "rest"] },
       { label: { en: "Strength for today", fr: "La force pour aujourd\u2019hui", es: "Fuerza para hoy", pt: "For\u00e7a para hoje" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "encouragement", "journal", "reflection"] },
       { label: { en: "Hope held honestly", fr: "L\u2019espoir tenu honn\u00eatement", es: "Esperanza sostenida con honestidad", pt: "Esperan\u00e7a mantida com honestidade" }, dayStart: 21, dayEnd: 30, tone: "lifting", mix: ["prayer", "gratitude", "scripture", "encouragement"] },
+    ],
+  },
+  // v5.20.13 \u2014 Tier-1 dedicated arc: CHRONIC. mode:open \u21d2 no lengthDays, no
+  // final phase, no denominator, no graduation. Structurally cannot end on a
+  // finish line. Steady companionship "for as long as you need."
+  body_chronic: {
+    key: "body_chronic",
+    family: "health",
+    mode: "open",
+    name: {
+      en: "Living With It",
+      fr: "Vivre avec",
+      es: "Viviendo con esto",
+      pt: "Vivendo com isso",
+    },
+    oneLiner: {
+      en: "One day at a time, for as long as you need.",
+      fr: "Un jour \u00e0 la fois, aussi longtemps qu\u2019il le faut.",
+      es: "Un d\u00eda a la vez, todo el tiempo que necesites.",
+      pt: "Um dia de cada vez, pelo tempo que precisar.",
+    },
+    phases: [
+      { label: { en: "Just here", fr: "Simplement pr\u00e9sent", es: "Simplemente aqu\u00ed", pt: "Apenas aqui" }, dayStart: 1, dayEnd: 14, tone: "gentle", mix: ["prayer", "scripture", "rest", "reflection"] },
+      { label: { en: "Enough for today", fr: "Assez pour aujourd\u2019hui", es: "Suficiente para hoy", pt: "O bastante para hoje" }, dayStart: 15, dayEnd: 99999, tone: "steadying", mix: ["prayer", "scripture", "encouragement", "rest", "reflection"] },
+    ],
+  },
+  // v5.20.13 \u2014 Tier-1 dedicated arc: TEST RESULTS. Short acute wait. Final phase
+  // is "steadying", NOT "lifting" \u2014 the outcome is unknown, so the arc must not
+  // build toward resolution. Graduation line is outcome-neutral.
+  body_test_results: {
+    key: "body_test_results",
+    family: "health",
+    mode: "fixed",
+    lengthDays: 14,
+    name: {
+      en: "Waiting for Results",
+      fr: "En attendant les r\u00e9sultats",
+      es: "Esperando resultados",
+      pt: "Esperando resultados",
+    },
+    oneLiner: {
+      en: "For the not-knowing. One breath at a time.",
+      fr: "Pour l\u2019incertitude. Un souffle \u00e0 la fois.",
+      es: "Para la incertidumbre. Un respiro a la vez.",
+      pt: "Para a incerteza. Um f\u00f4lego de cada vez.",
+    },
+    phases: [
+      { label: { en: "The waiting", fr: "L\u2019attente", es: "La espera", pt: "A espera" }, dayStart: 1, dayEnd: 7, tone: "honest", mix: ["prayer", "scripture", "rest", "confession"] },
+      { label: { en: "Held in the not-knowing", fr: "Tenu dans l\u2019incertitude", es: "Sostenido en la incertidumbre", pt: "Amparado na incerteza" }, dayStart: 8, dayEnd: 14, tone: "steadying", mix: ["prayer", "scripture", "reflection", "rest"] },
     ],
   },
   the_season_of_waiting: {
@@ -1991,6 +2040,13 @@ const GRADUATION_MESSAGES: Record<string, Record<Lang, string>> = {
     fr: "Trente jours \u00e0 choisir l\u2019amour. Quoi qu\u2019il advienne entre vous, tu l\u2019as d\u2019abord port\u00e9 devant Dieu.",
     es: "Treinta d\u00edas de elegir el amor. Pase lo que pase entre ustedes, lo llevaste primero ante Dios.",
     pt: "Trinta dias de escolher o amor. Aconte\u00e7a o que acontecer entre voc\u00eas, voc\u00ea levou primeiro a Deus.",
+  },
+  // v5.20.13 \u2014 outcome-neutral: never presumes the result. No "good news", no relief-on-arrival.
+  body_test_results: {
+    en: "Two weeks of waiting with God. Whatever the results say, you didn't wait alone.",
+    fr: "Deux semaines d\u2019attente avec Dieu. Quels que soient les r\u00e9sultats, tu n\u2019as pas attendu seul.",
+    es: "Dos semanas esperando con Dios. Digan lo que digan los resultados, no esperaste en soledad.",
+    pt: "Duas semanas esperando com Deus. Seja qual for o resultado, voc\u00ea n\u00e3o esperou sozinho.",
   },
 };
 
@@ -2401,7 +2457,9 @@ let p0PurgeReport: any = null; // v5.20.1 — raw counts from the one-time phase
 let normSelfTest: any = null;  // v5.20.2 — email normalization self-test result
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.12", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+let worstDayPreview: any = null; // v5.20.13 — generated worst-day cards per door
+app.get("/journeys/worst-day-preview", (c) => c.json(worstDayPreview || { pending: true }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.13", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -7133,6 +7191,61 @@ async function start() {
 
   // v5.20.11 — RC grace-lifecycle proof PASSED (grant→active→re-grant→revoke
   // clears→delete; see commit c5e7c46). One-off probe removed post-proof.
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.20.13 — Worst-day card preview. Generates the ACTUAL Day-1/mid/final
+  // cards per Tier-1 door via getTodayAction on synthetic instances (all 4
+  // langs for body/diagnosis), + verse-repetition counts. Self-cleaning.
+  // Served at /journeys/worst-day-preview.
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const r: any = { doors: {} };
+    const U = "wdpreview-user";
+    const clean = async () => {
+      await pool.query("DELETE FROM journey_daily_actions WHERE instance_id LIKE 'wdpreview-%'");
+      await pool.query("DELETE FROM journey_instances WHERE id LIKE 'wdpreview-%'");
+      await pool.query("DELETE FROM users WHERE id=$1", [U]);
+    };
+    const DOORS = [
+      { key: "body/diagnosis", tk: "through_illness_and_healing", fam: "health", days: [1, 15, 30], name: null, langs: ["en", "fr", "es", "pt"] },
+      { key: "body/results", tk: "body_test_results", fam: "health", days: [1, 7, 14], name: null, langs: ["en"] },
+      { key: "body/chronic", tk: "body_chronic", fam: "health", days: [1, 15, 30], name: null, langs: ["en"] },
+      { key: "grief/spouse", tk: "walking_through_grief", fam: "loss", days: [1, 15, 30], name: null, langs: ["en"] },
+      { key: "carry/child", tk: "praying_for_someone", fam: "relationships", days: [1, 15, 30], name: "Michael", langs: ["en"] },
+      { key: "carry/addiction", tk: "praying_for_someone", fam: "relationships", days: [1, 15, 30], name: "Michael", langs: ["en"] },
+      { key: "carry/caregiver", tk: "praying_for_someone", fam: "relationships", days: [1, 15, 30], name: "Mom", langs: ["en"] },
+    ];
+    try {
+      await clean();
+      await pool.query("INSERT INTO users (id, name, auth_token, auth_provider, subscription_status, account_status) VALUES ($1,'preview',$2,'selftest','none','active')", [U, "tok-" + U]);
+      for (const d of DOORS) {
+        const instId = "wdpreview-" + d.key.replace("/", "-");
+        await pool.query("INSERT INTO journey_instances (id, user_id, template_key, family, mode, status, prayed_for_name) VALUES ($1,$2,$3,$4,'fixed','active',$5)", [instId, U, d.tk, d.fam, d.name]);
+        r.doors[d.key] = { template: d.tk, cards: {} };
+        for (const day of d.days) {
+          r.doors[d.key].cards[day] = {};
+          for (const lang of d.langs) {
+            const card = await getTodayAction({ id: instId, current_day: day, family: d.fam, template_key: d.tk, prayed_for_name: d.name }, lang as any);
+            r.doors[d.key].cards[day][lang] = { type: card.type, phase: card.phaseLabel, title: card.content.title, body: card.content.body, scriptureRef: card.content.scriptureRef || null };
+          }
+        }
+        const grad = GRADUATION_MESSAGES[d.tk];
+        r.doors[d.key].graduation = grad ? grad.en : "(open journey — no graduation)";
+      }
+      // Verse-repetition evidence: body/diagnosis, all 30 days (en).
+      const vc: Record<string, number> = {};
+      for (let day = 1; day <= 30; day++) {
+        const card = await getTodayAction({ id: "wdpreview-body-diagnosis", current_day: day, family: "health", template_key: "through_illness_and_healing", prayed_for_name: null }, "en" as any);
+        const ref = card.content.scriptureRef;
+        if (ref) vc[ref] = (vc[ref] || 0) + 1;
+      }
+      r.diagnosis_verse_repetition_30d = vc;
+      await clean();
+      r.cleaned = true; r.ranAt = new Date().toISOString();
+    } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
+    worstDayPreview = r;
+    console.log("[v5.20.13] worst-day preview:", r.error ? r.error : "generated");
+  })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
   // Users who were auto-assigned 'trial' on signup but never actually subscribed via RevenueCat
