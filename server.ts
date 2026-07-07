@@ -2458,8 +2458,14 @@ let normSelfTest: any = null;  // v5.20.2 — email normalization self-test resu
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
 let worstDayPreview: any = null; // v5.20.13 — generated worst-day cards per door
-app.get("/journeys/worst-day-preview", (c) => c.json(worstDayPreview || { pending: true }));
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.13", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+let griefWhoFlags: any = null;   // v5.20.14 — grief who-assumption audit flags
+// v5.20.14 — behind ADMIN_SECRET (no unauthenticated generation output in prod).
+app.get("/journeys/worst-day-preview", (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  return c.json(worstDayPreview || { pending: true });
+});
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.14", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, grief_who_flags: griefWhoFlags, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -7240,11 +7246,28 @@ async function start() {
         if (ref) vc[ref] = (vc[ref] || 0) + 1;
       }
       r.diagnosis_verse_repetition_30d = vc;
+
+      // Full grief audit: walking_through_grief, ALL 30 days × 4 langs, scanned
+      // for who-assumptions (relationship nouns the journey can't safely assume).
+      const whoRe = /\b(child|son|daughter|husband|wife|spouse|enfant|fils|fille|mari|femme|époux|épouse|hijo|hija|esposo|esposa|marido|mujer|filho|filha|marido|esposa)\b/i;
+      const flags: any[] = [];
+      const gInst = "wdpreview-grief-full";
+      await pool.query("INSERT INTO journey_instances (id, user_id, template_key, family, mode, status) VALUES ($1,$2,'walking_through_grief','loss','fixed','active')", [gInst, U]);
+      for (let day = 1; day <= 30; day++) {
+        for (const lang of ["en", "fr", "es", "pt"]) {
+          const card = await getTodayAction({ id: gInst, current_day: day, family: "loss", template_key: "walking_through_grief", prayed_for_name: null }, lang as any);
+          const text = `${card.content.title} ${card.content.body}`;
+          if (whoRe.test(text)) flags.push({ day, lang, type: card.type, snippet: card.content.body.slice(0, 90) });
+        }
+      }
+      r.grief_who_audit = { days_scanned: 30, langs: 4, flags };
+      griefWhoFlags = flags;
+
       await clean();
       r.cleaned = true; r.ranAt = new Date().toISOString();
     } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
     worstDayPreview = r;
-    console.log("[v5.20.13] worst-day preview:", r.error ? r.error : "generated");
+    console.log("[v5.20.13] worst-day preview:", r.error ? r.error : `generated, grief who-flags=${griefWhoFlags?.length ?? "?"}`);
   })();
 
   // v5.14.0 — one-time migration: fix fake trial statuses
