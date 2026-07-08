@@ -2518,6 +2518,7 @@ let normSelfTest: any = null;  // v5.20.2 — email normalization self-test resu
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
 let webFunnelSelfTest: any = null; // v5.21.0 — web funnel round-trip self-test
+let demoGrantProof: any = null;    // v5.22.0 — one-off RC demo-entitlement lifecycle proof
 let worstDayPreview: any = null; // v5.20.13 — generated worst-day cards per door
 let griefWhoFlags: any = null;   // v5.20.14 — grief who-assumption audit flags
 let griefDay13Sample: any = null; // v5.20.15 — raw after-fix grief journal sample
@@ -2527,7 +2528,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.21.2", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.22.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2837,6 +2838,20 @@ function posthogAlias(loserId: string, survivorId: string): void {
     body: JSON.stringify({ api_key: POSTHOG_API_KEY, event: "$create_alias", distinct_id: survivorId, properties: { alias: loserId } }),
   }).catch(() => {});
 }
+// v5.22.0 — DEMO allowlist (temporary; replaces magic-link until Resend is live).
+// Server-side only; NEVER hardcode emails in the binary. Empty env = inert.
+// REMOVAL item on the go-live checklist once magic-link ships.
+const DEMO_ALLOWLIST: Set<string> = new Set((process.env.DEMO_ALLOWLIST || "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean));
+function isDemoAllowlisted(normEmail: string): boolean { return DEMO_ALLOWLIST.size > 0 && DEMO_ALLOWLIST.has(normEmail); }
+// Demo entitlement = RC promotional (monthly), same proven grant/revoke machinery.
+async function grantDemoEntitlement(rcUserId: string): Promise<boolean> {
+  if (rcUserId.startsWith("demograntproof-")) return false; // proof handles RC directly
+  if (!REVENUECAT_SECRET_KEY) return false;
+  try {
+    const r = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(rcUserId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
+    return r.ok;
+  } catch { return false; }
+}
 async function grantMergeGrace(rcUserId: string): Promise<boolean> {
   await pool.query("UPDATE users SET grace_until = now() + interval '7 days', updated_at=NOW() WHERE id=$1", [rcUserId]).catch(() => {});
   if (rcUserId.startsWith("mergeselftest-")) return false; // self-test: DB grace only, never touch RC
@@ -3026,6 +3041,29 @@ app.post("/api/web/purchase-complete", async (c) => {
     // Magic link + code returned for the desktop/no-app fallback page (never auto-verified).
     return c.json({ ok: true, delivered: mail.ok, mailConfigured: mailConfigured(), magicLink: link, eventId });
   } catch (err: any) { return c.json({ error: "purchase_complete_failed", detail: err.message }, 500); }
+});
+
+// v5.22.0 — DEMO SIGN-IN (allowlist). TEMPORARY — replaced by magic-link at
+// go-live (REMOVAL item). Allowlisted email → user + demo entitlement + auth.
+// Non-allowlisted → { allowlisted:false } (client shows "coming soon", not a
+// dead "check your email"). Empty DEMO_ALLOWLIST env = inert (all false).
+app.post("/api/auth/demo-signin", async (c) => {
+  try {
+    const { email, deviceUserId } = await c.req.json();
+    const norm = normalizeEmail(email);
+    if (!norm || !norm.includes("@")) return c.json({ error: "valid_email_required" }, 400);
+    if (!isDemoAllowlisted(norm)) {
+      console.log(`[demo-signin] NOT allowlisted: ${norm}`);
+      return c.json({ allowlisted: false });
+    }
+    const userId = await ensureWebUser(norm, null);
+    if (deviceUserId) await pool.query("UPDATE users SET device_user_id=$1,updated_at=NOW() WHERE id=$2", [deviceUserId, userId]).catch(() => {});
+    const demoGranted = await grantDemoEntitlement(userId); // RC promo (monthly) → app logs in with userId
+    const u = (await pool.query("SELECT * FROM users WHERE id=$1", [userId])).rows[0];
+    console.log(`[demo-signin] ALLOWLISTED auth: ${norm} → user ${userId.substring(0, 8)} rc_granted=${demoGranted}`);
+    trackEvent(userId, "demo_signin", { rc_granted: demoGranted });
+    return c.json({ allowlisted: true, demoGranted, user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null, isNewUser: false }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id || "") });
+  } catch (err: any) { return c.json({ error: "demo_signin_failed", detail: err.message }, 500); }
 });
 app.delete("/api/auth/account", async (c) => {
   const ah = c.req.header("Authorization");
@@ -7401,6 +7439,37 @@ async function start() {
     } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
     webFunnelSelfTest = r;
     console.log("[v5.21.0] web-funnel self-test:", r.error ? r.error : "ok");
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.22.0 — DEMO entitlement provider-record proof (one-off). Demo sign-in
+  // grants an RC monthly promo; prove it lands in RC + revokes cleanly, on a
+  // throwaway subscriber. At / (demo_grant_proof). Removed after capture.
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    if (!REVENUECAT_SECRET_KEY) { demoGrantProof = { skipped: "no RC key" }; return; }
+    const probe = "demograntproof-probe";
+    const H: any = { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" };
+    const base = `https://api.revenuecat.com/v1/subscribers/${probe}`;
+    const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+    const entOf = (j: any) => { const e = j?.subscriber?.entitlements?.premium; return e ? { expires_date: e.expires_date, product_identifier: e.product_identifier } : null; };
+    const active = (e: any) => !!e && new Date(e.expires_date).getTime() > Date.now();
+    const getEnt = async () => entOf(await (await fetch(base, { headers: H })).json());
+    const proof: any = {};
+    try {
+      let e1: any = null;
+      for (let i = 0; i < 12; i++) { await fetch(`${base}/entitlements/premium/promotional`, { method: "POST", headers: H, body: JSON.stringify({ duration: "monthly" }) }); await sleep(2500); e1 = await getEnt(); if (active(e1)) break; }
+      proof.granted_active = { entitlement: e1, is_active: active(e1) };
+      await fetch(`${base}/entitlements/premium/revoke_promotionals`, { method: "POST", headers: H });
+      let e2: any = e1;
+      for (let i = 0; i < 10; i++) { await sleep(1800); e2 = await getEnt(); if (!active(e2)) break; }
+      proof.after_revoke_cleared = !active(e2);
+      proof.subscriber_deleted = (await fetch(base, { method: "DELETE", headers: H })).ok;
+      proof.PASS = active(e1) && !active(e2);
+      proof.ranAt = new Date().toISOString();
+    } catch (err: any) { proof.error = err.message; try { await fetch(base, { method: "DELETE", headers: H }); } catch {} }
+    demoGrantProof = proof;
+    console.log("[v5.22.0] demo grant proof:", JSON.stringify(proof));
   })();
 
   // v5.20.11 — RC grace-lifecycle proof PASSED (grant→active→re-grant→revoke
