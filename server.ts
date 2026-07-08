@@ -799,6 +799,8 @@ async function initDb(): Promise<void> {
     // matrix can select scripture by {spine x phase x emotion}. Nullable/additive.
     await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS door TEXT`).catch(() => {});
     await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS dominant_emotion TEXT`).catch(() => {});
+    // v5.20.18 — quiet time as LOCAL time-of-day "HH:mm" (never UTC). Feeds reminder scheduling.
+    await client.query(`ALTER TABLE journey_instances ADD COLUMN IF NOT EXISTS quiet_time TEXT`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS partner_blocks (
       blocker TEXT NOT NULL REFERENCES users(id),
       blocked TEXT NOT NULL REFERENCES users(id),
@@ -2501,7 +2503,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.17", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, grief_who_flags: griefWhoFlags, grief_day13_sample: griefDay13Sample, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.18", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, grief_who_flags: griefWhoFlags, grief_day13_sample: griefDay13Sample, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -6146,7 +6148,9 @@ function resolveJourney(input: { door?: string; intake?: string }): ResolvedJour
 app.post("/journeys/start", async (c) => {
   try {
     const body = await c.req.json();
-    const { userId, intake, door, dominantEmotion, prayedForName, lengthDays: bodyLengthDays } = body;
+    const { userId, intake, door, dominantEmotion, prayedForName, lengthDays: bodyLengthDays, quietTime } = body;
+    // Validate quiet time as local "HH:mm" (00:00–23:59); ignore anything else.
+    const quietTimeClean = (typeof quietTime === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(quietTime.trim())) ? quietTime.trim() : null;
 
     if (!userId || (!intake && !door)) return c.json({ error: "userId and (intake or door) required" }, 400);
 
@@ -6226,9 +6230,9 @@ app.post("/journeys/start", async (c) => {
     const lengthDays = bodyLengthDays || resolved.lengthDays || template.lengthDays || null;
 
     const ins = await pool.query(
-      `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name, door, dominant_emotion)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [resolvedUserId, templateKey, family, template.mode, unit, lengthDays, prayedForName || null, resolved.door, dominantEmotion || null]
+      `INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, prayed_for_name, door, dominant_emotion, quiet_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [resolvedUserId, templateKey, family, template.mode, unit, lengthDays, prayedForName || null, resolved.door, dominantEmotion || null, quietTimeClean]
     );
     const instance = ins.rows[0];
 
