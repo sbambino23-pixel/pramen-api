@@ -1956,6 +1956,14 @@ const TIER1_SCRIPTURE_READY: Record<Lang, boolean> = (["en", "fr", "es", "pt"] a
   return acc;
 }, {} as Record<Lang, boolean>);
 console.log(`[v5.20.15] Tier-1 scripture readiness:`, JSON.stringify(TIER1_SCRIPTURE_READY), `(cores in use: ${TIER1_CORES_IN_USE.length})`);
+// v5.20.17 — denominator policy per Tier-1 door (proof of the standing rule).
+const DENOMINATOR_POLICY: Record<string, any> = Object.fromEntries(
+  Object.entries(TIER1_DOORS).filter(([k]) => !k.startsWith("faith/")).map(([k, d]: [string, any]) => {
+    const len = d.length ?? null;
+    const shows = d.mode !== "open" && !!len && !["loss", "relationships"].includes(d.family);
+    return [k, { family: d.family, mode: d.mode, length: len, showsDenominator: shows }];
+  })
+);
 
 // Content matrix: choose the scripture emotional core for a scripture card by
 // {door × phase × dominant-emotion}. Prefer the user's named emotion when the
@@ -2493,7 +2501,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.16", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, grief_who_flags: griefWhoFlags, grief_day13_sample: griefDay13Sample, tier1_scripture_ready: TIER1_SCRIPTURE_READY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.17", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, grief_who_flags: griefWhoFlags, grief_day13_sample: griefDay13Sample, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
