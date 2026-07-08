@@ -617,6 +617,22 @@ async function initDb(): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       resolved_at TIMESTAMPTZ
     )`);
+    // v5.21.0 — Phase 3 web funnel. Quiz answers + lead store, keyed by
+    // normalized email. Real table behind recovery-merge transfer item 5
+    // (web quiz / pending_intake). user_id links the pending web user.
+    await client.query(`CREATE TABLE IF NOT EXISTS web_quiz (
+      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+      email TEXT NOT NULL UNIQUE,
+      user_id TEXT,
+      first_name TEXT,
+      answers JSONB NOT NULL DEFAULT '{}'::jsonb,
+      quiet_time TEXT,
+      door TEXT,
+      status TEXT NOT NULL DEFAULT 'lead',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_web_quiz_user ON web_quiz(user_id)`).catch(() => {});
     await client.query(`CREATE TABLE IF NOT EXISTS user_data (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, streak_count INTEGER DEFAULT 0, highest_streak INTEGER DEFAULT 0, total_prayers INTEGER DEFAULT 0, total_minutes INTEGER DEFAULT 0, last_prayed_date TIMESTAMPTZ, sessions JSONB DEFAULT '[]'::jsonb, preferences JSONB DEFAULT '{}'::jsonb, circle_codes TEXT[] DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_local_date TEXT`).catch(() => {});
     await client.query(`ALTER TABLE user_data ADD COLUMN IF NOT EXISTS last_prayed_timezone TEXT`).catch(() => {});
@@ -841,6 +857,13 @@ function verifiedEmailFor(provider: string, rawEmail?: string | null): string | 
   if (!norm) return null;
   if (provider === "apple" && norm.endsWith("@privaterelay.appleid.com")) return null;
   return norm; // google, apple-non-relay, magic → matchable
+}
+// v5.21.0 — RC Web Billing App User ID, derived deterministically from email.
+// MUST byte-match the iOS JourneyRouter.canonicalRCUserID(email) so a web
+// purchase and the app's post-sign-in logIn land on the SAME RC customer.
+function rcAppUserIdForEmail(email: string): string {
+  const norm = (email || "").trim().toLowerCase();
+  return "rcu_" + createHash("sha256").update(norm).digest("hex");
 }
 // Comparison uses lower(trim()) on BOTH sides so it matches legacy un-normalized rows.
 async function getUserByEmail(email: string) { try { const r = await pool.query("SELECT * FROM users WHERE lower(trim(email))=lower(trim($1))", [email]); return r.rows[0] || null; } catch { return null; } }
@@ -2494,6 +2517,7 @@ let p0PurgeReport: any = null; // v5.20.1 — raw counts from the one-time phase
 let normSelfTest: any = null;  // v5.20.2 — email normalization self-test result
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
+let webFunnelSelfTest: any = null; // v5.21.0 — web funnel round-trip self-test
 let worstDayPreview: any = null; // v5.20.13 — generated worst-day cards per door
 let griefWhoFlags: any = null;   // v5.20.14 — grief who-assumption audit flags
 let griefDay13Sample: any = null; // v5.20.15 — raw after-fix grief journal sample
@@ -2503,7 +2527,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.20.18", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, grief_who_flags: griefWhoFlags, grief_day13_sample: griefDay13Sample, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.21.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2784,7 +2808,11 @@ app.post("/api/auth/magic-link/verify", async (c) => {
     const r = await consumeMagicToken(norm, token ? String(token) : null, code ? String(code) : null, deviceUserId);
     if (r.error || !r.user) return c.json({ error: "Invalid or expired link" }, 401);
     const u = r.user;
-    return c.json({ user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null, isNewUser: r.isNewUser }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id || "") });
+    // Skip-questionnaire handoff: if this email quizzed on the web, hand the app
+    // the answers so it pre-builds the journey instead of re-asking.
+    const wq = (await pool.query("SELECT answers, quiet_time, door, status FROM web_quiz WHERE email=$1", [norm])).rows[0] || null;
+    const prebuiltIntake = wq ? { answers: wq.answers, quietTime: wq.quiet_time, door: wq.door, status: wq.status } : null;
+    return c.json({ user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null, isNewUser: r.isNewUser }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id || ""), prebuiltIntake });
   } catch (err: any) { return c.json({ error: "Verify failed", detail: err.message }, 500); }
 });
 
@@ -2840,6 +2868,7 @@ async function mergeAccounts(loserId: string, survivorId: string, email: string)
     const seen = new Set<string>(); ci.members = ci.members.filter((m: any) => { if (seen.has(m.userId)) return false; seen.add(m.userId); return true; });
     if (changed) await saveCircleToDb(ci);
   }
+  await pool.query("UPDATE web_quiz SET user_id=$1, updated_at=now() WHERE user_id=$2", [survivorId, loserId]).catch(() => {}); // transfer item 5 (web quiz / pending_intake)
   posthogAlias(loserId, survivorId);
   await pool.query("UPDATE users SET account_status='merged', merged_into=$1, verified_email=NULL, grace_until=NULL, auth_token=$2, updated_at=NOW() WHERE id=$3", [survivorId, generateAuthToken(), loserId]);
   await pool.query("UPDATE users SET verified_email=$1, account_status='active', updated_at=NOW() WHERE id=$2", [email, survivorId]);
@@ -2905,6 +2934,98 @@ app.get("/admin/merge-conflicts", async (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   const rows = (await pool.query("SELECT id, uuid_a, uuid_b, reason, data_states, status, created_at, resolved_at FROM merge_conflicts ORDER BY created_at DESC LIMIT 200")).rows;
   return c.json({ open: rows.filter((r: any) => r.status === "open").length, total: rows.length, conflicts: rows });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// v5.21.0 — PHASE 3 WEB FUNNEL (pramen.app /quiz → checkout → app).
+// Dark: endpoints live; go-live gated on Resend + RC Web Billing + AASA.
+// ═══════════════════════════════════════════════════════════════════
+const WEB_ORIGIN = process.env.WEB_ORIGIN || "https://pramen.app";
+// Ensure a lightweight pending user exists for a web email (so the RC identity,
+// magic-link, and app sign-in all resolve to ONE account). Returns the userId.
+async function ensureWebUser(normEmail: string, firstName?: string | null): Promise<string> {
+  const existing = await getUserByEmail(normEmail);
+  if (existing) {
+    if (firstName && !existing.name) await pool.query("UPDATE users SET name=$1,updated_at=NOW() WHERE id=$2", [firstName, existing.id]);
+    if (!existing.verified_email) await pool.query("UPDATE users SET verified_email=$1,updated_at=NOW() WHERE id=$2", [normEmail, existing.id]);
+    return existing.id;
+  }
+  const userId = randomUUID();
+  await pool.query("INSERT INTO users (id,email,verified_email,name,auth_provider,auth_token,subscription_status) VALUES ($1,$2,$2,$3,'web',$4,'none')", [userId, normEmail, firstName || "", generateAuthToken()]);
+  await pool.query("INSERT INTO user_data (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING", [userId]);
+  trackEvent(userId, "user_signed_up", { auth_provider: "web" });
+  return userId;
+}
+
+// 1. EMAIL CAPTURE (Lead). Creates the pending user + the web_quiz record.
+app.post("/api/web/lead", async (c) => {
+  try {
+    const { email, firstName, answers, quietTime, door } = await c.req.json();
+    const norm = normalizeEmail(email);
+    if (!norm || !norm.includes("@")) return c.json({ error: "valid_email_required" }, 400);
+    const name = typeof firstName === "string" ? firstName.trim().slice(0, 80) : null;
+    const qt = (typeof quietTime === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(quietTime.trim())) ? quietTime.trim() : null;
+    const userId = await ensureWebUser(norm, name);
+    await pool.query(
+      `INSERT INTO web_quiz (email, user_id, first_name, answers, quiet_time, door, status)
+       VALUES ($1,$2,$3,COALESCE($4::jsonb,'{}'::jsonb),$5,$6,'lead')
+       ON CONFLICT (email) DO UPDATE SET user_id=EXCLUDED.user_id, first_name=COALESCE(EXCLUDED.first_name, web_quiz.first_name),
+         answers=CASE WHEN $4 IS NULL THEN web_quiz.answers ELSE web_quiz.answers || $4::jsonb END,
+         quiet_time=COALESCE(EXCLUDED.quiet_time, web_quiz.quiet_time), door=COALESCE(EXCLUDED.door, web_quiz.door), updated_at=now()`,
+      [norm, userId, name, answers ? JSON.stringify(answers) : null, qt, typeof door === "string" ? door : null]
+    );
+    const eventId = `lead_${userId}_${Date.now()}`;
+    trackEvent(userId, "web_lead_captured", { has_answers: !!answers });
+    sendMetaCAPIEvent({ eventName: "Lead", eventId, userId, email: norm, price: 0, currency: "USD" }).catch(() => {});
+    return c.json({ ok: true, userId, rcAppUserId: rcAppUserIdForEmail(norm), eventId });
+  } catch (err: any) { return c.json({ error: "lead_failed", detail: err.message }, 500); }
+});
+
+// 2. QUIZ ANSWERS (full set or incremental; merged into answers JSONB).
+app.post("/api/web/quiz", async (c) => {
+  try {
+    const { email, answers, quietTime, door, complete } = await c.req.json();
+    const norm = normalizeEmail(email);
+    if (!norm || !norm.includes("@")) return c.json({ error: "valid_email_required" }, 400);
+    if (!answers || typeof answers !== "object") return c.json({ error: "answers_object_required" }, 400);
+    const qt = (typeof quietTime === "string" && /^([01]\d|2[0-3]):[0-5]\d$/.test(quietTime.trim())) ? quietTime.trim() : null;
+    const userId = await ensureWebUser(norm, null);
+    const status = complete ? "quiz_complete" : "lead";
+    await pool.query(
+      `INSERT INTO web_quiz (email, user_id, answers, quiet_time, door, status)
+       VALUES ($1,$2,$3::jsonb,$4,$5,$6)
+       ON CONFLICT (email) DO UPDATE SET user_id=EXCLUDED.user_id,
+         answers = web_quiz.answers || $3::jsonb,
+         quiet_time=COALESCE(EXCLUDED.quiet_time, web_quiz.quiet_time),
+         door=COALESCE(EXCLUDED.door, web_quiz.door),
+         status=CASE WHEN $6='quiz_complete' THEN 'quiz_complete' ELSE web_quiz.status END, updated_at=now()`,
+      [norm, userId, JSON.stringify(answers), qt, typeof door === "string" ? door : null, status]
+    );
+    if (complete) trackEvent(userId, "web_quiz_completed", {});
+    return c.json({ ok: true, userId });
+  } catch (err: any) { return c.json({ error: "quiz_failed", detail: err.message }, 500); }
+});
+
+// 3. PURCHASE COMPLETE (called by the RC-success redirect). Issues a magic link
+// for the app handoff + fires the server-side Purchase event. Entitlement itself
+// is granted by RC Web Billing → RC webhook (single source of truth).
+app.post("/api/web/purchase-complete", async (c) => {
+  try {
+    const { email, value, currency } = await c.req.json();
+    const norm = normalizeEmail(email);
+    if (!norm || !norm.includes("@")) return c.json({ error: "valid_email_required" }, 400);
+    const userId = await ensureWebUser(norm, null);
+    await pool.query("UPDATE web_quiz SET status='purchased', updated_at=now() WHERE email=$1", [norm]);
+    const ip = (c.req.header("x-forwarded-for") || "").split(",")[0].trim() || "web";
+    const { raw, code } = await issueMagicLink(norm, ip);
+    const link = `${WEB_ORIGIN}/auth/magic?token=${raw}&email=${encodeURIComponent(norm)}`;
+    const mail = await sendMail({ to: norm, subject: "Open prAmen — you're all set", html: magicEmailHtml(link, code), text: `Open prAmen: ${link}\nOr enter code ${code}. Works once, expires in 10 minutes.` });
+    const eventId = `purchase_${userId}_${Date.now()}`;
+    trackEvent(userId, "web_purchase", { value: value ?? null, currency: currency ?? "USD" });
+    sendMetaCAPIEvent({ eventName: "Purchase", eventId, userId, email: norm, price: typeof value === "number" ? value : 23.99, currency: currency || "USD" }).catch(() => {});
+    // Magic link + code returned for the desktop/no-app fallback page (never auto-verified).
+    return c.json({ ok: true, delivered: mail.ok, mailConfigured: mailConfigured(), magicLink: link, eventId });
+  } catch (err: any) { return c.json({ error: "purchase_complete_failed", detail: err.message }, 500); }
 });
 app.delete("/api/auth/account", async (c) => {
   const ah = c.req.header("Authorization");
@@ -7238,6 +7359,36 @@ async function start() {
     } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
     mergeSelfTest = r;
     console.log("[v5.20.6] merge self-test:", JSON.stringify(r));
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.21.0 — Web-funnel self-test (dark, synthetic, self-cleaning): lead →
+  // quiz → purchase → magic-verify hands back prebuiltIntake. Proves the
+  // store + identity + skip-questionnaire handoff. At / (web_funnel_selftest).
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const r: any = {};
+    const email = "webfunnelselftest@example.test";
+    const clean = async () => {
+      await pool.query("DELETE FROM web_quiz WHERE email=$1", [email]);
+      await pool.query("DELETE FROM magic_links WHERE email=$1", [email]);
+      await pool.query("DELETE FROM users WHERE lower(trim(email))=lower(trim($1))", [email]);
+    };
+    try {
+      await clean();
+      const uid = await ensureWebUser(email, "Test");
+      await pool.query("INSERT INTO web_quiz (email, user_id, first_name, answers, quiet_time, door, status) VALUES ($1,$2,'Test',$3::jsonb,'07:30','body/diagnosis','quiz_complete') ON CONFLICT (email) DO UPDATE SET answers=EXCLUDED.answers", [email, uid, JSON.stringify({ burden: "diagnosis", scared: true })]);
+      const rc1 = rcAppUserIdForEmail(email), rc2 = rcAppUserIdForEmail("  WebFunnelSelfTest@Example.TEST ");
+      r.identity = { rcAppUserId: rc1, deterministic_case_insensitive: rc1 === rc2, format_ok: /^rcu_[0-9a-f]{64}$/.test(rc1), matches_pending_user: !!uid };
+      const { raw } = await issueMagicLink(email, "selftest");
+      const v = await consumeMagicToken(email, raw);
+      const wq = (await pool.query("SELECT answers, quiet_time, door FROM web_quiz WHERE email=$1", [email])).rows[0];
+      r.handoff = { verified: !!v.user, same_user: v.user?.id === uid, quiz_persisted: !!wq, prebuilt_answers: wq?.answers, quiet_time: wq?.quiet_time, door: wq?.door };
+      await clean();
+      r.cleaned = true; r.ranAt = new Date().toISOString();
+    } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
+    webFunnelSelfTest = r;
+    console.log("[v5.21.0] web-funnel self-test:", r.error ? r.error : "ok");
   })();
 
   // v5.20.11 — RC grace-lifecycle proof PASSED (grant→active→re-grant→revoke
