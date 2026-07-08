@@ -2528,7 +2528,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.22.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.22.1", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -6070,6 +6070,28 @@ app.get("/journeys/templates", (c) => {
       }))
     }))
   });
+});
+
+// v5.22.0 — DEMO journey start: synthetic instance, NO circle attach (never real
+// circles — standing rule), self-cleaning (prior demo instances dropped), status
+// 'demo'. Uses TIER1_DOORS directly so the demo routes all 7 doors regardless of
+// TIER1_ENABLED. Removed with the demo at go-live.
+app.post("/journeys/demo-start", async (c) => {
+  try {
+    const { userId, door } = await c.req.json();
+    const d: any = TIER1_DOORS[door];
+    if (!userId || !d) return c.json({ error: "userId and valid door required" }, 400);
+    await pool.query("DELETE FROM journey_daily_actions WHERE instance_id IN (SELECT id FROM journey_instances WHERE user_id=$1 AND status='demo')", [userId]);
+    await pool.query("DELETE FROM journey_instances WHERE user_id=$1 AND status='demo'", [userId]);
+    const lengthDays = d.length ?? null;
+    const prayedName = door.startsWith("carry/") ? "Michael" : null;
+    const ins = await pool.query(
+      "INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, door, prayed_for_name, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'demo') RETURNING *",
+      [userId, d.templateKey, d.family, d.mode, d.unit || "day", lengthDays, door, prayedName]
+    );
+    const i = ins.rows[0];
+    return c.json({ instance: { id: i.id, templateKey: i.template_key, family: i.family, mode: i.mode, unit: i.unit, lengthDays: i.length_days ?? null, currentDay: 1, prayedForName: i.prayed_for_name || null, displayName: journeyDisplayName(i.template_key, i.family, "en"), status: "demo" } });
+  } catch (err: any) { return c.json({ error: "demo_start_failed", detail: err.message }, 500); }
 });
 
 // v5.22.0 — DEMO scrubber: render any day's card without advancing the instance.
