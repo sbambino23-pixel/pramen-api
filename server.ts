@@ -6072,6 +6072,27 @@ app.get("/journeys/templates", (c) => {
   });
 });
 
+// v5.22.0 — DEMO scrubber: render any day's card without advancing the instance.
+// Same response shape as /today. Read-only jump for the demo journey simulator.
+app.get("/journeys/:id/preview-day", async (c) => {
+  try {
+    const id = c.req.param("id");
+    const day = Math.max(1, parseInt(c.req.query("day") || "1", 10));
+    const lang = ((c.req.query("lang") || "en") as Lang);
+    const inst = (await pool.query("SELECT * FROM journey_instances WHERE id=$1", [id])).rows[0];
+    if (!inst) return c.json({ error: "not_found" }, 404);
+    const action = await getTodayAction({ ...inst, current_day: day }, lang);
+    return c.json({
+      instanceId: inst.id, templateKey: inst.template_key, family: inst.family,
+      displayName: journeyDisplayName(inst.template_key, inst.family, lang),
+      currentDay: day, unit: inst.unit, mode: inst.mode, lengthDays: inst.length_days ?? null,
+      showsDenominator: inst.mode !== "open" && !!inst.length_days && !["loss", "relationships"].includes(inst.family),
+      status: inst.status, prayedForName: inst.prayed_for_name || null, completedToday: false, lastCompletedAt: null,
+      action: { type: LEGACY_TYPE_MAP[action.type] || action.type, cardType: action.type, phaseLabel: action.phaseLabel, content: action.content, completionLabel: action.completionLabel || COMPLETION_LABELS[action.type]?.[lang] || "Done" },
+    });
+  } catch (err: any) { return c.json({ error: "preview_failed", detail: err.message }, 500); }
+});
+
 // GET /journeys/:id/today?lang=en — generates + caches + returns today's action
 app.get("/journeys/:id/today", async (c) => {
   const instanceId = c.req.param("id");
