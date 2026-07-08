@@ -2527,7 +2527,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.21.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.21.1", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -7384,6 +7384,11 @@ async function start() {
       const v = await consumeMagicToken(email, raw);
       const wq = (await pool.query("SELECT answers, quiet_time, door FROM web_quiz WHERE email=$1", [email])).rows[0];
       r.handoff = { verified: !!v.user, same_user: v.user?.id === uid, quiz_persisted: !!wq, prebuilt_answers: wq?.answers, quiet_time: wq?.quiet_time, door: wq?.door };
+      // E2E: the prebuilt door (body/chronic) builds the EXACT chronic journey —
+      // open, no denominator, Day 1 — the app's startPrebuiltJourney target.
+      const resolved = resolveJourney({ door: "body/chronic" });
+      const shows = resolved.mode !== "open" && !!resolved.lengthDays && !["loss", "relationships"].includes(resolved.family);
+      r.journey_build = { door: "body/chronic", templateKey: resolved.templateKey, mode: resolved.mode, day: 1, showsDenominator: shows, chronic_open_no_denominator: resolved.templateKey === "body_chronic" && resolved.mode === "open" && shows === false };
       await clean();
       r.cleaned = true; r.ranAt = new Date().toISOString();
     } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
