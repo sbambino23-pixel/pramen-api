@@ -2528,7 +2528,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.22.1", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.22.2", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2956,6 +2956,12 @@ app.get("/admin/merge-conflicts", async (c) => {
 // Dark: endpoints live; go-live gated on Resend + RC Web Billing + AASA.
 // ═══════════════════════════════════════════════════════════════════
 const WEB_ORIGIN = process.env.WEB_ORIGIN || "https://pramen.app";
+// v5.22.2 — remote-configurable web quiz URL (gate-screen "Start my journey").
+// Env-driven, never hardcoded in the app: set WEB_QUIZ_URL to the preview URL
+// for the demo; becomes https://pramen.app/quiz at launch (the default).
+const WEB_QUIZ_URL = process.env.WEB_QUIZ_URL || "https://pramen.app/quiz";
+// Lightweight client config (the iOS gate screen reads webQuizUrl from here).
+app.get("/api/config", (c) => c.json({ webQuizUrl: WEB_QUIZ_URL }));
 // Ensure a lightweight pending user exists for a web email (so the RC identity,
 // magic-link, and app sign-in all resolve to ONE account). Returns the userId.
 async function ensureWebUser(normEmail: string, firstName?: string | null): Promise<string> {
