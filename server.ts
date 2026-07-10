@@ -652,6 +652,12 @@ async function initDb(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS daily_web_metrics (date DATE PRIMARY KEY, visitors INT DEFAULT 0, pageviews INT DEFAULT 0, bounce_rate REAL DEFAULT 0, visit_duration_avg REAL DEFAULT 0, app_store_clicks INT DEFAULT 0, top_sources JSONB DEFAULT '[]', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_revenue (date DATE PRIMARY KEY, new_subscribers INT DEFAULT 0, renewals INT DEFAULT 0, cancellations INT DEFAULT 0, revenue_gross REAL DEFAULT 0, revenue_net REAL DEFAULT 0, mrr REAL DEFAULT 0, plan_breakdown JSONB DEFAULT '{}', updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_product_metrics (date DATE PRIMARY KEY, dau INT DEFAULT 0, new_users INT DEFAULT 0, prayers_logged INT DEFAULT 0, circles_created INT DEFAULT 0, invites_accepted INT DEFAULT 0, encouragements_sent INT DEFAULT 0, paywall_views INT DEFAULT 0, plan_taps INT DEFAULT 0, scripture_views INT DEFAULT 0, signups INT DEFAULT 0, account_deletions INT DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW())`);
+    // v5.29.0 — giving-pledge: hardship grant requests + issued grants (the ledger's outflow).
+    await client.query(`CREATE TABLE IF NOT EXISTS hardship_requests (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, name TEXT NOT NULL DEFAULT '', email TEXT NOT NULL, note TEXT, status TEXT NOT NULL DEFAULT 'pending', rc_user_id TEXT, granted_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_hardship_status ON hardship_requests(status, created_at DESC)`);
+    // v5.29.0 — testimonials + consent ledger. No quote renders without a consent_ref.
+    await client.query(`CREATE TABLE IF NOT EXISTS testimonial_consents (consent_ref TEXT PRIMARY KEY, proof_url TEXT, note TEXT, forwarded_by TEXT DEFAULT 'michael', created_at TIMESTAMPTZ DEFAULT NOW())`);
+    await client.query(`CREATE TABLE IF NOT EXISTS testimonials (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, text TEXT NOT NULL, first_name TEXT NOT NULL, age INT, state TEXT, consent_ref TEXT NOT NULL REFERENCES testimonial_consents(consent_ref), slot TEXT DEFAULT 'paywall', quote_date DATE, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS daily_app_store_metrics (date DATE PRIMARY KEY, impressions INT DEFAULT 0, product_page_views INT DEFAULT 0, app_units INT DEFAULT 0, conversion_rate REAL DEFAULT 0, proceeds REAL DEFAULT 0, active_devices INT DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS revenue_events (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, user_id TEXT, event_type TEXT NOT NULL, plan TEXT, product_id TEXT, price REAL DEFAULT 0, currency TEXT DEFAULT 'USD', environment TEXT DEFAULT 'production', created_at TIMESTAMPTZ DEFAULT NOW())`);
     await client.query(`CREATE TABLE IF NOT EXISTS circle_posts (id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text, circle_code TEXT NOT NULL, author_user_id TEXT NOT NULL, author_name TEXT NOT NULL DEFAULT '', content TEXT, media_type TEXT, media_url TEXT, media_filename TEXT, media_size_bytes INTEGER, status TEXT NOT NULL DEFAULT 'published', scheduled_at TIMESTAMPTZ, published_at TIMESTAMPTZ DEFAULT NOW(), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`);
@@ -2858,6 +2864,7 @@ let webFunnelSelfTest: any = null; // v5.21.0 — web funnel round-trip self-tes
 let webQuizV25SelfTest: any = null; // v5.23.0 — v2.5 full-token E2E (s_* path → purchase-sim → handoff)
 let demoGrantProof: any = null;    // v5.22.0 — one-off RC demo-entitlement lifecycle proof
 let mailProof: any = null;         // v5.26.1 — one-off Resend round-trip + conflict-alert proof
+let hardshipGrantProof: any = null; // v5.29.0 — giving-pledge grant path provider-record proof
 let worstDayPreview: any = null; // v5.20.13 — generated worst-day cards per door
 let griefWhoFlags: any = null;   // v5.20.14 — grief who-assumption audit flags
 let griefDay13Sample: any = null; // v5.20.15 — raw after-fix grief journal sample
@@ -2867,7 +2874,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.28.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, wrestling_selftest: wrestlingSelfTest, demo_grant_proof: demoGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.29.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, wrestling_selftest: wrestlingSelfTest, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -3037,6 +3044,89 @@ app.put("/api/user/email-opt-in", async (c) => { const ah = c.req.header("Author
 app.get("/api/admin/user-lookup", async (c) => { const key = c.req.query("key") || c.req.header("X-Admin-Secret"); if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403); const q = c.req.query("q") || ""; if (!q) return c.json({ error: "?q= required (email, userId, or deviceUserId)" }, 400); const r = await pool.query("SELECT id,name,email,auth_provider,created_at,subscription_status,trial_start_date,trial_end_date,device_user_id,avatar_url FROM users WHERE id=$1 OR lower(trim(email))=lower(trim($1)) OR device_user_id=$1", [q]); if (r.rows.length === 0) return c.json({ error: "User not found" }, 404); return c.json({ user: r.rows[0] }); });
 
 // v5.20.3 — TEMPORARY: duplicate-email collision list, reviewed before the
+// ═══════════════════════════════════════════════════════════════════
+// v5.29.0 — GIVING PLEDGE. Public free-access form → founder email + grants
+// table. Admin issues 1-year premium via proven RC promo (tagged hardship_grant).
+// Ledger (20% of net revenue = budget; grants counted against it) makes the
+// paywall line literally true. Testimonial pipeline: consent-gated, renders only
+// when ≥3 real quotes with a consent_ref land.
+// ═══════════════════════════════════════════════════════════════════
+// "Can't afford this? Ask us." — dignity-first: name, email, one optional line. No proof demanded.
+app.post("/api/web/free-access", async (c) => {
+  try {
+    const { name, email, note } = await c.req.json();
+    const norm = normalizeEmail(email);
+    if (!norm || !norm.includes("@")) return c.json({ error: "Valid email required" }, 400);
+    const ip = (c.req.header("x-forwarded-for") || "").split(",")[0].trim() || "unknown";
+    if (!rateOk(magicRate.byIp, "freeaccess:" + ip, 5, 3600_000)) return c.json({ error: "Please try again later." }, 429);
+    const row = (await pool.query("INSERT INTO hardship_requests (name, email, note, status) VALUES ($1,$2,$3,'pending') RETURNING id", [String(name || "").slice(0, 120), norm, String(note || "").slice(0, 500) || null])).rows[0];
+    if (mailConfigured()) sendMail({ to: MERGE_ALERT_EMAIL, subject: "prAmen free-access request", html: `<p>New hardship / free-access request.</p><p><b>${name || "(no name)"}</b> — ${norm}</p><p>${note ? String(note) : "(no note)"}</p><p>id: ${row.id}</p><p>Grant: GET /admin/hardship/grant?key=…&id=${row.id}</p>`, text: `Free-access request: ${name || ""} <${norm}> — ${note || ""} (id ${row.id})` }).catch(() => {});
+    return c.json({ ok: true }); // dignity-first: always a warm generic success
+  } catch { return c.json({ error: "Request failed" }, 500); }
+});
+// Admin: issue a 1-year hardship grant (proven RC promo path). Idempotent on already-granted.
+app.get("/admin/hardship/grant", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const id = c.req.query("id"); if (!id) return c.json({ error: "?id= required" }, 400);
+  const req = (await pool.query("SELECT * FROM hardship_requests WHERE id=$1", [id])).rows[0];
+  if (!req) return c.json({ error: "request not found" }, 404);
+  if (req.status === "granted") return c.json({ ok: true, already: true, request: req });
+  const rcUid = rcAppUserIdForEmail(req.email);
+  const g = await grantHardship(rcUid);
+  if (!g.ok) return c.json({ ok: false, grant: g, rc_user_id: rcUid }, 502);
+  await pool.query("UPDATE hardship_requests SET status='granted', rc_user_id=$2, granted_at=now() WHERE id=$1", [id, rcUid]);
+  return c.json({ ok: true, tag: "hardship_grant", rc_user_id: rcUid, grant: g });
+});
+app.get("/admin/hardship/requests", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const rows = (await pool.query("SELECT id, name, email, note, status, granted_at, created_at FROM hardship_requests ORDER BY created_at DESC LIMIT 200")).rows;
+  return c.json({ count: rows.length, requests: rows });
+});
+// The LEDGER — what makes the paywall line true. 20% of net revenue = grant budget;
+// hardship grants counted against it at $29.99/yr (the yearly price the grant equals).
+const PLEDGE_PCT = 0.20, GRANT_UNIT_VALUE = 29.99;
+async function pledgeLedger() {
+  const net = (await pool.query("SELECT COALESCE(SUM(revenue_net),0) AS n FROM daily_revenue")).rows[0]?.n || 0;
+  const granted = (await pool.query("SELECT COUNT(*)::int AS c FROM hardship_requests WHERE status='granted'")).rows[0]?.c || 0;
+  const pending = (await pool.query("SELECT COUNT(*)::int AS c FROM hardship_requests WHERE status='pending'")).rows[0]?.c || 0;
+  const budget = +(net * PLEDGE_PCT).toFixed(2);
+  const grantsValue = +(granted * GRANT_UNIT_VALUE).toFixed(2);
+  return { net_revenue_all_time: +net.toFixed(2), pledge_pct: PLEDGE_PCT, grant_budget: budget, grants_issued: granted, grants_value: grantsValue, budget_remaining: +(budget - grantsValue).toFixed(2), requests_pending: pending, grant_unit_value: GRANT_UNIT_VALUE };
+}
+app.get("/admin/pledge-ledger", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
+  return c.json({ generated_at: new Date().toISOString(), ledger: await pledgeLedger() });
+});
+// Testimonials — consent-gated. Public read renders ONLY when ≥3 active, consented
+// quotes exist (else the placeholder rule stands). Admin ingest requires a consent_ref.
+app.post("/admin/testimonials/consent", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const { consent_ref, proof_url, note } = await c.req.json();
+  if (!consent_ref) return c.json({ error: "consent_ref required" }, 400);
+  await pool.query("INSERT INTO testimonial_consents (consent_ref, proof_url, note) VALUES ($1,$2,$3) ON CONFLICT (consent_ref) DO UPDATE SET proof_url=EXCLUDED.proof_url, note=EXCLUDED.note", [consent_ref, proof_url || null, note || null]);
+  return c.json({ ok: true, consent_ref });
+});
+app.post("/admin/testimonials", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const { text, firstName, age, state, consent_ref, slot, quote_date } = await c.req.json();
+  if (!text || !firstName || !consent_ref) return c.json({ error: "text, firstName, consent_ref required" }, 400);
+  const consent = (await pool.query("SELECT 1 FROM testimonial_consents WHERE consent_ref=$1", [consent_ref])).rows[0];
+  if (!consent) return c.json({ error: "consent_ref not found — register consent first (no quote renders without one)" }, 400);
+  const row = (await pool.query("INSERT INTO testimonials (text, first_name, age, state, consent_ref, slot, quote_date) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id", [String(text).slice(0, 600), String(firstName).slice(0, 60), age ? parseInt(age) : null, state || null, consent_ref, slot || "paywall", quote_date || null])).rows[0];
+  return c.json({ ok: true, id: row.id });
+});
+app.get("/api/testimonials", async (c) => {
+  // Only consented, active quotes; render gate at ≥3 (else placeholders stay).
+  const rows = (await pool.query("SELECT t.text, t.first_name AS \"firstName\", t.age, t.state, t.slot FROM testimonials t JOIN testimonial_consents c ON c.consent_ref=t.consent_ref WHERE t.status='active' ORDER BY t.created_at")).rows;
+  const ready = rows.length >= 3;
+  return c.json({ ready, count: rows.length, testimonials: ready ? rows : [] });
+});
+
 // v5.26.0 — Resend mail proofs (ADMIN_SECRET). (a) round-trip: send a test email,
 // return the raw Resend id/status/error. ?from= overrides sender to test the
 // onboarding domain before pramen.app verifies. ?to= defaults to founder email.
@@ -3207,6 +3297,17 @@ function posthogAlias(loserId: string, survivorId: string): void {
 // REMOVAL item on the go-live checklist once magic-link ships.
 const DEMO_ALLOWLIST: Set<string> = new Set((process.env.DEMO_ALLOWLIST || "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean));
 function isDemoAllowlisted(normEmail: string): boolean { return DEMO_ALLOWLIST.size > 0 && DEMO_ALLOWLIST.has(normEmail); }
+// v5.29.0 — hardship grant = RC promotional (yearly = 1-year premium), same proven
+// grant/revoke machinery, tagged in the DB as 'hardship_grant'. Provider-record
+// proof (grant lands in RC) is asserted by the boot E2E, never trusted on 200 alone.
+async function grantHardship(rcUserId: string): Promise<{ ok: boolean; status?: number; error?: string }> {
+  if (rcUserId.startsWith("hardshipproof-")) return { ok: false, error: "proof handles RC directly" };
+  if (!REVENUECAT_SECRET_KEY) return { ok: false, error: "no RC key" };
+  try {
+    const r = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(rcUserId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "yearly" }) });
+    return { ok: r.ok, status: r.status };
+  } catch (err: any) { return { ok: false, error: err.message }; }
+}
 // Demo entitlement = RC promotional (monthly), same proven grant/revoke machinery.
 async function grantDemoEntitlement(rcUserId: string): Promise<boolean> {
   if (rcUserId.startsWith("demograntproof-")) return false; // proof handles RC directly
@@ -6345,7 +6446,8 @@ app.get("/api/dashboard", async (c) => {
       const admin = ci.members.find(m => m.role === "creator" || m.role === "admin") || ci.members.find(m => m.userId === ci.creatorUserId);
       return { name: ci.name, code: ci.code, members: ci.members.length, encouragements: encCount, prayerRequests: ci.prayerRequests.length, createdAt: ci.createdAt, adminName: admin?.name || null };
     }));
-    return c.json({ generated_at: new Date().toISOString(), kpis: { total_users: parseInt(uc.rows[0]?.count||"0"), active_subscribers: (sb["active"]||0)+(sb["lifetime"]||0), mrr_net: tn, revenue_gross_30d: tg, revenue_net_30d: tn, active_circles: circles.size, total_circle_members: tm, landing_visitors_7d: tv, landing_app_store_clicks_7d: tc, landing_conversion: tv > 0 ? ((tc/tv)*100).toFixed(1)+"%" : "0%" }, subscription_breakdown: sb, revenue: { daily: rv.rows, recent_events: re.rows, total_subscribers_30d: rv.rows.reduce((s: number, r: any) => s+(r.new_subscribers||0), 0), total_cancellations_30d: rv.rows.reduce((s: number, r: any) => s+(r.cancellations||0), 0) }, web: { daily: wd.rows }, app_store: { daily: ad.rows }, circles: { total: circles.size, total_members: tm, total_prayer_requests: tp, total_encouragements: encTotal, circles: circleData } });
+    const pledge = await pledgeLedger().catch(() => null); // v5.29.0 giving-pledge ledger
+    return c.json({ generated_at: new Date().toISOString(), kpis: { total_users: parseInt(uc.rows[0]?.count||"0"), active_subscribers: (sb["active"]||0)+(sb["lifetime"]||0), mrr_net: tn, revenue_gross_30d: tg, revenue_net_30d: tn, active_circles: circles.size, total_circle_members: tm, landing_visitors_7d: tv, landing_app_store_clicks_7d: tc, landing_conversion: tv > 0 ? ((tc/tv)*100).toFixed(1)+"%" : "0%" }, subscription_breakdown: sb, revenue: { daily: rv.rows, recent_events: re.rows, total_subscribers_30d: rv.rows.reduce((s: number, r: any) => s+(r.new_subscribers||0), 0), total_cancellations_30d: rv.rows.reduce((s: number, r: any) => s+(r.cancellations||0), 0) }, pledge_ledger: pledge, web: { daily: wd.rows }, app_store: { daily: ad.rows }, circles: { total: circles.size, total_members: tm, total_prayer_requests: tp, total_encouragements: encTotal, circles: circleData } });
   } catch (e: any) { return c.json({ error: "Dashboard failed", detail: e.message }, 500); }
 });
 
@@ -7977,6 +8079,39 @@ async function start() {
     } catch (err: any) { proof.error = err.message; try { await fetch(base, { method: "DELETE", headers: H }); } catch {} }
     demoGrantProof = proof;
     console.log("[v5.22.0] demo grant proof:", JSON.stringify(proof));
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.29.0 — HARDSHIP GRANT E2E (synthetic, provider-record proof). The
+  // giving-pledge grant path: yearly RC promo lands in RC, entitlement active,
+  // then revoke clears + delete subscriber. Proves the flag-flip precondition
+  // "grant path tested" on RC's own records, not the API 200. At / (hardship_grant_proof).
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    if (!REVENUECAT_SECRET_KEY) { hardshipGrantProof = { skipped: "no RC key" }; return; }
+    const probe = "hardshipproof-probe";
+    const H: any = { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" };
+    const base = `https://api.revenuecat.com/v1/subscribers/${probe}`;
+    const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+    const entOf = (j: any) => { const e = j?.subscriber?.entitlements?.premium; return e ? { expires_date: e.expires_date, product_identifier: e.product_identifier } : null; };
+    const active = (e: any) => !!e && new Date(e.expires_date).getTime() > Date.now();
+    const yearOut = (e: any) => { if (!e) return false; const days = (new Date(e.expires_date).getTime() - Date.now()) / 86400000; return days > 300; }; // ~1 year
+    const getEnt = async () => entOf(await (await fetch(base, { headers: H })).json());
+    const proof: any = {};
+    try {
+      let e1: any = null;
+      for (let i = 0; i < 12; i++) { await fetch(`${base}/entitlements/premium/promotional`, { method: "POST", headers: H, body: JSON.stringify({ duration: "yearly" }) }); await sleep(2500); e1 = await getEnt(); if (active(e1)) break; }
+      proof.granted_active = { entitlement: e1, is_active: active(e1), is_one_year: yearOut(e1) };
+      await fetch(`${base}/entitlements/premium/revoke_promotionals`, { method: "POST", headers: H });
+      let e2: any = e1;
+      for (let i = 0; i < 10; i++) { await sleep(1800); e2 = await getEnt(); if (!active(e2)) break; }
+      proof.after_revoke_cleared = !active(e2);
+      proof.subscriber_deleted = (await fetch(base, { method: "DELETE", headers: H })).ok;
+      proof.PASS = active(e1) && yearOut(e1) && !active(e2);
+    } catch (err: any) { proof.error = err.message; }
+    proof.ranAt = new Date().toISOString();
+    hardshipGrantProof = proof;
+    console.log("[v5.29.0] hardship grant proof:", proof.PASS ? "PASS" : JSON.stringify(proof));
   })();
 
   // ═══════════════════════════════════════════════════════════════════
