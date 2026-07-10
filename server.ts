@@ -2518,6 +2518,7 @@ let normSelfTest: any = null;  // v5.20.2 — email normalization self-test resu
 let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test result
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
 let webFunnelSelfTest: any = null; // v5.21.0 — web funnel round-trip self-test
+let webQuizV25SelfTest: any = null; // v5.23.0 — v2.5 full-token E2E (s_* path → purchase-sim → handoff)
 let demoGrantProof: any = null;    // v5.22.0 — one-off RC demo-entitlement lifecycle proof
 let worstDayPreview: any = null; // v5.20.13 — generated worst-day cards per door
 let griefWhoFlags: any = null;   // v5.20.14 — grief who-assumption audit flags
@@ -2528,7 +2529,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.22.2", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.23.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -7488,6 +7489,81 @@ async function start() {
     } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
     webFunnelSelfTest = r;
     console.log("[v5.21.0] web-funnel self-test:", r.error ? r.error : "ok");
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.23.0 — v2.5 FULL-TOKEN E2E (dark, synthetic, self-cleaning): an s_*
+  // spiritual path carries the complete §E token set through the ACTUAL
+  // quiz-persist contract (answers||jsonb) → purchase-sim (status='purchased')
+  // → magic-verify handoff, and we assert the prebuiltIntake hands back the
+  // full token set intact. Proves the contract extension carries pathKey,
+  // q2Answer, recency, mirrorAnswers[8], multiselect, goals, faithIdx,
+  // faithStatus, timeAnswer without loss. dominant_emotion derivation is a
+  // downstream field held for Samy's #4 review — NOT asserted here.
+  // At / (web_quiz_v25_selftest).
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const r: any = {};
+    const email = "webquizv25selftest@example.test";
+    const clean = async () => {
+      await pool.query("DELETE FROM web_quiz WHERE email=$1", [email]);
+      await pool.query("DELETE FROM magic_links WHERE email=$1", [email]);
+      await pool.query("DELETE FROM users WHERE lower(trim(email))=lower(trim($1))", [email]);
+    };
+    // The exact §E token set the v2.5 funnel's buildTokens() emits (s_abandoned = spiritual path → q2 skipped).
+    const tokens = {
+      pathKey: "s_abandoned",
+      q2Answer: null,
+      recency: "A long time — it's become part of my life",
+      mirrorAnswers: ["This is me completely", "A little bit", "This is me — I've never seen it said out loud before", "This isn't me", "More than I've admitted", "This is me completely", "A little bit", "This is me completely"],
+      multiselect: ["Loneliness — even around people", "The feeling that God has forgotten me"],
+      goals: ["Feeling close to God again", "Something to hold onto every morning"],
+      faithIdx: 2,
+      faithStatus: "I believe, but I don't know how to pray anymore",
+      timeAnswer: "Evening — when things settle down",
+      name: "Test",
+      email,
+    };
+    try {
+      await clean();
+      // 1. Lead — pending user + web_quiz row (as /api/web/lead does).
+      const uid = await ensureWebUser(email, "Test");
+      // 2. Quiz-persist — the ACTUAL contract from /api/web/quiz: answers merge + quiz_complete.
+      //    door left null: s_* → door mapping is §E manifest work, pending review (§E gate).
+      await pool.query(
+        `INSERT INTO web_quiz (email, user_id, answers, quiet_time, door, status)
+         VALUES ($1,$2,$3::jsonb,NULL,NULL,'quiz_complete')
+         ON CONFLICT (email) DO UPDATE SET answers = web_quiz.answers || $3::jsonb, status='quiz_complete', updated_at=now()`,
+        [email, uid, JSON.stringify(tokens)]
+      );
+      // 3. Purchase-sim — as /api/web/purchase-complete does.
+      await pool.query("UPDATE web_quiz SET status='purchased', updated_at=now() WHERE email=$1", [email]);
+      // 4. Handoff — magic-verify, then read prebuiltIntake exactly as verify does.
+      const { raw } = await issueMagicLink(email, "selftest");
+      const v = await consumeMagicToken(email, raw);
+      const wq = (await pool.query("SELECT answers, quiet_time, door, status FROM web_quiz WHERE email=$1", [email])).rows[0];
+      const a = wq?.answers || {};
+      // 5. Assert full-token fidelity.
+      const expectedKeys = Object.keys(tokens);
+      const missing = expectedKeys.filter((k) => !(k in a));
+      const mirrorsOk = Array.isArray(a.mirrorAnswers) && a.mirrorAnswers.length === 8 && a.mirrorAnswers.join("|") === tokens.mirrorAnswers.join("|");
+      const fieldOk = (k: string) => JSON.stringify(a[k]) === JSON.stringify((tokens as any)[k]);
+      const scalarsOk = ["pathKey", "q2Answer", "recency", "faithIdx", "faithStatus", "timeAnswer"].every(fieldOk);
+      const arraysOk = fieldOk("multiselect") && fieldOk("goals");
+      r.handoff = { verified: !!v.user, same_user: v.user?.id === uid, status_purchased: wq?.status === "purchased", door_unmapped_pending_E: wq?.door === null };
+      r.full_token_set = {
+        keys_present: missing.length === 0, missing_keys: missing,
+        spiritual_path_preserved: a.pathKey === "s_abandoned", q2_skipped_for_spiritual: a.q2Answer === null,
+        mirrorAnswers_8_intact: mirrorsOk, scalars_intact: scalarsOk, multiselect_goals_intact: arraysOk,
+        faithIdx_preserved: a.faithIdx === 2,
+      };
+      r.PASS = !!v.user && v.user?.id === uid && wq?.status === "purchased" && missing.length === 0 && mirrorsOk && scalarsOk && arraysOk;
+      r.note = "dominant_emotion + door mapping = §E/#4 review-gated, intentionally not asserted here.";
+      await clean();
+      r.cleaned = true; r.ranAt = new Date().toISOString();
+    } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
+    webQuizV25SelfTest = r;
+    console.log("[v5.23.0] web-quiz-v2.5 E2E:", r.error ? r.error : (r.PASS ? "PASS" : "FAIL"));
   })();
 
   // ═══════════════════════════════════════════════════════════════════
