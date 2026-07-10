@@ -2039,7 +2039,45 @@ const SCRIPTURE_BY_CORE: Record<string, Partial<Record<Lang, { body: string; scr
   grief:             { en: { body: "He is close to the brokenhearted and saves those who are crushed in spirit.", scriptureRef: "Psalm 34:18" } },
   comfort:           { en: { body: "Blessed are those who mourn, for they will be comforted.", scriptureRef: "Matthew 5:4" } },
   belovedness:       { en: { body: "For you created my inmost being; you knit me together in my mother's womb.", scriptureRef: "Psalm 139:13" } },
+  // v5.25.0 — v2.5 funnel cores (Samy-approved verse picks, 2026-07-10). Several sit
+  // ONE verse from an outcome promise; truncation is load-bearing (see APPROVED_CLAUSES
+  // + the scripture_clause_gate self-test). Lament register: validate, never resolve.
+  anticipatory_future:{ en: { body: "Fear not, for I have redeemed you; I have summoned you by name; you are mine. When you pass through the waters, I will be with you; and when you pass through the rivers, they will not sweep over you.", scriptureRef: "Isaiah 43:1-2" } },
+  guilt_shame:       { en: { body: "Therefore, there is now no condemnation for those who are in Christ Jesus.", scriptureRef: "Romans 8:1" } },
+  // Psalm 34:17 FIRST CLAUSE ONLY — the "delivers them from all their troubles" continuation must NOT render.
+  unanswered_prayer: { en: { body: "The righteous cry out, and the Lord hears them.", scriptureRef: "Psalm 34:17" } },
+  // Psalm 13:1-2 ONLY — vv5-6 ("But I trust in your unfailing love…") must NOT render. No resolution; the rail carries it.
+  anger_at_God:      { en: { body: "How long, Lord? Will you forget me forever? How long will you hide your face from me? How long must I wrestle with my thoughts and day after day have sorrow in my heart?", scriptureRef: "Psalm 13:1-2" } },
+  doubt_of_faith:    { en: { body: "Immediately the boy's father exclaimed, “I do believe; help me overcome my unbelief!”", scriptureRef: "Mark 9:24" } },
+  relational:        { en: { body: "But while he was still a long way off, his father saw him and was filled with compassion for him; he ran to his son, threw his arms around him and kissed him.", scriptureRef: "Luke 15:20" } },
+  darkness:          { en: { body: "If I say, “Surely the darkness will hide me and the light become night around me,” even the darkness will not be dark to you; the night will shine like the day, for darkness is as light to you.", scriptureRef: "Psalm 139:11-12" } },
 };
+
+// v5.25.0 — Structural readiness-gate registry (Samy item #4): the canonical
+// approved clause for each funnel core. The gate verifies rendered slot text ==
+// this verbatim, and that no forbidden continuation (an outcome-promise sitting
+// one verse away) leaks in. Checked at boot, never by memory.
+const APPROVED_CLAUSES: Record<string, { body: string; scriptureRef: string; forbidden?: string[] }> = {
+  anticipatory_future: { body: "Fear not, for I have redeemed you; I have summoned you by name; you are mine. When you pass through the waters, I will be with you; and when you pass through the rivers, they will not sweep over you.", scriptureRef: "Isaiah 43:1-2" },
+  guilt_shame:         { body: "Therefore, there is now no condemnation for those who are in Christ Jesus.", scriptureRef: "Romans 8:1" },
+  unanswered_prayer:   { body: "The righteous cry out, and the Lord hears them.", scriptureRef: "Psalm 34:17", forbidden: ["delivers them", "all their troubles"] },
+  anger_at_God:        { body: "How long, Lord? Will you forget me forever? How long will you hide your face from me? How long must I wrestle with my thoughts and day after day have sorrow in my heart?", scriptureRef: "Psalm 13:1-2", forbidden: ["trust in your unfailing love", "rejoice in your salvation", "sing the Lord's praise", "he has been good to me"] },
+  doubt_of_faith:      { body: "Immediately the boy's father exclaimed, “I do believe; help me overcome my unbelief!”", scriptureRef: "Mark 9:24" },
+  relational:          { body: "But while he was still a long way off, his father saw him and was filled with compassion for him; he ran to his son, threw his arms around him and kissed him.", scriptureRef: "Luke 15:20" },
+  darkness:            { body: "If I say, “Surely the darkness will hide me and the light become night around me,” even the darkness will not be dark to you; the night will shine like the day, for darkness is as light to you.", scriptureRef: "Psalm 139:11-12" },
+};
+
+// v5.25.0 — the gate (item #4). Structural, at boot: what renders must equal the
+// approved clause verbatim and carry NO forbidden outcome-promise continuation.
+const scriptureClauseGate = (() => {
+  const rows = Object.entries(APPROVED_CLAUSES).map(([core, ap]) => {
+    const slot = SCRIPTURE_BY_CORE[core]?.en;
+    const leaked = (ap.forbidden || []).filter((f) => (slot?.body || "").toLowerCase().includes(f.toLowerCase()));
+    return { core, ref: ap.scriptureRef, body_verbatim: slot?.body === ap.body, ref_match: slot?.scriptureRef === ap.scriptureRef, no_forbidden_continuation: leaked.length === 0, leaked };
+  });
+  return { PASS: rows.every((r) => r.body_verbatim && r.ref_match && r.no_forbidden_continuation), cores_checked: rows.length, rows };
+})();
+console.log(`[v5.25.0] scripture clause gate:`, scriptureClauseGate.PASS ? "PASS" : "FAIL");
 
 function scriptureForCore(core: string, lang: Lang = "en"): { body: string; scriptureRef: string } | null {
   const entry = SCRIPTURE_BY_CORE[core];
@@ -2606,7 +2644,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.24.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.25.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
