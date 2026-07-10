@@ -1305,7 +1305,7 @@ function seededFallbackPrayer(code: string, date: string, topic: string, lang: L
 // ═══════════════════════════════════════════════════════════════════
 // Each family maps to existing prayer buckets so prayer-type journey days
 // reuse the localized FALLBACK_CIRCLE_PRAYERS_BY_LANG pool — zero new authoring.
-type JourneyFamily = "loss" | "health" | "waiting" | "new_life" | "drawing_closer" | "hardship" | "relationships";
+type JourneyFamily = "loss" | "health" | "waiting" | "new_life" | "drawing_closer" | "hardship" | "relationships" | "faith_struggle";
 
 interface JourneyFamilyConfig {
   key: JourneyFamily;
@@ -1459,8 +1459,8 @@ const LEGACY_TYPE_MAP: Record<JourneyActionType, JourneyActionType> = {
 // safety_class. The app never sees a catalog — one journey at a time.
 // ═══════════════════════════════════════════════════════════════════
 
-type JourneySpine = "in_my_body" | "grieving_loss" | "carrying_someone" | "drawing_closer";
-type SafetyClass = "crisis" | "loss" | "carrying" | "standard";
+type JourneySpine = "in_my_body" | "grieving_loss" | "carrying_someone" | "drawing_closer" | "wrestling_with_god";
+type SafetyClass = "crisis" | "loss" | "carrying" | "standard" | "spiritual";
 
 interface JourneyDoor {
   key: string;                 // route key, e.g. "body/diagnosis"
@@ -1476,6 +1476,7 @@ interface JourneyDoor {
   tokens: string[];            // tokens the shared router must capture for this door
   adExclude?: boolean;         // true = in-app only, never in paid creative (Motherhood)
   scriptureCores: string[];    // emotional cores this door needs verified verses for (gap tracker)
+  safetyRail?: Record<Lang, string>; // v5.27.0 — non-diagnostic "reach for help" line (s_darkness/s_tragedy)
 }
 
 const EN = (s: string): Record<Lang, string> => ({ en: s, fr: s, es: s, pt: s }); // localized door names authored in Phase 2
@@ -1539,6 +1540,18 @@ const TIER1_DOORS: Record<string, JourneyDoor> = {
     pacing: "ongoing", safetyClass: "standard",
     tokens: ["who_self"], scriptureCores: ["presence"],
   },
+  // ── SPINE 5 — "Wrestling with God": lament register, denominator-suppressed,
+  //    rails on darkness/tragedy. Dark until each door's cores are green + DOORS_LIVE.
+  "faith/abandoned": { key: "faith/abandoned", name: EN("Where Are You, God"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["anger_at_God", "unanswered_prayer", "presence"] },
+  "faith/anger": { key: "faith/anger", name: EN("Holy Ground for Hard Feelings"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["anger_at_God", "anger_at_God", "presence"] },
+  "faith/forgiven": { key: "faith/forgiven", name: EN("The Road Back"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["guilt_shame", "guilt_shame", "belovedness"] },
+  "faith/tragedy": { key: "faith/tragedy", name: EN("Faith After the Fire"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["doubt_of_faith", "anger_at_God", "doubt_of_faith"], safetyRail: EN("One gentle word first: what you've walked through is heavy enough that no one should carry it alone. Alongside these prayers, let someone you trust — a friend, a pastor, or a counselor — help hold it with you. Asking for help is not a step away from God; it's often the way He steadies us. We're with you in this.") },
+  "faith/unanswered": { key: "faith/unanswered", name: EN("When Heaven Feels Silent"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["unanswered_prayer", "unanswered_prayer", "presence"] },
+  "faith/drifted": { key: "faith/drifted", name: EN("Coming Home"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["relational", "grief", "relational"] },
+  "faith/doubt": { key: "faith/doubt", name: EN("Honest Before God"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["doubt_of_faith", "doubt_of_faith", "doubt_of_faith"] },
+  "faith/unworthy": { key: "faith/unworthy", name: EN("Beloved"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["belovedness", "guilt_shame", "belovedness"] },
+  "faith/darkness": { key: "faith/darkness", name: EN("Light in the Dark"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["darkness", "darkness", "darkness"], safetyRail: EN("A gentle word before we pray: if this heaviness has settled in and won't lift, please don't carry it in secret. Let a trusted person — a friend, a pastor, or a doctor — walk this stretch with you. Reaching for help is not a failure of faith; it's often how God sends it. We'll keep praying with you, either way.") },
+  "faith/church": { key: "faith/church", name: EN("Back to the Source"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["relational", "relational", "relational"] },
 };
 
 function doorForKey(key: string): JourneyDoor | null { return TIER1_DOORS[key] || null; }
@@ -1721,6 +1734,22 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
       { label: { en: "Just here", fr: "Simplement l\u00e0", es: "Solo aqu\u00ed", pt: "Apenas aqui" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "rest", "scripture"] },
       { label: { en: "Carrying it", fr: "Le porter", es: "Carg\u00e1ndolo", pt: "Carregando" }, dayStart: 11, dayEnd: 20, tone: "tender", mix: ["prayer", "journal", "reflection", "rest"] },
       { label: { en: "Carrying it forward", fr: "Le porter plus loin", es: "Llev\u00e1ndolo adelante", pt: "Levando adiante" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "scripture", "encouragement", "gratitude"] },
+    ],
+  },
+  // v5.27.0 — one parametrized spiritual-struggle template for 10 doors. Lament
+  // arc; renders only authored lament content (see wrestlingCard). Denominator
+  // suppressed via family "faith_struggle". fr/es/pt mirror en (US-first).
+  wrestling_with_god: {
+    key: "wrestling_with_god",
+    family: "faith_struggle",
+    mode: "fixed",
+    lengthDays: 30,
+    name: { en: "Wrestling With God", fr: "Wrestling With God", es: "Wrestling With God", pt: "Wrestling With God" },
+    oneLiner: { en: "For the hardest questions of faith. We stay in the room with you.", fr: "For the hardest questions of faith. We stay in the room with you.", es: "For the hardest questions of faith. We stay in the room with you.", pt: "For the hardest questions of faith. We stay in the room with you." },
+    phases: [
+      { label: { en: "Say the true thing", fr: "Say the true thing", es: "Say the true thing", pt: "Say the true thing" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "scripture", "reflection"] },
+      { label: { en: "Stay in the room", fr: "Stay in the room", es: "Stay in the room", pt: "Stay in the room" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "scripture", "reflection"] },
+      { label: { en: "Held, not resolved", fr: "Held, not resolved", es: "Held, not resolved", pt: "Held, not resolved" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "scripture", "reflection"] },
     ],
   },
   through_illness_and_healing: {
@@ -1912,6 +1941,8 @@ const SMALL_ACT_POOLS_BY_FAMILY: Record<JourneyFamily, Record<Lang, string>[]> =
     { en: "Pray for restoration, then hand the result over.", fr: "Prie pour la restauration, puis remets le r\u00e9sultat.", es: "Ora por la restauraci\u00f3n, luego entrega el resultado.", pt: "Ore pela restaura\u00e7\u00e3o, depois entregue o resultado." },
     { en: "Be prayed for. You chose love all week.", fr: "Laisse-toi porter par la pri\u00e8re. Tu as choisi l\u2019amour toute la semaine.", es: "Deja que oren por ti. Elegiste el amor toda la semana.", pt: "Seja alvo de ora\u00e7\u00e3o. Voc\u00ea escolheu o amor a semana toda." },
   ],
+  // wrestling_with_god never uses small_act (dedicated lament branch); empty pool.
+  faith_struggle: [],
 };
 
 // -- 3. REFLECTION_TEMPLATES (keyed by tone) -------------------------
@@ -2101,7 +2132,7 @@ console.log(`[v5.20.15] Tier-1 scripture readiness:`, JSON.stringify(TIER1_SCRIP
 const DENOMINATOR_POLICY: Record<string, any> = Object.fromEntries(
   Object.entries(TIER1_DOORS).filter(([k]) => !k.startsWith("faith/")).map(([k, d]: [string, any]) => {
     const len = d.length ?? null;
-    const shows = d.mode !== "open" && !!len && !["loss", "relationships"].includes(d.family);
+    const shows = d.mode !== "open" && !!len && !["loss", "relationships", "faith_struggle"].includes(d.family);
     return [k, { family: d.family, mode: d.mode, length: len, showsDenominator: shows }];
   })
 );
@@ -2215,6 +2246,130 @@ const GRADUATION_MESSAGES: Record<string, Record<Lang, string>> = {
   },
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// v5.27.0 — wrestling_with_god content (worst-day-passed by Samy 2026-07-10).
+// Lament register: validate, never resolve on a timeline. This template renders
+// ONLY authored lament content — the generic prayer pool NEVER leaks in. Anchor
+// days (1/15/30) are the approved cards; other days draw the lament pool + the
+// door's phase-appropriate (gate-checked) scripture. Dark until DOORS_LIVE.
+// ═══════════════════════════════════════════════════════════════════════════
+// Held-not-resolved pool for non-anchor days (all worst-day-safe).
+const LAMENT_POOL: string[] = [
+  "God, I don't have a tidy prayer today. I just have the true thing, and I'm going to say it to You instead of swallowing it. That's the whole prayer. Stay with me in it. Amen.",
+  "God, nothing has resolved. I'm not going to pretend it has. But I showed up to this quiet again — and maybe the showing up is its own kind of faith. Meet me here, unfixed. Amen.",
+  "God, I keep waiting to feel different before I come to You. Today I'm coming anyway, exactly as I am, unfinished. If You can hold the psalmists' hardest words, You can hold mine. Amen.",
+  "God, I'd rather be honest with You than impressive. So here's the honest thing: this is still hard, and I'm still here. Both are true. Sit with both. Amen.",
+  "God, I don't need the answer today. I need to know I'm not alone while I wait for it. Be the company in the not-knowing. That will be enough for now. Amen.",
+  "God, some days faith feels like nothing more than refusing to leave the room. That's all I've got today — I haven't left. Let that count. Amen.",
+];
+// The 30 approved anchor cards, keyed by door → day → {ref, body}.
+const WRESTLING_ANCHORS: Record<string, Record<number, { ref: string; body: string }>> = {
+  s_abandoned: {
+    1: { ref: "Psalm 13:1-2", body: "God — if You are here, I can't feel it. I have called and called and the sky has stayed quiet. I'm not going to pretend today. This is where I am: I don't know where You are. And I'm bringing even that to You, because I have nowhere else to bring it. Stay, if You're staying. I'm still here. Amen." },
+    15: { ref: "Psalm 34:17", body: "God, it's been days and the feeling still hasn't come back. But I keep showing up to this quiet. Maybe the showing up is its own kind of faith — I don't know. I'm not asking You to prove You're here. I'm just refusing to leave the room. Hear me, even if I can't hear You. Amen." },
+    30: { ref: "Matthew 28:20", body: "God, thirty days and the question is still open. I didn't get the answer I came for. But something kept me here — and maybe that was You the whole time, in a way I couldn't name. I'm not leaving with certainty. I'm leaving with company. That will have to be enough for now. Maybe it is. Amen." },
+  },
+  s_angry: {
+    1: { ref: "Psalm 13:1-2", body: "God, I'm angry at You. There — I said it, and the roof didn't fall in. I've been told this isn't allowed, so I've carried it alone, and it's only gotten heavier. So I'm putting it down right here, in front of You. If You can hold David's “how long,” You can hold mine. I'm not sorry yet. I'm just honest. Amen." },
+    15: { ref: "Psalm 22:1-2", body: "God, I'm still angry. It hasn't dissolved the way I hoped. But I notice I'm still talking to You — which means the anger hasn't ended us. Jesus prayed “why have You forsaken me,” and it was still a prayer. So is this. I'd rather wrestle with You than go silent. Stay in it with me. Amen." },
+    30: { ref: "Habakkuk 1:2", body: "God, thirty days, and I won't tell You the anger is gone — that would be a lie, and You've had enough of my performances. But it's different now: it's anger that stays in the room with You instead of walking out. Maybe that's what faith looks like on a hard day. I'm still here. So are You. Amen." },
+  },
+  s_forgiven: {
+    1: { ref: "Romans 8:1", body: "God, there's a thing I've done that I can't get out from under. I've said the words of forgiveness and still don't feel them. So today I won't try to earn anything. I'll just sit in front of the verse that says there is no condemnation — and let it be true before I feel it. Meet me here, in the part I'm ashamed of. Amen." },
+    15: { ref: "Psalm 103:12", body: "God, I keep replaying it. The replay has become its own punishment, as if my suffering could pay the debt. But You already carried it. I don't know how to stop the replay — so today I'll just tell You when it starts, instead of hiding it. As far as the east is from the west. I'm trying to let that be far enough. Amen." },
+    30: { ref: "Romans 8:1", body: "God, thirty days and the memory hasn't vanished — but its weight has shifted from a verdict to a scar. I'm not fully healed. I'm just no longer carrying it as proof that I'm beyond You. You never agreed with that sentence anyway. I'll keep walking the road back, one honest day at a time. Amen." },
+  },
+  s_tragedy: {
+    1: { ref: "Mark 9:24", body: "God, something happened that I can't fit inside anything I believed about You. I used to have answers; I gave them to other people. They don't work on me now. So I come with the only prayer I have left: I believe — help my unbelief. That's all. That's everything. Stay while I try to mean it. Amen." },
+    15: { ref: "Psalm 22:1-2", body: "God, I still look fine on the outside while I'm in the rubble on the inside. I haven't rebuilt the faith I lost — I'm not sure I can. But I keep reaching toward You, out of habit or something deeper, I can't tell which. Don't need me to be certain today. Just let me reach. Amen." },
+    30: { ref: "Mark 9:24", body: "God, thirty days and I don't have my old faith back — that one burned. What I have is smaller and more honest: a thread that didn't snap. I'm not going to call this resolved. I'm going to call it survived, with You. That's the truest thing I can say. Amen." },
+  },
+  s_prayers: {
+    1: { ref: "Psalm 34:17", body: "God, I've prayed and prayed and the words seem to go up and nothing comes back. Today I almost didn't bother. But here I am anyway. The verse says You hear the ones who cry out — so I'll trust the hearing, even without the answer. Hear this one. That's all I've got. Amen." },
+    15: { ref: "Romans 8:26", body: "God, I don't even know what to ask for anymore. I've worn out my requests. The verse says Your Spirit prays in me when I can't find the words — so today I'll just be quiet and let that happen. I can't manufacture faith. I can only show up empty and let You fill in the prayer. Amen." },
+    30: { ref: "Psalm 40:1", body: "God, thirty days and the specific thing I asked for still hasn't come. I won't pretend the silence stopped hurting. But something kept me praying anyway — maybe it was never only about getting the answer. Maybe it was about staying near You. I'm still here. Still asking. Amen." },
+  },
+  s_drifted: {
+    1: { ref: "Luke 15:20", body: "God, I didn't leave on purpose. Life got busy, then hard, then I forgot the way back. Now the distance has its own shame. But the story says the father saw the son while he was still a long way off — so maybe You've already seen me, before I've said a word. I'm turning toward home. Slowly. Amen." },
+    15: { ref: "Psalm 34:18", body: "God, I remember what closeness felt like, and the memory makes the distance ache more. I'm grieving what I let slip. Don't need me to sprint back — just let me walk. You're close to the ones with the ache. I'm one of them. Amen." },
+    30: { ref: "Luke 15:20", body: "God, thirty days and I'm not all the way home — but I'm on the road, and the road runs toward You now, not away. That's the change. I stopped drifting. I won't rush the rest. You waited this long; I think You'll wait while I walk. Amen." },
+  },
+  s_doubt: {
+    1: { ref: "Mark 9:24", body: "God, I don't know if any of this is real, and that terrifies me. I was raised in it — it was the air I breathed — and now I'm unsure, and I feel like a traitor for saying so. But I'd rather doubt out loud in front of You than believe quietly out of fear. I believe; help my unbelief. Amen." },
+    15: { ref: "Jude 1:22", body: "God, the questions keep coming back even when I set them down. I've read the books; the answers are good but they haven't fixed it. The verse says be merciful to those who doubt — so I'll trust that You're merciful to me right now, mid-question. Doubt isn't the opposite of faith. And I haven't left — I'm asking my questions here, in front of You. Amen." },
+    30: { ref: "Psalm 73:23-24", body: "God, thirty days and the questions are still here. But so am I, and so are You — “you hold me by my right hand,” even now, even unsure. I'm not leaving with proof. I'm leaving with a hand held in the dark. Maybe that was always what faith was. Amen." },
+  },
+  s_unworthy: {
+    1: { ref: "1 John 3:1", body: "God, I believe grace is for everyone but me. I've heard the sermons; I just can't make them land on my own life. So today I won't try to fix that. I'll sit under one sentence — that You call me Your child — and let it be true even while I don't feel worthy of it. Especially then. Amen." },
+    15: { ref: "Psalm 103:12", body: "God, I keep trying to re-earn it, as if grace resets every morning and I start each day in debt. But You don't keep the ledger I keep. Today I'll try to receive instead of repay. I'm not good at it. Teach me. Amen." },
+    30: { ref: "1 John 3:1", body: "God, thirty days and the shame hasn't fully lifted — it's worn in deep; it'll take longer than a month. But something loosened: I can hear “beloved” now without immediately arguing. That's new. I'll keep letting You say it until I believe it — however long that takes. Amen." },
+  },
+  s_darkness: {
+    1: { ref: "Psalm 139:11-12", body: "God, I'm in a place I can't describe — not sadness exactly, darker and quieter. I feel nothing, and the nothing is the scariest part. I can't manufacture a feeling for You today. So I'll just say the verse and let it stand without my agreement: even the darkness is not dark to You. Be here, in the dark I can't see through. Amen." },
+    15: { ref: "John 1:5", body: "God, I keep doing the things — praying, reading, showing up — and they feel hollow, like I'm performing faith to an empty room. But the verse says the light shines in the darkness and the darkness hasn't overcome it. I can't see the light. I'll trust it's still shining where I can't see. Amen." },
+    30: { ref: "Psalm 139:11-12", body: "God, thirty days and I won't tell You the dark has lifted — some of it hasn't. But there's a small thing in me that never let go, and I've stopped calling it nothing. Maybe it was You, holding on from the inside. I'm still here. That's the whole prayer today. Amen." },
+  },
+  s_church: {
+    1: { ref: "Luke 15:20", body: "God, people I trusted in Your name hurt me, and I've never been able to separate them from You the way my head says I should. So today I'm coming to You directly — around the building, around the people — just You and me. Let me find You again underneath what they did with Your name. Amen." },
+    15: { ref: "Romans 12:18", body: "God, I miss belonging, even while I can't go back to the place that wounded me. The verse says live at peace as far as it depends on me — which means some of it doesn't depend on me, and I can stop trying to force what isn't mine to fix. Help me grieve the community without abandoning You. Amen." },
+    30: { ref: "Luke 15:20", body: "God, thirty days and I still don't have a church home, and I won't pretend that's healed. But I've found that You're reachable without the building — and that's kept the door to faith open when I thought it had closed. I'll look for Your people again when I'm ready. Not yet. But someday. Amen." },
+  },
+};
+
+// Assemble a wrestling_with_god card: anchor day → approved card; else lament pool
+// + the door's phase-appropriate gate-checked scripture. Rail (if any) is prepended.
+// Door key (faith/*) → anchor key (funnel pathKey s_*).
+const DOOR_ANCHOR: Record<string, string> = {
+  "faith/abandoned": "s_abandoned", "faith/anger": "s_angry", "faith/forgiven": "s_forgiven",
+  "faith/tragedy": "s_tragedy", "faith/unanswered": "s_prayers", "faith/drifted": "s_drifted",
+  "faith/doubt": "s_doubt", "faith/unworthy": "s_unworthy", "faith/darkness": "s_darkness", "faith/church": "s_church",
+};
+function wrestlingCard(door: string, phaseIndex: number, day: number): { title: string; body: string; scriptureRef?: string; scripture?: string; rail?: string } {
+  const rail = TIER1_DOORS[door]?.safetyRail?.en;
+  const anchor = WRESTLING_ANCHORS[DOOR_ANCHOR[door] || door]?.[day];
+  if (anchor) {
+    // Anchor prayer already carries the verse inline; scriptureRef gives attribution.
+    return { title: "Today's prayer", body: anchor.body, scriptureRef: anchor.ref, rail };
+  }
+  const core = pickScriptureCore(door, phaseIndex, null); // door's phase-appropriate core
+  const scr = core ? scriptureForCore(core, "en") : null; // gate-checked store
+  const prayer = LAMENT_POOL[journeyHash(door + ":" + day) % LAMENT_POOL.length];
+  return { title: "Today's prayer", body: prayer, scriptureRef: scr?.scriptureRef, scripture: scr?.body, rail };
+}
+
+// v5.27.0 — per-door worst-day self-test (item 2). For all 10 doors × days
+// {1,15,30}: assert no false-resolution phrase (worst-day safe), rail present
+// iff darkness/tragedy, denominator suppressed (family faith_struggle), anchors
+// render with a scriptureRef. At / (wrestling_selftest).
+let wrestlingSelfTest: any = null;
+(() => {
+  try {
+    const tmpl = JOURNEY_TEMPLATES["wrestling_with_god"];
+    const FALSE_RESOLUTION = ["it's better now", "it is better now", "the pain is gone", "no longer hurts", "everything changed", "all better now", "healed now", "fixed now", "it will pass", "soon you will feel", "you'll feel better soon", "everything will be okay", "god will fix"];
+    const rows = Object.keys(DOOR_ANCHOR).map((door) => {
+      const dd: any = TIER1_DOORS[door];
+      const shows = dd.mode !== "open" && !!dd.length && !["loss", "relationships", "faith_struggle"].includes(dd.family);
+      const cards = [1, 15, 30].map((day) => {
+        const phase = resolveJourneyPhase(tmpl, day);
+        const wc = wrestlingCard(door, tmpl.phases.indexOf(phase), day);
+        const full = ((wc.rail ? wc.rail + "\n\n" : "") + wc.body).toLowerCase();
+        return { day, ref: wc.scriptureRef, hasRail: !!wc.rail, false_promise: FALSE_RESOLUTION.filter((p) => full.includes(p)) };
+      });
+      const needsRail = door === "faith/darkness" || door === "faith/tragedy";
+      return {
+        door, needsRail,
+        rail_ok: cards.every((c) => (needsRail ? c.hasRail : !c.hasRail)),
+        no_false_resolution: cards.every((c) => c.false_promise.length === 0),
+        denominator_suppressed: shows === false,
+        anchors_render: cards.every((c) => !!c.ref),
+        day30_ref: cards[2].ref,
+      };
+    });
+    wrestlingSelfTest = { PASS: rows.every((r) => r.rail_ok && r.no_false_resolution && r.denominator_suppressed && r.anchors_render), doors: rows.length, rows };
+    console.log("[v5.27.0] wrestling self-test:", wrestlingSelfTest.PASS ? "PASS" : "FAIL");
+  } catch (err: any) { wrestlingSelfTest = { error: err.message }; }
+})();
+
 // -- 6. Daily-action generator ----------------------------------------
 // SAME hash function as seededFallbackPrayer: deterministic, stable.
 
@@ -2278,6 +2433,25 @@ async function getTodayAction(instance: any, lang: Lang): Promise<JourneyDailyAc
       } catch (err: any) { console.error("[Journey] Script cache write error:", err.message); }
       return scriptedAction;
     }
+  }
+
+  // 2c. WRESTLING_WITH_GOD — renders ONLY authored lament content (never the
+  // generic prayer pool). Guarded by templateKey, so no existing journey is
+  // affected. Rail prepended for s_darkness/s_tragedy.
+  if (templateKey === "wrestling_with_god") {
+    const phaseIndex = template.phases.indexOf(phase);
+    const wc = wrestlingCard(instance.door, phaseIndex, day);
+    const content: any = { title: wc.title, body: (wc.rail ? wc.rail + "\n\n" : "") + wc.body };
+    if (wc.scriptureRef) content.scriptureRef = wc.scriptureRef;
+    if (wc.scripture) content.scripture = wc.scripture;
+    if (wc.rail) content.safetyRail = wc.rail;
+    try {
+      await pool.query(
+        "INSERT INTO journey_daily_actions (instance_id, day, lang, type, phase_label, content_json) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (instance_id, day, lang) DO NOTHING",
+        [instanceId, day, lang, "prayer", phaseLabel, JSON.stringify(content)]
+      );
+    } catch (err: any) { console.error("[Journey] wrestling cache write error:", err.message); }
+    return { type: "prayer", phaseLabel, content, completionLabel: COMPLETION_LABELS["prayer"]?.[lang] || COMPLETION_LABELS["prayer"]?.en || "Done" };
   }
 
   // 3. Pick type deterministically (fallback for unscripted days)
@@ -2646,7 +2820,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.26.1", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, demo_grant_proof: demoGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.27.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, wrestling_selftest: wrestlingSelfTest, demo_grant_proof: demoGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -6261,7 +6435,7 @@ app.get("/journeys/:id/preview-day", async (c) => {
       instanceId: inst.id, templateKey: inst.template_key, family: inst.family,
       displayName: journeyDisplayName(inst.template_key, inst.family, lang),
       currentDay: day, unit: inst.unit, mode: inst.mode, lengthDays: inst.length_days ?? null,
-      showsDenominator: inst.mode !== "open" && !!inst.length_days && !["loss", "relationships"].includes(inst.family),
+      showsDenominator: inst.mode !== "open" && !!inst.length_days && !["loss", "relationships", "faith_struggle"].includes(inst.family),
       status: inst.status, prayedForName: inst.prayed_for_name || null, completedToday: false, lastCompletedAt: null,
       action: { type: LEGACY_TYPE_MAP[action.type] || action.type, cardType: action.type, phaseLabel: action.phaseLabel, content: action.content, completionLabel: action.completionLabel || COMPLETION_LABELS[action.type]?.[lang] || "Done" },
     });
@@ -6325,7 +6499,7 @@ app.get("/journeys/:id/today", async (c) => {
       // v5.20.16 — progress denominator policy (standing rule, flag-independent):
       // never a denominator for open journeys, grief (loss), or carrying
       // (relationships — includes addiction). No finish-line framing there.
-      showsDenominator: instance.mode !== "open" && !!instance.length_days && !["loss", "relationships"].includes(instance.family),
+      showsDenominator: instance.mode !== "open" && !!instance.length_days && !["loss", "relationships", "faith_struggle"].includes(instance.family),
       status: instance.status,
       prayedForName: instance.prayed_for_name || null,
       completedToday,
@@ -7622,7 +7796,7 @@ async function start() {
       // directly (resolveJourney additionally gates on TIER1_ENABLED, a go-live
       // env flag). Proves door → chronic/open/no-denominator + surfaces the gate.
       const dChronic: any = TIER1_DOORS["body/chronic"];
-      const shows = dChronic.mode !== "open" && !!dChronic.length && !["loss", "relationships"].includes(dChronic.family);
+      const shows = dChronic.mode !== "open" && !!dChronic.length && !["loss", "relationships", "faith_struggle"].includes(dChronic.family);
       const resolvedRuntime = resolveJourney({ door: "body/chronic" });
       r.journey_build = {
         door: "body/chronic", manifest_template: dChronic.templateKey, manifest_mode: dChronic.mode, day: 1, showsDenominator: shows,
