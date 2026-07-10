@@ -2636,6 +2636,7 @@ let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test resul
 let webFunnelSelfTest: any = null; // v5.21.0 — web funnel round-trip self-test
 let webQuizV25SelfTest: any = null; // v5.23.0 — v2.5 full-token E2E (s_* path → purchase-sim → handoff)
 let demoGrantProof: any = null;    // v5.22.0 — one-off RC demo-entitlement lifecycle proof
+let mailProof: any = null;         // v5.26.1 — one-off Resend round-trip + conflict-alert proof
 let worstDayPreview: any = null; // v5.20.13 — generated worst-day cards per door
 let griefWhoFlags: any = null;   // v5.20.14 — grief who-assumption audit flags
 let griefDay13Sample: any = null; // v5.20.15 — raw after-fix grief journal sample
@@ -2645,7 +2646,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.26.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.26.1", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, demo_grant_proof: demoGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -7755,6 +7756,29 @@ async function start() {
     } catch (err: any) { proof.error = err.message; try { await fetch(base, { method: "DELETE", headers: H }); } catch {} }
     demoGrantProof = proof;
     console.log("[v5.22.0] demo grant proof:", JSON.stringify(proof));
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.26.1 — Resend mail proof (one-off, remove after capture). Proves the API
+  // round-trip AND whether pramen.app is verified yet: (a) send from MAIL_FROM
+  // (signin@pramen.app) → founder; (d) send the synthetic merge-conflict alert.
+  // If the domain is verified, both land (that's proof b's real-inbox path too).
+  // If not, Resend returns the domain error → API key works, domain pending.
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    if (!process.env.RESEND_API_KEY) { mailProof = { skipped: "no RESEND_API_KEY" }; return; }
+    try {
+      const roundTrip = await sendMail({ to: MERGE_ALERT_EMAIL, subject: "prAmen mail round-trip proof (a)", html: "<p>prAmen Resend round-trip from signin@pramen.app. If this reached your inbox, the domain is verified and the real-inbox path is live.</p>", text: "prAmen Resend round-trip from signin@pramen.app." });
+      const conflictAlert = await sendMail({ to: MERGE_ALERT_EMAIL, subject: "prAmen merge conflict (SYNTHETIC_TEST dual-entitlement)", html: "<p>Synthetic founder-alert proof (d). No accounts were merged.</p>", text: "Synthetic merge-conflict founder alert (d). No real conflict." });
+      mailProof = {
+        mail_from: MAIL_FROM, alert_to: MERGE_ALERT_EMAIL, mail_configured: mailConfigured(),
+        a_round_trip: roundTrip,
+        d_conflict_alert: conflictAlert,
+        domain_verified: roundTrip.ok === true, // signin@pramen.app accepted ⇒ pramen.app verified
+        ranAt: new Date().toISOString(),
+      };
+      console.log("[v5.26.1] mail proof:", JSON.stringify(mailProof));
+    } catch (err: any) { mailProof = { error: err.message }; }
   })();
 
   // v5.20.11 — RC grace-lifecycle proof PASSED (grant→active→re-grant→revoke
