@@ -3120,6 +3120,17 @@ app.post("/admin/testimonials", async (c) => {
   const row = (await pool.query("INSERT INTO testimonials (text, first_name, age, state, consent_ref, slot, quote_date) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id", [String(text).slice(0, 600), String(firstName).slice(0, 60), age ? parseInt(age) : null, state || null, consent_ref, slot || "paywall", quote_date || null])).rows[0];
   return c.json({ ok: true, id: row.id });
 });
+// v5.29.0 — magic-link token-state inspector (admin). Confirms whether a link was
+// ever consumed (used_at) — proves a burned/404'd tap consumed nothing. No secrets:
+// hashes only, never the raw token/code.
+app.get("/admin/magic-state", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const email = normalizeEmail(c.req.query("email") || "");
+  if (!email) return c.json({ error: "?email= required" }, 400);
+  const rows = (await pool.query("SELECT id, created_at, expires_at, used_at, (used_at IS NULL) AS unused, (expires_at < now()) AS expired FROM magic_links WHERE email=$1 ORDER BY created_at DESC LIMIT 10", [email])).rows;
+  return c.json({ email, count: rows.length, links: rows, any_consumed: rows.some((r: any) => r.used_at !== null) });
+});
 app.get("/api/testimonials", async (c) => {
   // Only consented, active quotes; render gate at ≥3 (else placeholders stay).
   const rows = (await pool.query("SELECT t.text, t.first_name AS \"firstName\", t.age, t.state, t.slot FROM testimonials t JOIN testimonial_consents c ON c.consent_ref=t.consent_ref WHERE t.status='active' ORDER BY t.created_at")).rows;
@@ -3258,7 +3269,9 @@ app.post("/api/auth/magic-link/verify", async (c) => {
     // Brute-force guard on the 6-digit code: 5 verify attempts / email / 10 min.
     if (!rateOk(magicVerifyRate, norm, 5, MAGIC_TTL_MS)) return c.json({ error: "Too many attempts. Request a new link." }, 429);
     const r = await consumeMagicToken(norm, token ? String(token) : null, code ? String(code) : null, deviceUserId);
-    if (r.error || !r.user) return c.json({ error: "Invalid or expired link" }, 401);
+    // v5.29.0 — pass through the distinct reason so the /auth/magic fallback page
+    // can show expired vs already-used vs invalid (endpoint no longer collapses them).
+    if (r.error || !r.user) return c.json({ error: "Invalid or expired link", reason: r.error || "invalid_or_expired" }, 401);
     const u = r.user;
     // Skip-questionnaire handoff: if this email quizzed on the web, hand the app
     // the answers so it pre-builds the journey instead of re-asking.
