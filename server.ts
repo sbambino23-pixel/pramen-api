@@ -1543,6 +1543,83 @@ const TIER1_DOORS: Record<string, JourneyDoor> = {
 function doorForKey(key: string): JourneyDoor | null { return TIER1_DOORS[key] || null; }
 function doorsForSpine(spine: JourneySpine): JourneyDoor[] { return Object.values(TIER1_DOORS).filter(d => d.spine === spine); }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// v5.24.0 — v2.5 dominant-emotion derivation (APPROVED #4, Samy 2026-07-10).
+// Replaces the parked FEELING_TO_CORE for funnel users. Scores by mirror-answer
+// INDEX (0-4) — label text is NEVER load-bearing (Samy amendment a-1). 19×8 tag
+// table is the reviewed artifact; weak-signal defaults to the door's intrinsic
+// core; ties break intrinsic → pastoral-priority → earliest.
+// ═══════════════════════════════════════════════════════════════════════════
+const MIRROR_TAGS: Record<string, string[]> = {
+  health:     ["shock","fear_dread","guilt_shame","fear_dread","unanswered_prayer","hidden_pain","anger_at_God","anticipatory_future"],
+  grief:      ["grief_loss","grief_loss","grief_loss","guilt_shame","grief_loss","unanswered_prayer","anger_at_God","grief_loss"],
+  child:      ["guilt_shame","guilt_shame","grief_loss","relational","hidden_pain","unanswered_prayer","anticipatory_future","relational"],
+  caregiver:  ["guilt_shame","exhaustion","hidden_pain","guilt_shame","hidden_pain","guilt_shame","exhaustion","anticipatory_future"],
+  addiction:  ["guilt_shame","guilt_shame","fear_dread","guilt_shame","hidden_pain","anger_at_God","doubt_of_faith","anticipatory_future"],
+  lonely:     ["hidden_pain","hidden_pain","hidden_pain","unworthiness","grief_loss","hidden_pain","anticipatory_future","hidden_pain"],
+  family:     ["relational","guilt_shame","exhaustion","exhaustion","grief_loss","unanswered_prayer","anticipatory_future","relational"],
+  season:     ["shock","hidden_pain","grief_loss","grief_loss","unworthiness","grief_loss","anticipatory_future","anticipatory_future"],
+  financial:  ["fear_dread","unworthiness","guilt_shame","guilt_shame","anticipatory_future","doubt_of_faith","guilt_shame","fear_dread"],
+  s_abandoned:["abandonment","doubt_of_faith","abandonment","doubt_of_faith","hidden_pain","abandonment","abandonment","doubt_of_faith"],
+  s_angry:    ["guilt_shame","anger_at_God","anger_at_God","unanswered_prayer","hidden_pain","anger_at_God","anger_at_God","anticipatory_future"],
+  s_forgiven: ["guilt_shame","guilt_shame","guilt_shame","unworthiness","unworthiness","guilt_shame","guilt_shame","guilt_shame"],
+  s_tragedy:  ["shock","doubt_of_faith","doubt_of_faith","hidden_pain","doubt_of_faith","unanswered_prayer","grief_loss","doubt_of_faith"],
+  s_prayers:  ["unanswered_prayer","doubt_of_faith","doubt_of_faith","unanswered_prayer","unanswered_prayer","abandonment","unanswered_prayer","unanswered_prayer"],
+  s_drifted:  ["grief_loss","grief_loss","unworthiness","doubt_of_faith","fear_dread","grief_loss","unworthiness","fear_dread"],
+  s_doubt:    ["doubt_of_faith","doubt_of_faith","doubt_of_faith","doubt_of_faith","doubt_of_faith","hidden_pain","doubt_of_faith","doubt_of_faith"],
+  s_unworthy: ["unworthiness","unworthiness","unworthiness","unworthiness","unworthiness","unworthiness","unworthiness","unworthiness"],
+  s_darkness: ["darkness","darkness","darkness","darkness","hidden_pain","hidden_pain","hidden_pain","doubt_of_faith"],
+  s_church:   ["relational","relational","abandonment","relational","doubt_of_faith","relational","grief_loss","doubt_of_faith"],
+};
+const INTRINSIC_CORE: Record<string, string> = {
+  health:"fear_dread", grief:"grief_loss", child:"relational", caregiver:"exhaustion", addiction:"fear_dread",
+  lonely:"hidden_pain", family:"relational", season:"grief_loss", financial:"fear_dread",
+  s_abandoned:"abandonment", s_angry:"anger_at_God", s_forgiven:"guilt_shame", s_tragedy:"doubt_of_faith",
+  s_prayers:"unanswered_prayer", s_drifted:"relational", s_doubt:"doubt_of_faith", s_unworthy:"unworthiness",
+  s_darkness:"darkness", s_church:"relational",
+};
+const PASTORAL_PRIORITY = ["abandonment","doubt_of_faith","anger_at_God","unworthiness","guilt_shame","grief_loss","unanswered_prayer","fear_dread","anticipatory_future","relational","exhaustion","hidden_pain","darkness","shock"];
+const OPENING_TONES = ["reconnecting","returning","scaffolding","seeking"];
+// Michael's funnel journey names (display). Funnel-authoritative for funnel users —
+// carried through the handoff so the app names the journey with the name the user
+// saw on the paywall, WITHOUT renaming backend door.name (avoids in-app disruption
+// + the health-q2 3-door naming mismatch). Launch-5 use existing templates.
+const FUNNEL_JOURNEY_NAMES: Record<string, string> = {
+  health:"Strength for the Road Ahead", grief:"Walking Through the Valley", child:"The Prayer a Parent Prays",
+  caregiver:"The One Who Carries Others", addiction:"Letting Go and Letting God", lonely:"You Are Not Invisible",
+  family:"When Home Feels Like a Stranger", season:"The Next Chapter", financial:"Peace That Passes Understanding",
+  s_abandoned:"Where Are You, God", s_angry:"Holy Ground for Hard Feelings", s_forgiven:"The Road Back",
+  s_tragedy:"Faith After the Fire", s_prayers:"When Heaven Feels Silent", s_drifted:"Coming Home",
+  s_doubt:"Honest Before God", s_unworthy:"Beloved", s_darkness:"Light in the Dark", s_church:"Back to the Source",
+};
+
+function deriveDominantEmotion(pathKey: string | null | undefined, mirrorAnswers: any): { dominant_emotion: string | null; secondary_emotion: string | null; confidence: string } {
+  const tags = pathKey ? MIRROR_TAGS[pathKey] : null;
+  const intrinsic = pathKey ? (INTRINSIC_CORE[pathKey] || null) : null;
+  if (!tags || !Array.isArray(mirrorAnswers) || mirrorAnswers.length === 0) return { dominant_emotion: intrinsic, secondary_emotion: null, confidence: "path_default" };
+  // Score by INDEX (0-4). Non-numbers (or legacy label strings) → 0, never load-bearing.
+  const scores = tags.map((_, i) => { const v = mirrorAnswers[i]; return (typeof v === "number" && v >= 0 && v <= 4) ? v : 0; });
+  const maxScore = Math.max(...scores);
+  if (maxScore < 2) return { dominant_emotion: intrinsic, secondary_emotion: null, confidence: "path_default" };
+  const tied = scores.map((s, i) => (s === maxScore ? i : -1)).filter((i) => i >= 0);
+  let slot: number;
+  if (tied.length === 1) slot = tied[0];
+  else {
+    const intrinsicSlot = tied.find((i) => tags[i] === intrinsic);
+    if (intrinsicSlot !== undefined) slot = intrinsicSlot;
+    else slot = tied.slice().sort((a, b) => PASTORAL_PRIORITY.indexOf(tags[a]) - PASTORAL_PRIORITY.indexOf(tags[b]))[0];
+  }
+  const dominant = tags[slot];
+  const distinct = Array.from(new Set(scores)).sort((a, b) => b - a);
+  let secondary: string | null = null;
+  if (distinct.length > 1) {
+    const sSlot = scores.findIndex((s, i) => s === distinct[1] && tags[i] !== dominant);
+    secondary = sSlot >= 0 ? tags[sSlot] : null;
+  }
+  return { dominant_emotion: dominant, secondary_emotion: secondary, confidence: maxScore >= 3 ? "high" : "moderate" };
+}
+function journeyOpeningTone(faithIdx: any): string | null { return (typeof faithIdx === "number" && faithIdx >= 0 && faithIdx < OPENING_TONES.length) ? OPENING_TONES[faithIdx] : null; }
+
 // Templates that host any loss/crisis door inherit the grief "receiving phase"
 // safety window (days 1-10 = held, not tasked with outward action). Derived from
 // the manifest so future crisis doors get the protection automatically.
@@ -2529,7 +2606,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.23.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.24.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2813,7 +2890,10 @@ app.post("/api/auth/magic-link/verify", async (c) => {
     // Skip-questionnaire handoff: if this email quizzed on the web, hand the app
     // the answers so it pre-builds the journey instead of re-asking.
     const wq = (await pool.query("SELECT answers, quiet_time, door, status FROM web_quiz WHERE email=$1", [norm])).rows[0] || null;
-    const prebuiltIntake = wq ? { answers: wq.answers, quietTime: wq.quiet_time, door: wq.door, status: wq.status } : null;
+    // v5.24.0 — derive dominant_emotion + opening tone at handoff (APPROVED #4).
+    const wqa: any = wq?.answers || {};
+    const derived = wq ? { ...deriveDominantEmotion(wqa.pathKey, wqa.mirrorAnswers), journey_opening_tone: journeyOpeningTone(wqa.faithIdx), journey_name: wqa.pathKey ? (FUNNEL_JOURNEY_NAMES[wqa.pathKey] || null) : null } : null;
+    const prebuiltIntake = wq ? { answers: wq.answers, quietTime: wq.quiet_time, door: wq.door, status: wq.status, derived } : null;
     return c.json({ user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null, isNewUser: r.isNewUser }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id || ""), prebuiltIntake });
   } catch (err: any) { return c.json({ error: "Verify failed", detail: err.message }, 500); }
 });
@@ -2961,8 +3041,12 @@ const WEB_ORIGIN = process.env.WEB_ORIGIN || "https://pramen.app";
 // Env-driven, never hardcoded in the app: set WEB_QUIZ_URL to the preview URL
 // for the demo; becomes https://pramen.app/quiz at launch (the default).
 const WEB_QUIZ_URL = process.env.WEB_QUIZ_URL || "https://pramen.app/quiz";
-// Lightweight client config (the iOS gate screen reads webQuizUrl from here).
-app.get("/api/config", (c) => c.json({ webQuizUrl: WEB_QUIZ_URL }));
+// v5.24.0 — §E phased launch. Q1 on real traffic renders only these doors; each
+// funnel pathKey is added the day its arc ships. Launch-5 first (existing
+// templates). Overridable via DOORS_LIVE env (comma-sep) without a deploy.
+const DOORS_LIVE = (process.env.DOORS_LIVE || "health,grief,child,caregiver,addiction").split(",").map((s) => s.trim()).filter(Boolean);
+// Lightweight client config (the iOS gate reads webQuizUrl; the quiz reads doorsLive).
+app.get("/api/config", (c) => c.json({ webQuizUrl: WEB_QUIZ_URL, doorsLive: DOORS_LIVE }));
 // Ensure a lightweight pending user exists for a web email (so the RC identity,
 // magic-link, and app sign-in all resolve to ONE account). Returns the userId.
 async function ensureWebUser(normEmail: string, firstName?: string | null): Promise<string> {
@@ -7515,7 +7599,7 @@ async function start() {
       pathKey: "s_abandoned",
       q2Answer: null,
       recency: "A long time — it's become part of my life",
-      mirrorAnswers: ["This is me completely", "A little bit", "This is me — I've never seen it said out loud before", "This isn't me", "More than I've admitted", "This is me completely", "A little bit", "This is me completely"],
+      mirrorAnswers: [3, 1, 4, 0, 2, 3, 1, 3], // INDICES 0-4 (a-1: score-by-index). max=4 at slot 2 → s_abandoned tag "abandonment".
       multiselect: ["Loneliness — even around people", "The feeling that God has forgotten me"],
       goals: ["Feeling close to God again", "Something to hold onto every morning"],
       faithIdx: 2,
@@ -7557,8 +7641,23 @@ async function start() {
         mirrorAnswers_8_intact: mirrorsOk, scalars_intact: scalarsOk, multiselect_goals_intact: arraysOk,
         faithIdx_preserved: a.faithIdx === 2,
       };
-      r.PASS = !!v.user && v.user?.id === uid && wq?.status === "purchased" && missing.length === 0 && mirrorsOk && scalarsOk && arraysOk;
-      r.note = "dominant_emotion + door mapping = §E/#4 review-gated, intentionally not asserted here.";
+      // v5.24.0 — the handoff's derived block (APPROVED #4). Derives from the SAME
+      // persisted answers the app receives. Expected: abandonment / doubt_of_faith /
+      // high / scaffolding / "Where Are You, God".
+      // Derive from the ACTUAL handed-off answers (a = wq.answers), exactly as the verify handler does.
+      const der = { ...deriveDominantEmotion(a.pathKey, a.mirrorAnswers), journey_opening_tone: journeyOpeningTone(a.faithIdx), journey_name: FUNNEL_JOURNEY_NAMES[a.pathKey] || null };
+      r.derivation = {
+        derived_from_handoff: der,
+        dominant_is_abandonment: der?.dominant_emotion === "abandonment",
+        secondary_is_doubt: der?.secondary_emotion === "doubt_of_faith",
+        confidence_high: der?.confidence === "high",
+        tone_scaffolding_from_faithIdx2: der?.journey_opening_tone === "scaffolding",
+        journey_name_michaels: der?.journey_name === "Where Are You, God",
+        scored_by_index_not_label: true,
+      };
+      const derOk = der?.dominant_emotion === "abandonment" && der?.secondary_emotion === "doubt_of_faith" && der?.confidence === "high" && der?.journey_opening_tone === "scaffolding" && der?.journey_name === "Where Are You, God";
+      r.PASS = !!v.user && v.user?.id === uid && wq?.status === "purchased" && missing.length === 0 && mirrorsOk && scalarsOk && arraysOk && derOk;
+      r.note = "door mapping = §E review-gated (door=null). Derivation now wired + asserted (a-1 score-by-index).";
       await clean();
       r.cleaned = true; r.ranAt = new Date().toISOString();
     } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
