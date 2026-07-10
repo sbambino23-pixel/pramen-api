@@ -1459,7 +1459,7 @@ const LEGACY_TYPE_MAP: Record<JourneyActionType, JourneyActionType> = {
 // safety_class. The app never sees a catalog — one journey at a time.
 // ═══════════════════════════════════════════════════════════════════
 
-type JourneySpine = "in_my_body" | "grieving_loss" | "carrying_someone" | "drawing_closer" | "wrestling_with_god";
+type JourneySpine = "in_my_body" | "grieving_loss" | "carrying_someone" | "drawing_closer" | "wrestling_with_god" | "life_seasons";
 type SafetyClass = "crisis" | "loss" | "carrying" | "standard" | "spiritual";
 
 interface JourneyDoor {
@@ -1552,6 +1552,12 @@ const TIER1_DOORS: Record<string, JourneyDoor> = {
   "faith/unworthy": { key: "faith/unworthy", name: EN("Beloved"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["belovedness", "guilt_shame", "belovedness"] },
   "faith/darkness": { key: "faith/darkness", name: EN("Light in the Dark"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["darkness", "darkness", "darkness"], safetyRail: EN("A gentle word before we pray: if this heaviness has settled in and won't lift, please don't carry it in secret. Let a trusted person — a friend, a pastor, or a doctor — walk this stretch with you. Reaching for help is not a failure of faith; it's often how God sends it. We'll keep praying with you, either way.") },
   "faith/church": { key: "faith/church", name: EN("Back to the Source"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["relational", "relational", "relational"] },
+  // ── SPINE 6 — "Life seasons": 4 arcs, one authored template. relational + loss
+  //    suppress the denominator (standing rule); lonely + financial show it.
+  "alone/lonely": { key: "alone/lonely", name: EN("You Are Not Invisible"), spine: "life_seasons", templateKey: "life_seasons", family: "hardship", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "standard", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["being_seen", "being_seen", "presence"] },
+  "relate/family": { key: "relate/family", name: EN("When Home Feels Like a Stranger"), spine: "life_seasons", templateKey: "life_seasons", family: "relationships", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "standard", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["relational", "relational", "relational"] },
+  "provision/financial": { key: "provision/financial", name: EN("Peace That Passes Understanding"), spine: "life_seasons", templateKey: "life_seasons", family: "hardship", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "standard", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["anxiety", "strength_for_today", "peace"] },
+  "season/next": { key: "season/next", name: EN("The Next Chapter"), spine: "life_seasons", templateKey: "life_seasons", family: "loss", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "loss", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["grief", "grief", "grief"] },
 };
 
 function doorForKey(key: string): JourneyDoor | null { return TIER1_DOORS[key] || null; }
@@ -1749,6 +1755,20 @@ const JOURNEY_TEMPLATES: Record<string, JourneyTemplate> = {
     phases: [
       { label: { en: "Say the true thing", fr: "Say the true thing", es: "Say the true thing", pt: "Say the true thing" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "scripture", "reflection"] },
       { label: { en: "Stay in the room", fr: "Stay in the room", es: "Stay in the room", pt: "Stay in the room" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "scripture", "reflection"] },
+      { label: { en: "Held, not resolved", fr: "Held, not resolved", es: "Held, not resolved", pt: "Held, not resolved" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "scripture", "reflection"] },
+    ],
+  },
+  // v5.28.0 — 4 life arcs share one authored-only template (name it → stay → held).
+  life_seasons: {
+    key: "life_seasons",
+    family: "hardship",
+    mode: "fixed",
+    lengthDays: 30,
+    name: { en: "A Season to Walk Through", fr: "A Season to Walk Through", es: "A Season to Walk Through", pt: "A Season to Walk Through" },
+    oneLiner: { en: "For a season that reshaped your life. We walk it with you.", fr: "For a season that reshaped your life. We walk it with you.", es: "For a season that reshaped your life. We walk it with you.", pt: "For a season that reshaped your life. We walk it with you." },
+    phases: [
+      { label: { en: "Name it", fr: "Name it", es: "Name it", pt: "Name it" }, dayStart: 1, dayEnd: 10, tone: "gentle", mix: ["prayer", "scripture", "reflection"] },
+      { label: { en: "Stay with it", fr: "Stay with it", es: "Stay with it", pt: "Stay with it" }, dayStart: 11, dayEnd: 20, tone: "steadying", mix: ["prayer", "scripture", "reflection"] },
       { label: { en: "Held, not resolved", fr: "Held, not resolved", es: "Held, not resolved", pt: "Held, not resolved" }, dayStart: 21, dayEnd: 30, tone: "tender", mix: ["prayer", "scripture", "reflection"] },
     ],
   },
@@ -2324,9 +2344,34 @@ const DOOR_ANCHOR: Record<string, string> = {
   "faith/tragedy": "s_tragedy", "faith/unanswered": "s_prayers", "faith/drifted": "s_drifted",
   "faith/doubt": "s_doubt", "faith/unworthy": "s_unworthy", "faith/darkness": "s_darkness", "faith/church": "s_church",
 };
+// v5.28.0 — 4 life arcs (Samy-passed verbatim 2026-07-10). Same authored-only lament
+// engine as wrestling. financial = provision-PEACE (no prosperity). Keyed by door.
+const LIFE_ANCHORS: Record<string, Record<number, { ref: string; body: string }>> = {
+  "alone/lonely": {
+    1: { ref: "Psalm 25:16", body: "God, turn toward me — I am lonely, and I'm tired of pretending I'm not. I hold conversations, I smile in public, and I come home to a silence nobody else hears. I'm not asking to be fixed today. I'm asking to be seen by Someone. Turn toward me. Amen." },
+    15: { ref: "Genesis 16:13", body: "God, it's still quiet here. The loneliness hasn't lifted just because I named it. But I've started saying it to You instead of swallowing it — and that's one voice in the room that wasn't here before. You're the God who sees. Keep seeing me. I'll keep showing up to be seen. Amen." },
+    30: { ref: "Matthew 28:20", body: "God, thirty days and I still spend most of my hours alone. I won't pretend that's healed. But the aloneness feels less like abandonment now and more like a room You're also in. I haven't been rescued from it. I've been kept company in it. For now, that changes everything and nothing. I'm still here. Amen." },
+  },
+  "relate/family": {
+    1: { ref: "Romans 12:18", body: "God, we live in the same house and we've become strangers. I've said things I can't take back; so have they. Today I'm not going to script the fix. I'm just going to tell You the truth: the distance is unbearable, and I can't close it by myself. As far as it depends on me — help me carry only that part. Amen." },
+    15: { ref: "Luke 15:20", body: "God, I keep grieving the family I thought we'd be. I've tried the talking, the silence, the waiting. Today I bring You the ache instead of another strategy. Tend my own heart first — I can't offer from an empty one. Give me one gentle word to say, or the grace to stay quiet. Amen." },
+    30: { ref: "Romans 12:18", body: "God, thirty days and it isn't mended — some of it may not be, and I'm learning to say that without despair. What's different is me: less clenched, less pretending. I've stopped trying to force what isn't mine to force. I'll keep loving from where I stand. Held, not fixed. Amen." },
+  },
+  "provision/financial": {
+    1: { ref: "Philippians 4:6", body: "God, I lie awake running the numbers. I've run them a hundred times and they don't work. I'm not going to ask You tonight to make the math add up — I don't know if it will. I'm asking for the one thing I can't manufacture: enough peace to close my eyes. I'm handing You the ledger for the night. Amen." },
+    15: { ref: "Matthew 6:34", body: "God, the worry does its loudest work in the dark. Today I won't pretend the fear is gone. But I'll try to carry only today's weight, not tomorrow's too. Give me wisdom for what I can actually do, and steady me for what I can't. Not answers I don't have — just enough for today. Amen." },
+    30: { ref: "Isaiah 26:3", body: "God, thirty days and the numbers still haven't resolved. I won't tell You the fear is gone. But it's quieter — it no longer runs the whole house. I've found a peace that doesn't depend on the balance, and I can't fully explain it. I still don't know how this ends. I'm just less afraid of the not-knowing. Amen." },
+  },
+  "season/next": {
+    1: { ref: "Psalm 34:18", body: "God, I woke up one day and didn't recognize my own life. The role that told me who I was is gone, and I'm rebuilding at an age I didn't expect. I'm grieving the person I used to be — that sounds strange, but it's the truest thing I can say. Be close to that grief. I'm not ready to be told who I am now. Just sit with who I was. Amen." },
+    15: { ref: "Ecclesiastes 3:1", body: "God, everyone my age seems to know who they are in this season. I don't. I feel lost where I'm supposed to feel free. Today I'll stop performing the adjustment and admit I haven't made it. There's a time for everything — maybe including this in-between I can't name. Stay with me in the meantime. Amen." },
+    30: { ref: "Psalm 34:18", body: "God, thirty days and I still haven't figured out who I am on the other side of the change. I won't force a tidy new identity just to make the discomfort stop. But I'm less afraid of the blank page than I was. I don't have the next chapter yet. I have Company while I wait for it. That's enough to keep turning the page. Amen." },
+  },
+};
+const ALL_ANCHORS: Record<string, Record<number, { ref: string; body: string }>> = { ...WRESTLING_ANCHORS, ...LIFE_ANCHORS };
 function wrestlingCard(door: string, phaseIndex: number, day: number): { title: string; body: string; scriptureRef?: string; scripture?: string; rail?: string } {
   const rail = TIER1_DOORS[door]?.safetyRail?.en;
-  const anchor = WRESTLING_ANCHORS[DOOR_ANCHOR[door] || door]?.[day];
+  const anchor = ALL_ANCHORS[DOOR_ANCHOR[door] || door]?.[day];
   if (anchor) {
     // Anchor prayer already carries the verse inline; scriptureRef gives attribution.
     return { title: "Today's prayer", body: anchor.body, scriptureRef: anchor.ref, rail };
@@ -2344,11 +2389,13 @@ function wrestlingCard(door: string, phaseIndex: number, day: number): { title: 
 let wrestlingSelfTest: any = null;
 (() => {
   try {
-    const tmpl = JOURNEY_TEMPLATES["wrestling_with_god"];
-    const FALSE_RESOLUTION = ["it's better now", "it is better now", "the pain is gone", "no longer hurts", "everything changed", "all better now", "healed now", "fixed now", "it will pass", "soon you will feel", "you'll feel better soon", "everything will be okay", "god will fix"];
-    const rows = Object.keys(DOOR_ANCHOR).map((door) => {
+    const FALSE_RESOLUTION = ["it's better now", "it is better now", "the pain is gone", "no longer hurts", "everything changed", "all better now", "healed now", "fixed now", "it will pass", "soon you will feel", "you'll feel better soon", "everything will be okay", "god will fix", "god will provide the money", "god will pay"];
+    const allDoors = [...Object.keys(DOOR_ANCHOR), ...Object.keys(LIFE_ANCHORS)]; // 10 wrestling + 4 life
+    const rows = allDoors.map((door) => {
       const dd: any = TIER1_DOORS[door];
+      const tmpl = JOURNEY_TEMPLATES[dd.templateKey];
       const shows = dd.mode !== "open" && !!dd.length && !["loss", "relationships", "faith_struggle"].includes(dd.family);
+      const expectSuppress = ["loss", "relationships", "faith_struggle"].includes(dd.family);
       const cards = [1, 15, 30].map((day) => {
         const phase = resolveJourneyPhase(tmpl, day);
         const wc = wrestlingCard(door, tmpl.phases.indexOf(phase), day);
@@ -2360,13 +2407,13 @@ let wrestlingSelfTest: any = null;
         door, needsRail,
         rail_ok: cards.every((c) => (needsRail ? c.hasRail : !c.hasRail)),
         no_false_resolution: cards.every((c) => c.false_promise.length === 0),
-        denominator_suppressed: shows === false,
+        denominator_ok: (shows === false) === expectSuppress, // suppressed exactly when policy requires
         anchors_render: cards.every((c) => !!c.ref),
         day30_ref: cards[2].ref,
       };
     });
-    wrestlingSelfTest = { PASS: rows.every((r) => r.rail_ok && r.no_false_resolution && r.denominator_suppressed && r.anchors_render), doors: rows.length, rows };
-    console.log("[v5.27.0] wrestling self-test:", wrestlingSelfTest.PASS ? "PASS" : "FAIL");
+    wrestlingSelfTest = { PASS: rows.every((r) => r.rail_ok && r.no_false_resolution && r.denominator_ok && r.anchors_render), doors: rows.length, rows };
+    console.log("[v5.28.0] authored-journey self-test:", wrestlingSelfTest.PASS ? "PASS" : "FAIL");
   } catch (err: any) { wrestlingSelfTest = { error: err.message }; }
 })();
 
@@ -2438,7 +2485,7 @@ async function getTodayAction(instance: any, lang: Lang): Promise<JourneyDailyAc
   // 2c. WRESTLING_WITH_GOD — renders ONLY authored lament content (never the
   // generic prayer pool). Guarded by templateKey, so no existing journey is
   // affected. Rail prepended for s_darkness/s_tragedy.
-  if (templateKey === "wrestling_with_god") {
+  if (templateKey === "wrestling_with_god" || templateKey === "life_seasons") {
     const phaseIndex = template.phases.indexOf(phase);
     const wc = wrestlingCard(instance.door, phaseIndex, day);
     const content: any = { title: wc.title, body: (wc.rail ? wc.rail + "\n\n" : "") + wc.body };
@@ -2820,7 +2867,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.27.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, wrestling_selftest: wrestlingSelfTest, demo_grant_proof: demoGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.28.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, wrestling_selftest: wrestlingSelfTest, demo_grant_proof: demoGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
