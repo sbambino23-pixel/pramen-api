@@ -877,7 +877,7 @@ async function getUserByEmail(email: string) { try { const r = await pool.query(
 // ═══════════════════════════════════════════════════════════════════
 const MAIL_PROVIDER = process.env.MAIL_PROVIDER || "resend";
 const MAIL_FROM = process.env.MAIL_FROM || "prAmen <signin@pramen.app>";
-async function sendMail(opts: { to: string; subject: string; html: string; text: string }): Promise<{ ok: boolean; provider: string; skipped?: boolean; error?: string }> {
+async function sendMail(opts: { to: string; subject: string; html: string; text: string; from?: string }): Promise<{ ok: boolean; provider: string; skipped?: boolean; error?: string; id?: string; status?: number }> {
   try {
     const resendKey = process.env.RESEND_API_KEY;
     const postmarkKey = process.env.POSTMARK_API_KEY;
@@ -885,10 +885,11 @@ async function sendMail(opts: { to: string; subject: string; html: string; text:
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
         headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ from: MAIL_FROM, to: [opts.to], subject: opts.subject, html: opts.html, text: opts.text }),
+        body: JSON.stringify({ from: opts.from || MAIL_FROM, to: [opts.to], subject: opts.subject, html: opts.html, text: opts.text }),
       });
-      if (!res.ok) return { ok: false, provider: "resend", error: `HTTP ${res.status}` };
-      return { ok: true, provider: "resend" };
+      const body: any = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, provider: "resend", status: res.status, error: typeof body?.message === "string" ? body.message : `HTTP ${res.status}` };
+      return { ok: true, provider: "resend", id: body?.id, status: res.status };
     }
     if (MAIL_PROVIDER === "postmark" && postmarkKey) {
       const res = await fetch("https://api.postmarkapp.com/email", {
@@ -2644,7 +2645,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.25.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.26.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, demo_grant_proof: demoGrantProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -2814,6 +2815,28 @@ app.put("/api/user/email-opt-in", async (c) => { const ah = c.req.header("Author
 app.get("/api/admin/user-lookup", async (c) => { const key = c.req.query("key") || c.req.header("X-Admin-Secret"); if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403); const q = c.req.query("q") || ""; if (!q) return c.json({ error: "?q= required (email, userId, or deviceUserId)" }, 400); const r = await pool.query("SELECT id,name,email,auth_provider,created_at,subscription_status,trial_start_date,trial_end_date,device_user_id,avatar_url FROM users WHERE id=$1 OR lower(trim(email))=lower(trim($1)) OR device_user_id=$1", [q]); if (r.rows.length === 0) return c.json({ error: "User not found" }, 404); return c.json({ user: r.rows[0] }); });
 
 // v5.20.3 — TEMPORARY: duplicate-email collision list, reviewed before the
+// v5.26.0 — Resend mail proofs (ADMIN_SECRET). (a) round-trip: send a test email,
+// return the raw Resend id/status/error. ?from= overrides sender to test the
+// onboarding domain before pramen.app verifies. ?to= defaults to founder email.
+app.get("/admin/mail-proof", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const to = c.req.query("to") || MERGE_ALERT_EMAIL;
+  const from = c.req.query("from") || undefined; // e.g. "onboarding@resend.dev" pre-verification
+  const r = await sendMail({ to, from, subject: "prAmen mail round-trip proof", html: "<p>prAmen Resend round-trip. If you can read this, the API + domain are live.</p>", text: "prAmen Resend round-trip." });
+  return c.json({ ranAt: new Date().toISOString(), mail_from: from || MAIL_FROM, to, mail_configured: mailConfigured(), resend: r });
+});
+
+// v5.26.0 — merge-conflict founder-alert proof (item 2d). Fires ONE synthetic
+// conflict alert (no DB row; pure alert path) from MAIL_FROM → MERGE_ALERT_EMAIL.
+app.get("/admin/merge-conflict-test", async (c) => {
+  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
+  if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
+  const reason = "SYNTHETIC_TEST (dual-entitlement) — proof only, no real conflict";
+  const r = await sendMail({ to: MERGE_ALERT_EMAIL, subject: `prAmen merge conflict (${reason})`, html: `<p>${reason}</p><p>This is a synthetic founder-alert proof. No accounts were merged.</p>`, text: `${reason} — synthetic proof.` });
+  return c.json({ ranAt: new Date().toISOString(), alert_to: MERGE_ALERT_EMAIL, mail_from: MAIL_FROM, resend: r });
+});
+
 // UNIQUE constraint lands, then this endpoint is removed. Key = ADMIN_SECRET
 // (env). Minimal fields only: normalized email, count, per-account uuid /
 // created_at / auth_provider. No names, no journey data, no tokens.
