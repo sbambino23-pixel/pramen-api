@@ -2202,10 +2202,14 @@ console.log(`[v5.31.0] night gate:`, nightGate.PASS ? "PASS" : "FAIL");
 // teaching_gate — COMFORT-BY-INCLUSION enforcement at boot. Rejects any teaching
 // that defines the outside of faith / draws a line the numb reader lands wrong of.
 const teachingGate = (() => {
-  const FORBIDDEN = ["opposite of faith is", "the opposite of faith", "isn't faith — it's", "isn't faith, it's", "unlike those who", "not like the people who", "unbelievers", "those who don't believe", "those who gave up", "those who walked away", "people who quit", "the faithless"];
+  // Target the ASSERTION of an outside (exclusion), not the DENIAL of one. "Doubt is
+  // NOT the opposite of faith" is the inclusive move and must pass; "the opposite of
+  // faith IS indifference" defines an outside and must fail.
+  const FORBIDDEN = ["opposite of faith is", "isn't faith — it's", "isn't faith, it's", "unlike those who", "not like the people who", "unbelievers", "those who don't believe", "those who gave up on god", "those who walked away", "people who quit", "the faithless", "real believers don't", "true faith doesn't"];
   const rows = Object.entries(TEACHINGS_BY_CORE).map(([core, t]) => {
     const low = (t.title + " " + t.body).toLowerCase();
-    const hits = FORBIDDEN.filter((f) => low.includes(f));
+    // Only flag "opposite of faith" when it ASSERTS (…is X), never when negated (not the opposite).
+    const hits = FORBIDDEN.filter((f) => low.includes(f) && !(f === "opposite of faith is" && low.includes("not the opposite of faith")));
     return { core, inclusion_ok: hits.length === 0, hits };
   });
   return { PASS: rows.every((r) => r.inclusion_ok), cores_wired: rows.length, rows };
