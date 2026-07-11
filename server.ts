@@ -2199,6 +2199,14 @@ const NIGHT_PRAYERS_BY_CORE: Record<string, { title: string; body: string }> = {
 function nightPrayerForCore(core: string | null | undefined): { title: string; body: string } | null {
   return core ? (NIGHT_PRAYERS_BY_CORE[core] || null) : null;
 }
+// v5.33.0 — the emotional core for a journey's teaching/night card: the funnel
+// dominant emotion if set, else the door's lead scripture core, else null.
+function resolveJourneyCore(instance: any): string | null {
+  if (instance?.dominant_emotion) return instance.dominant_emotion;
+  const d = instance?.door ? TIER1_DOORS[instance.door] : null;
+  if (d?.scriptureCores?.length) return d.scriptureCores[0];
+  return null;
+}
 const nightGate = (() => {
   const FORBIDDEN = ["you will sleep", "you'll sleep", "sleep will come", "fall asleep", "sleep through the night", "drift off", "rest well tonight", "sweet dreams", "you will rest well", "guaranteed", "sleep soundly", "a good night's sleep"];
   const rows = Object.entries(NIGHT_PRAYERS_BY_CORE).map(([core, t]) => {
@@ -3001,7 +3009,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.32.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, teaching_gate: teachingGate, night_gate: nightGate, rejected_reference_gate: rejectedReferenceGate, wrestling_selftest: wrestlingSelfTest, unique_email: uniqueEmailProof, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.33.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, teaching_gate: teachingGate, night_gate: nightGate, rejected_reference_gate: rejectedReferenceGate, wrestling_selftest: wrestlingSelfTest, unique_email: uniqueEmailProof, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -6802,7 +6810,11 @@ app.get("/journeys/:id/today", async (c) => {
         phaseLabel: action.phaseLabel,
         content: action.content,
         completionLabel: action.completionLabel || COMPLETION_LABELS[action.type]?.[lang] || "Done"
-      }
+      },
+      // v5.33.0 — P3/P2: teaching + night prayer for this journey's core (additive;
+      // old apps ignore). Null when the core has no authored card → app renders nothing.
+      teaching: teachingForCore(resolveJourneyCore(instance)),
+      nightPrayer: nightPrayerForCore(resolveJourneyCore(instance)),
     });
   } catch (err: any) {
     console.error("[Journey] GET /today error:", err.message);
