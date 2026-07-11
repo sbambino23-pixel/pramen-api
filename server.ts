@@ -2167,6 +2167,16 @@ const TEACHINGS_BY_CORE: Record<string, { title: string; body: string }> = {
   // v5.31.0 — Samy edit: contrast clause cut (comfort by inclusion, never by contrast).
   doubt_of_faith: { title: "Doubt is not the opposite of faith", body: "Doubt is not the opposite of faith. Doubt means you're still close enough to the fire to feel its heat. A father once brought his son to Jesus and said the truest prayer in the Bible: “I believe; help my unbelief.” Both halves at once. Jesus didn't scold the doubt. He answered the reaching. You don't have to resolve every question to stay. You just have to keep bringing the questions here, out loud, instead of letting them quietly walk you out. Showing up unsure is still showing up." },
   unanswered_prayer: { title: "When heaven is quiet", body: "Silence from God is the hardest thing to interpret, because we fill it in with our worst fear — that He isn't there, or doesn't care. But “the Lord hears” is not the same promise as “the Lord answers the way you asked.” The Bible is full of people who were heard and still waited: David, Hannah, the psalmists who wrote “how long?” and kept writing to God anyway. The invitation today isn't to manufacture an answer. It's to keep the line open — to let unanswered be different from unheard. You are heard. Even now. Especially now." },
+  // v5.32.0 — remaining 9 cores (Samy-passed; anticipatory_future verse swapped Jer 29:11 → Psalm 31:15).
+  anticipatory_future: { title: "The tomorrow you keep bracing for", body: "Some of us live a day ahead of ourselves, flinching at a blow that hasn't landed. God is already standing in that tomorrow you can't stop rehearsing — He got there before you did. “My times are in your hands,” the psalm says — the shape of what's coming is His to hold, not yours to figure out tonight. You don't have to see the whole road to take the next step on it. Bracing is exhausting, and you're allowed to set it down. The future is not a place you enter alone." },
+  exhaustion: { title: "When rest feels like one more thing you're failing at", body: "Tired has a way of becoming shame — as if resting were a task you keep flunking. But rest was God's idea before it was ever your need; He built it into the very first week. “Come to me, all you who are weary” is not a reward for finishing. It's an invitation you're allowed to accept mid-mess, with the list undone. You don't have to earn the right to stop. Being worn thin is enough of a reason. Let yourself be carried for a while." },
+  unworthiness: { title: "For the part of you that thinks grace is for everyone else", body: "There's a quiet math some of us run: grace is real, and grace is for people — just not, somehow, for me. But grace was never priced to your worth; if it were, it wouldn't be grace. “See what great love the Father has lavished on us, that we should be called children of God.” Lavished — not measured out, not means-tested. You don't have to become someone else to receive it. The love is already reaching toward exactly who you are right now." },
+  hidden_pain: { title: "The face you put on, and the One who sees behind it", body: "You've gotten good at “I'm fine.” Most of us have. But there is One who has never once been fooled by the face — who sees the thing underneath and does not look away or love you less for it. Hagar, alone and unseen by everyone, called Him “the God who sees me.” He sees you too: not the version you manage for the room, the real one. You don't have to perform for Him. You can let the face down here. You are already fully known, and still held." },
+  anger_at_God: { title: "Anger is allowed to be a prayer", body: "If you're angry at God, you are in older company than you think. David was. The prophets were. “How long, Lord?” is in the Bible on purpose — God would rather have your honest anger than your polite silence. You don't have to resolve it tonight, or tie it off with a bow, or forgive Him for something you can't yet name. You only have to bring it. Anger spoken to God is still a form of staying. Stay. He can hold all of it." },
+  abandonment: { title: "When you can't feel Him", body: "There is a particular ache in praying into what feels like an empty room. Feeling far from God is not the same as being far from Him — the sun doesn't leave because the clouds are thick. “He will never leave you nor forsake you” is a promise made to your standing, not your feelings. You are allowed to say the words even when they land flat. The absence you feel is real, and so is He, underneath it. Presence you can't feel is still presence." },
+  relational: { title: "Loving someone across a distance you didn't choose", body: "Few things ache like loving a person you can't reach. You didn't choose the distance, and you can't close it by force. The father in the story didn't drag his son home — he watched the road and kept the door open. That's your work too: not to fix them, but to keep loving without grasping, and to let God tend the part that's beyond your reach. “As far as it depends on you.” The rest depends on Him, and He has not stopped watching the road." },
+  darkness: { title: "For the numb, the flat, the featureless dark", body: "Some seasons aren't loud pain — they're a grey nothing, a flatness where feeling used to be. If that's you, you have not fallen out of God's reach; you've walked into a stretch even the psalmists knew. “Even the darkness will not be dark to you.” He sees in here perfectly, at the exact depth where you can't see anything at all. You don't have to manufacture a feeling to prove you're still His. The small, stubborn fact that you're still here, still listening, is enough. (If the heaviness stays and won't lift, please let someone you trust walk it with you — reaching for help is not a failure of faith.)" },
+  shock: { title: "The hour right after the ground gave way", body: "When something breaks the world open, the first thing to go is words. You may not be able to pray, or think, or feel much of anything past the ringing. That's not a lack of faith — it's what shock does to a body God made. “Be still, and know that I am God.” Not understand, not cope — be still. There is nothing you have to figure out in this first hour. Let Him hold the parts of you that have gone quiet. You don't have to carry this steadily. You only have to not be alone in it." },
 };
 function teachingForCore(core: string | null | undefined): { title: string; body: string } | null {
   return core ? (TEACHINGS_BY_CORE[core] || null) : null;
@@ -2182,7 +2192,7 @@ function teachingForCore(core: string | null | undefined): { title: string; body
 const NIGHT_PRAYERS_BY_CORE: Record<string, { title: string; body: string }> = {
   fear_dread: { title: "Laying the fear down for the night", body: "The day is closing, and the fear you carried is still here. You don't have to solve it before you lie down. Just set it, for now, at the foot of the bed — where God can keep watch over it while you can't. “In peace I will lie down,” the psalm says, “for you alone, Lord, make me dwell in safety.” Not because the danger is gone. Because you are not the one holding the night together. He is. Whatever tomorrow holds, it can wait until tomorrow. Tonight, you are held." },
   grief_loss: { title: "The evening they are not here", body: "Nights are the loudest, aren't they. The house settles and the absence gets bigger. You don't have to be brave in the dark. You're allowed to miss them out loud, here, where only God hears. He is close to the brokenhearted — closest, maybe, at the hour when everyone else has gone quiet. You don't have to close the grief to close your eyes. Let Him sit with you in it, for as long as this night is long." },
-  exhaustion: { title: "You are allowed to stop now", body: "You spent yourself today — on people, on tasks, on holding things together. Whatever is left undone will still be there in the morning, and the morning is God's to hold, not yours. For now the only thing being asked of you is to stop. “Come to me, all you who are weary,” He said — not once you've earned it, not once the list is clear. Now. Weary is enough. Set it all down. You are not needed tonight. You are only loved." },
+  exhaustion: { title: "You are allowed to stop now", body: "You spent yourself today — on people, on tasks, on holding things together. Whatever is left undone will still be there in the morning, and the morning is God's to hold, not yours. For now the only thing being asked of you is to stop. “Come to me, all you who are weary,” He said — not once you've earned it, not once the list is clear. Now. Weary is enough. Set it all down. Nothing more is being asked of you tonight. You are loved." },
   anxiety: { title: "Handing over the racing mind", body: "The mind speeds up right when the body wants to slow down — replaying, rehearsing, bracing. You can't argue it quiet. But you can hand it over, thought by thought, as each one arrives: this one too, God. And this one. “Cast all your anxiety on him, because he cares for you.” Not because the worries don't matter, but because you were never meant to carry them through the night alone. Let Him hold the ones you can't put down. Rest is not something you achieve. It's something you receive." },
   unanswered_prayer: { title: "Praying into the quiet, one more night", body: "You've prayed this prayer before, and the answer hasn't come, and it would be easy to stop bringing it up. Bring it up anyway. The God who hears is not tired of hearing you. “I waited patiently for the Lord,” the psalm says — waited, in the dark, without the answer, and kept turning toward Him. That turning is itself a kind of faith. You don't need a resolution tonight. You need only to know you were heard. You were. Rest in the hearing, even without the answer." },
 };
@@ -2501,6 +2511,43 @@ let wrestlingSelfTest: any = null;
     console.log("[v5.28.0] authored-journey self-test:", wrestlingSelfTest.PASS ? "PASS" : "FAIL");
   } catch (err: any) { wrestlingSelfTest = { error: err.message }; }
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v5.32.0 — REJECTED-REFERENCE gate (Samy: rejection is a property of the content
+// system, not one table). A verse rejected at registry review must not appear in
+// ANY authored prose — teachings, night cards, journey anchors, lament pool,
+// scripture store, approved clauses. Scans by ref AND recognizable phrasing at
+// boot. Funnel copy (landing quizData.ts) is scanned by the landing build's twin
+// check. Add future registry rejections to REJECTED_REFERENCES.
+// ═══════════════════════════════════════════════════════════════════════════
+const REJECTED_REFERENCES: { ref: string; why: string; phrasings: string[] }[] = [
+  { ref: "Jeremiah 29:11", why: "outcome-promise register (rejected from anticipatory_future)", phrasings: ["jeremiah 29:11", "plans i have for you", "plans for a future", "plans to give you hope", "future and a hope", "hope and a future"] },
+  { ref: "Ezekiel 34:16", why: "promised reunion (violates hope_held_loosely)", phrasings: ["ezekiel 34:16", "bring back the strays", "search for the lost and bring", "i will bring them back"] },
+];
+const rejectedReferenceGate = (() => {
+  // Collect every authored prose string in the backend content system.
+  const corpus: { where: string; text: string }[] = [];
+  for (const [k, v] of Object.entries(TEACHINGS_BY_CORE)) corpus.push({ where: `teaching:${k}`, text: v.title + " " + v.body });
+  for (const [k, v] of Object.entries(NIGHT_PRAYERS_BY_CORE)) corpus.push({ where: `night:${k}`, text: v.title + " " + v.body });
+  for (const [door, days] of Object.entries(WRESTLING_ANCHORS)) for (const [d, c] of Object.entries(days)) corpus.push({ where: `wrestling:${door}:${d}`, text: (c as any).body });
+  for (const [door, days] of Object.entries(LIFE_ANCHORS)) for (const [d, c] of Object.entries(days)) corpus.push({ where: `life:${door}:${d}`, text: (c as any).body });
+  LAMENT_POOL.forEach((t, i) => corpus.push({ where: `lament:${i}`, text: t }));
+  for (const [k, v] of Object.entries(SCRIPTURE_BY_CORE)) { const en = (v as any).en; if (en) corpus.push({ where: `scripture:${k}`, text: en.body + " " + en.scriptureRef }); }
+  for (const [k, v] of Object.entries(APPROVED_CLAUSES)) corpus.push({ where: `clause:${k}`, text: v.body + " " + v.scriptureRef }); // eslint-disable-line
+  // Also door safety rails + journey day1 templates if present.
+  for (const [k, d] of Object.entries(TIER1_DOORS)) { const rail = (d as any).safetyRail?.en; if (rail) corpus.push({ where: `rail:${k}`, text: rail }); }
+
+  const leaks: any[] = [];
+  for (const item of corpus) {
+    const low = item.text.toLowerCase();
+    for (const rej of REJECTED_REFERENCES) {
+      const hit = rej.phrasings.find((p) => low.includes(p));
+      if (hit) leaks.push({ where: item.where, rejected: rej.ref, matched: hit });
+    }
+  }
+  return { PASS: leaks.length === 0, corpus_scanned: corpus.length, rejected_refs: REJECTED_REFERENCES.map((r) => r.ref), leaks };
+})();
+console.log(`[v5.32.0] rejected-reference gate:`, rejectedReferenceGate.PASS ? "PASS" : `FAIL ${JSON.stringify(rejectedReferenceGate.leaks)}`);
 
 // -- 6. Daily-action generator ----------------------------------------
 // SAME hash function as seededFallbackPrayer: deterministic, stable.
@@ -2954,7 +3001,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.31.1", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, teaching_gate: teachingGate, night_gate: nightGate, wrestling_selftest: wrestlingSelfTest, unique_email: uniqueEmailProof, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.32.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, teaching_gate: teachingGate, night_gate: nightGate, rejected_reference_gate: rejectedReferenceGate, wrestling_selftest: wrestlingSelfTest, unique_email: uniqueEmailProof, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -3229,6 +3276,12 @@ app.get("/api/teaching", async (c) => {
   const core = c.req.query("core") || "";
   const t = teachingForCore(core);
   return c.json({ core, available: !!t, teaching: t });
+});
+// v5.32.0 — P2 night prayer per core (text-first). Null for a core not authored.
+app.get("/api/night", async (c) => {
+  const core = c.req.query("core") || "";
+  const t = nightPrayerForCore(core);
+  return c.json({ core, available: !!t, night: t });
 });
 app.get("/api/testimonials", async (c) => {
   // Only consented, active quotes; render gate at ≥3 (else placeholders stay).
