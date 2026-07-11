@@ -571,6 +571,8 @@ function isMemberOfCircle(userId: string, circle: StoredCircle, deviceUserId?: s
 // ─── Postgres ────────────────────────────────────────────────────────
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_URL?.includes("localhost") ? false : { rejectUnauthorized: false } });
 
+// v5.30.0 — captured by initDb (backfill count + index), surfaced at / (unique_email).
+const uniqueEmailDDL: any = { backfilled_rows: null, index_created: false };
 async function initDb(): Promise<void> {
   const client = await pool.connect();
   try {
@@ -588,6 +590,18 @@ async function initDb(): Promise<void> {
     // answer matching (Phase 3) runs exclusively on this. Additive, nullable,
     // metadata-only. Stored `email` keeps the raw provider value as-is.
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verified_email TEXT`).catch(() => {});
+    // v5.30.0 — normalization backfill + UNIQUE on normalized email. Collision run
+    // returned 0 groups, so this is safe. Backfill FIRST (lower+trim, idempotent),
+    // then a PARTIAL UNIQUE index on lower(btrim(email)) — excludes NULL/blank and
+    // Apple private-relay (those are already unique per-user tokens). IF NOT EXISTS:
+    // the brief SHARE lock (blocks writes, not reads) is taken only on first create;
+    // subsequent boots are a catalog no-op. Rollback: DROP INDEX idx_users_norm_email_uniq.
+    try {
+      const bf = await client.query(`UPDATE users SET email = lower(btrim(email)), updated_at = NOW() WHERE email IS NOT NULL AND email <> lower(btrim(email)) AND lower(btrim(email)) NOT LIKE '%@privaterelay.appleid.com'`);
+      uniqueEmailDDL.backfilled_rows = bf.rowCount || 0;
+      await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_norm_email_uniq ON users (lower(btrim(email))) WHERE email IS NOT NULL AND btrim(email) <> '' AND lower(btrim(email)) NOT LIKE '%@privaterelay.appleid.com'`);
+      uniqueEmailDDL.index_created = true;
+    } catch (e: any) { uniqueEmailDDL.error = e.message; }
     // v5.20.4 — magic-link sign-in tokens. Token hashed at rest, single-use
     // (used_at), short expiry. Additive table.
     await client.query(`CREATE TABLE IF NOT EXISTS magic_links (
@@ -2865,6 +2879,7 @@ let webQuizV25SelfTest: any = null; // v5.23.0 — v2.5 full-token E2E (s_* path
 let demoGrantProof: any = null;    // v5.22.0 — one-off RC demo-entitlement lifecycle proof
 let mailProof: any = null;         // v5.26.1 — one-off Resend round-trip + conflict-alert proof
 let hardshipGrantProof: any = null; // v5.29.0 — giving-pledge grant path provider-record proof
+let uniqueEmailProof: any = null;   // v5.30.0 — UNIQUE-on-normalized-email DDL + enforcement proof
 let worstDayPreview: any = null; // v5.20.13 — generated worst-day cards per door
 let griefWhoFlags: any = null;   // v5.20.14 — grief who-assumption audit flags
 let griefDay13Sample: any = null; // v5.20.15 — raw after-fix grief journal sample
@@ -2874,7 +2889,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.29.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, wrestling_selftest: wrestlingSelfTest, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.30.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, wrestling_selftest: wrestlingSelfTest, unique_email: uniqueEmailProof, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -3086,14 +3101,26 @@ app.get("/admin/hardship/requests", async (c) => {
 });
 // The LEDGER — what makes the paywall line true. 20% of net revenue = grant budget;
 // hardship grants counted against it at $29.99/yr (the yearly price the grant equals).
-const PLEDGE_PCT = 0.20, GRANT_UNIT_VALUE = 29.99;
+// v5.30.0 — ledger valuation corrected (Samy): budget in dollars (20% of NET revenue);
+// grants drawn at the REAL sub price customers pay — launch web price $14.99/mo — not
+// the legacy $29.99 IAP yearly. A 1-year hardship grant = 12 × $14.99 of gifted access.
+const PLEDGE_PCT = 0.20;
+const WEB_MONTHLY_PRICE = 14.99;   // launch web price (what customers actually pay)
+const GRANT_TERM_MONTHS = 12;      // hardship grant = 1 year premium
+const GRANT_UNIT_VALUE = +(WEB_MONTHLY_PRICE * GRANT_TERM_MONTHS).toFixed(2); // 179.88 — real-price basis
 async function pledgeLedger() {
   const net = (await pool.query("SELECT COALESCE(SUM(revenue_net),0) AS n FROM daily_revenue")).rows[0]?.n || 0;
   const granted = (await pool.query("SELECT COUNT(*)::int AS c FROM hardship_requests WHERE status='granted'")).rows[0]?.c || 0;
   const pending = (await pool.query("SELECT COUNT(*)::int AS c FROM hardship_requests WHERE status='pending'")).rows[0]?.c || 0;
   const budget = +(net * PLEDGE_PCT).toFixed(2);
   const grantsValue = +(granted * GRANT_UNIT_VALUE).toFixed(2);
-  return { net_revenue_all_time: +net.toFixed(2), pledge_pct: PLEDGE_PCT, grant_budget: budget, grants_issued: granted, grants_value: grantsValue, budget_remaining: +(budget - grantsValue).toFixed(2), requests_pending: pending, grant_unit_value: GRANT_UNIT_VALUE };
+  return {
+    net_revenue_all_time: +net.toFixed(2), pledge_pct: PLEDGE_PCT,
+    grant_budget_usd: budget,
+    basis: { web_monthly_price: WEB_MONTHLY_PRICE, grant_term_months: GRANT_TERM_MONTHS, grant_unit_value_usd: GRANT_UNIT_VALUE },
+    grants_issued: granted, grants_value_usd: grantsValue,
+    budget_remaining_usd: +(budget - grantsValue).toFixed(2), requests_pending: pending,
+  };
 }
 app.get("/admin/pledge-ledger", async (c) => {
   const key = c.req.query("key") || c.req.header("X-Admin-Secret");
@@ -3160,31 +3187,9 @@ app.get("/admin/merge-conflict-test", async (c) => {
   return c.json({ ranAt: new Date().toISOString(), alert_to: MERGE_ALERT_EMAIL, mail_from: MAIL_FROM, resend: r });
 });
 
-// UNIQUE constraint lands, then this endpoint is removed. Key = ADMIN_SECRET
-// (env). Minimal fields only: normalized email, count, per-account uuid /
-// created_at / auth_provider. No names, no journey data, no tokens.
-app.get("/admin/email-collisions", async (c) => {
-  const key = c.req.query("key") || c.req.header("X-Admin-Secret");
-  if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
-  try {
-    const rows = (await pool.query(`
-      SELECT lower(trim(email)) AS norm_email, count(*)::int AS count,
-             json_agg(json_build_object('uuid', id, 'created_at', created_at, 'auth_provider', auth_provider) ORDER BY created_at) AS accounts
-        FROM users
-       WHERE email IS NOT NULL AND trim(email) <> ''
-         AND lower(trim(email)) NOT LIKE '%@privaterelay.appleid.com'
-       GROUP BY lower(trim(email))
-      HAVING count(*) > 1
-       ORDER BY count(*) DESC, norm_email
-    `)).rows;
-    return c.json({
-      collision_groups: rows.length,
-      total_accounts_involved: rows.reduce((s: number, r: any) => s + r.count, 0),
-      collisions: rows,
-      note: "grouped by lower(trim(email)); Apple relay excluded; UNIQUE not yet applied",
-    });
-  } catch (err: any) { return c.json({ error: err.message }, 500); }
-});
+// v5.30.0 — /admin/email-collisions REMOVED. Its job is done: collision run
+// returned 0 groups, the UNIQUE index (idx_users_norm_email_uniq) now enforces
+// one account per normalized email at the DB. Enforcement proven at / (unique_email).
 app.get("/api/admin/user-deep", async (c) => {
   const key = c.req.query("key") || c.req.header("X-Admin-Secret");
   if (key !== process.env.ADMIN_SECRET && key !== DASHBOARD_SECRET) return c.json({ error: "Forbidden" }, 403);
@@ -8125,6 +8130,37 @@ async function start() {
     proof.ranAt = new Date().toISOString();
     hardshipGrantProof = proof;
     console.log("[v5.29.0] hardship grant proof:", proof.PASS ? "PASS" : JSON.stringify(proof));
+  })();
+
+  // ═══════════════════════════════════════════════════════════════════
+  // v5.30.0 — UNIQUE-email enforcement proof (synthetic, self-cleaning). Raw
+  // before/after for the DDL: (1) index present in pg_indexes; (2) backfill row
+  // count (from initDb); (3) a live duplicate-normalized insert is REJECTED with
+  // 23505. Two throwaway users whose emails differ only by case/space collide on
+  // lower(btrim(email)). At / (unique_email). Rollback: DROP INDEX idx_users_norm_email_uniq.
+  // ═══════════════════════════════════════════════════════════════════
+  (async () => {
+    const p: any = { ddl: uniqueEmailDDL };
+    const e1 = "UniqCheck@Example.TEST", e2 = " uniqcheck@example.test ", norm = "uniqcheck@example.test";
+    const clean = async () => { await pool.query("DELETE FROM users WHERE lower(btrim(email))=$1", [norm]); };
+    try {
+      const idx = await pool.query("SELECT indexname, indexdef FROM pg_indexes WHERE tablename='users' AND indexname='idx_users_norm_email_uniq'");
+      p.index_present = idx.rows.length > 0;
+      p.index_def = idx.rows[0]?.indexdef || null;
+      p.backfilled_rows = uniqueEmailDDL.backfilled_rows;
+      await clean();
+      await pool.query("INSERT INTO users (id, email, name, auth_token, subscription_status) VALUES ('uniqproof-1',$1,'','tok-uniqproof-1','none')", [e1]);
+      p.first_insert_ok = true;
+      try {
+        await pool.query("INSERT INTO users (id, email, name, auth_token, subscription_status) VALUES ('uniqproof-2',$1,'','tok-uniqproof-2','none')", [e2]);
+        p.duplicate_blocked = false; // got in — index NOT enforcing
+      } catch (err: any) { p.duplicate_blocked = err.code === "23505" || /unique|duplicate/i.test(err.message); p.violation_code = err.code; }
+      await clean(); p.cleaned = true;
+      p.PASS = p.index_present === true && p.first_insert_ok === true && p.duplicate_blocked === true;
+    } catch (err: any) { p.error = err.message; try { await clean(); } catch {} }
+    p.ranAt = new Date().toISOString();
+    uniqueEmailProof = p;
+    console.log("[v5.30.0] unique-email proof:", p.PASS ? "PASS" : JSON.stringify(p));
   })();
 
   // ═══════════════════════════════════════════════════════════════════
