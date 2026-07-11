@@ -2151,6 +2151,67 @@ const scriptureClauseGate = (() => {
 })();
 console.log(`[v5.25.0] scripture clause gate:`, scriptureClauseGate.PASS ? "PASS" : "FAIL");
 
+// ═══════════════════════════════════════════════════════════════════════════
+// v5.31.0 — P3 Daily Teaching (Workstream P). Short teaching per emotional core,
+// authored + reviewed (code registry, versioned/gate-checked like journey cards —
+// NOT a runtime table; content this sensitive belongs in git, not mutable at rest).
+// RULE (Samy, s_doubt precedent): COMFORT BY INCLUSION, NEVER BY CONTRAST — no line
+// defines the outside of faith; a numb/indifferent reader (darkness overlap) must
+// never land on the wrong side of a sentence. teaching_gate enforces this at boot.
+// 5 cores wired now (Samy-passed); remaining 9 author→pass→wire.
+// ═══════════════════════════════════════════════════════════════════════════
+const TEACHINGS_BY_CORE: Record<string, { title: string; body: string }> = {
+  fear_dread: { title: "When the fear is bigger than the day", body: "Fear does one thing well: it drags tomorrow into today and makes you carry both at once. Jesus never told frightened people the thing they feared wasn't real. He told them, “It is I; do not be afraid” — He offered His presence, not a guarantee about the outcome. That's the shift for today. You are not being asked to stop being afraid by willpower. You're being asked to let God be in the fear with you, one day's worth at a time. You don't have to carry tomorrow. It isn't here yet, and when it comes, He will be in that one too." },
+  grief_loss: { title: "Grief is not a problem to solve", body: "We treat grief like a wound that should close on a schedule, and then we feel like we're failing when it doesn't. Scripture is gentler than that. “Blessed are those who mourn” — not those who finish mourning. God does not stand over your grief with a stopwatch. He sits down inside it. The goal today is not to feel better. It's to let yourself be accompanied — to stop grieving alone. Comfort, in the Bible, is not the end of sorrow. It's Someone with you in it." },
+  guilt_shame: { title: "The difference between conviction and condemnation", body: "There's a voice that says you did something wrong and a voice that says you are something wrong — and they are not from the same source. The first can lead you somewhere. The second just pins you to the floor. “There is now no condemnation” doesn't mean nothing you've done matters; it means you are no longer on trial for it. You can look at the thing honestly without it becoming a verdict on your whole self. Today, try to tell the two voices apart. Keep the one that leads home. Set down the one that only accuses." },
+  // v5.31.0 — Samy edit: contrast clause cut (comfort by inclusion, never by contrast).
+  doubt_of_faith: { title: "Doubt is not the opposite of faith", body: "Doubt is not the opposite of faith. Doubt means you're still close enough to the fire to feel its heat. A father once brought his son to Jesus and said the truest prayer in the Bible: “I believe; help my unbelief.” Both halves at once. Jesus didn't scold the doubt. He answered the reaching. You don't have to resolve every question to stay. You just have to keep bringing the questions here, out loud, instead of letting them quietly walk you out. Showing up unsure is still showing up." },
+  unanswered_prayer: { title: "When heaven is quiet", body: "Silence from God is the hardest thing to interpret, because we fill it in with our worst fear — that He isn't there, or doesn't care. But “the Lord hears” is not the same promise as “the Lord answers the way you asked.” The Bible is full of people who were heard and still waited: David, Hannah, the psalmists who wrote “how long?” and kept writing to God anyway. The invitation today isn't to manufacture an answer. It's to keep the line open — to let unanswered be different from unheard. You are heard. Even now. Especially now." },
+};
+function teachingForCore(core: string | null | undefined): { title: string; body: string } | null {
+  return core ? (TEACHINGS_BY_CORE[core] || null) : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v5.31.0 — P2 Night Prayer (text-first; voice later). An evening card that may
+// SOOTHE but may NEVER PROMISE SLEEP (Samy gate) — and is lament-compatible: it
+// does not require the day to have gone well. night_gate rejects any sleep-promise
+// at boot. Authored; PENDING Samy worst-day pass before user-facing (like journey
+// cards). Registry ready so wiring is one step post-pass.
+// ═══════════════════════════════════════════════════════════════════════════
+const NIGHT_PRAYERS_BY_CORE: Record<string, { title: string; body: string }> = {
+  fear_dread: { title: "Laying the fear down for the night", body: "The day is closing, and the fear you carried is still here. You don't have to solve it before you lie down. Just set it, for now, at the foot of the bed — where God can keep watch over it while you can't. “In peace I will lie down,” the psalm says, “for you alone, Lord, make me dwell in safety.” Not because the danger is gone. Because you are not the one holding the night together. He is. Whatever tomorrow holds, it can wait until tomorrow. Tonight, you are held." },
+  grief_loss: { title: "The evening they are not here", body: "Nights are the loudest, aren't they. The house settles and the absence gets bigger. You don't have to be brave in the dark. You're allowed to miss them out loud, here, where only God hears. He is close to the brokenhearted — closest, maybe, at the hour when everyone else has gone quiet. You don't have to close the grief to close your eyes. Let Him sit with you in it, for as long as this night is long." },
+  exhaustion: { title: "You are allowed to stop now", body: "You spent yourself today — on people, on tasks, on holding things together. Whatever is left undone will still be there in the morning, and the morning is God's to hold, not yours. For now the only thing being asked of you is to stop. “Come to me, all you who are weary,” He said — not once you've earned it, not once the list is clear. Now. Weary is enough. Set it all down. You are not needed tonight. You are only loved." },
+  anxiety: { title: "Handing over the racing mind", body: "The mind speeds up right when the body wants to slow down — replaying, rehearsing, bracing. You can't argue it quiet. But you can hand it over, thought by thought, as each one arrives: this one too, God. And this one. “Cast all your anxiety on him, because he cares for you.” Not because the worries don't matter, but because you were never meant to carry them through the night alone. Let Him hold the ones you can't put down. Rest is not something you achieve. It's something you receive." },
+  unanswered_prayer: { title: "Praying into the quiet, one more night", body: "You've prayed this prayer before, and the answer hasn't come, and it would be easy to stop bringing it up. Bring it up anyway. The God who hears is not tired of hearing you. “I waited patiently for the Lord,” the psalm says — waited, in the dark, without the answer, and kept turning toward Him. That turning is itself a kind of faith. You don't need a resolution tonight. You need only to know you were heard. You were. Rest in the hearing, even without the answer." },
+};
+function nightPrayerForCore(core: string | null | undefined): { title: string; body: string } | null {
+  return core ? (NIGHT_PRAYERS_BY_CORE[core] || null) : null;
+}
+const nightGate = (() => {
+  const FORBIDDEN = ["you will sleep", "you'll sleep", "sleep will come", "fall asleep", "sleep through the night", "drift off", "rest well tonight", "sweet dreams", "you will rest well", "guaranteed", "sleep soundly", "a good night's sleep"];
+  const rows = Object.entries(NIGHT_PRAYERS_BY_CORE).map(([core, t]) => {
+    const low = (t.title + " " + t.body).toLowerCase();
+    const hits = FORBIDDEN.filter((f) => low.includes(f));
+    return { core, no_sleep_promise: hits.length === 0, hits };
+  });
+  return { PASS: rows.every((r) => r.no_sleep_promise), cores: rows.length, rows, status: "authored — pending Samy worst-day pass" };
+})();
+console.log(`[v5.31.0] night gate:`, nightGate.PASS ? "PASS" : "FAIL");
+// teaching_gate — COMFORT-BY-INCLUSION enforcement at boot. Rejects any teaching
+// that defines the outside of faith / draws a line the numb reader lands wrong of.
+const teachingGate = (() => {
+  const FORBIDDEN = ["opposite of faith is", "the opposite of faith", "isn't faith — it's", "isn't faith, it's", "unlike those who", "not like the people who", "unbelievers", "those who don't believe", "those who gave up", "those who walked away", "people who quit", "the faithless"];
+  const rows = Object.entries(TEACHINGS_BY_CORE).map(([core, t]) => {
+    const low = (t.title + " " + t.body).toLowerCase();
+    const hits = FORBIDDEN.filter((f) => low.includes(f));
+    return { core, inclusion_ok: hits.length === 0, hits };
+  });
+  return { PASS: rows.every((r) => r.inclusion_ok), cores_wired: rows.length, rows };
+})();
+console.log(`[v5.31.0] teaching gate:`, teachingGate.PASS ? "PASS" : "FAIL");
+
 function scriptureForCore(core: string, lang: Lang = "en"): { body: string; scriptureRef: string } | null {
   const entry = SCRIPTURE_BY_CORE[core];
   if (!entry) return null;
@@ -2889,7 +2950,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.30.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, wrestling_selftest: wrestlingSelfTest, unique_email: uniqueEmailProof, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.31.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, teaching_gate: teachingGate, night_gate: nightGate, wrestling_selftest: wrestlingSelfTest, unique_email: uniqueEmailProof, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -3157,6 +3218,13 @@ app.get("/admin/magic-state", async (c) => {
   if (!email) return c.json({ error: "?email= required" }, 400);
   const rows = (await pool.query("SELECT id, created_at, expires_at, used_at, (used_at IS NULL) AS unused, (expires_at < now()) AS expired FROM magic_links WHERE email=$1 ORDER BY created_at DESC LIMIT 10", [email])).rows;
   return c.json({ email, count: rows.length, links: rows, any_consumed: rows.some((r: any) => r.used_at !== null) });
+});
+// v5.31.0 — P3 daily teaching per emotional core. Returns null for a core not yet
+// authored+passed (only the 5 wired render; the app shows nothing rather than a gap).
+app.get("/api/teaching", async (c) => {
+  const core = c.req.query("core") || "";
+  const t = teachingForCore(core);
+  return c.json({ core, available: !!t, teaching: t });
 });
 app.get("/api/testimonials", async (c) => {
   // Only consented, active quotes; render gate at ≥3 (else placeholders stay).
