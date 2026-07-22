@@ -1573,7 +1573,8 @@ const TIER1_DOORS: Record<string, JourneyDoor> = {
   "faith/darkness": { key: "faith/darkness", name: EN("Light in the Dark"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["darkness", "darkness", "darkness"], safetyRail: EN("A gentle word before we pray: if this heaviness has settled in and won't lift, please don't carry it in secret. Let a trusted person — a friend, a pastor, or a doctor — walk this stretch with you. Reaching for help is not a failure of faith; it's often how God sends it. We'll keep praying with you, either way.") },
   "faith/church": { key: "faith/church", name: EN("Back to the Source"), spine: "wrestling_with_god", templateKey: "wrestling_with_god", family: "faith_struggle", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "spiritual", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["relational", "relational", "relational"] },
   // ── SPINE 6 — "Life seasons": 4 arcs, one authored template. relational + loss
-  //    suppress the denominator (standing rule); lonely + financial show it.
+  //    suppress the denominator (standing rule); financial shows it; lonely
+  //    suppressed by door key as of v5.34.0 (family 'hardship' is shared).
   "alone/lonely": { key: "alone/lonely", name: EN("You Are Not Invisible"), spine: "life_seasons", templateKey: "life_seasons", family: "hardship", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "standard", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["being_seen", "being_seen", "presence"] },
   "relate/family": { key: "relate/family", name: EN("When Home Feels Like a Stranger"), spine: "life_seasons", templateKey: "life_seasons", family: "relationships", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "standard", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["relational", "relational", "relational"] },
   "provision/financial": { key: "provision/financial", name: EN("Peace That Passes Understanding"), spine: "life_seasons", templateKey: "life_seasons", family: "hardship", mode: "fixed", length: 30, unit: "day", pacing: "standard", safetyClass: "standard", tokens: ["dominant_emotion", "journey_opening_tone"], scriptureCores: ["anxiety", "strength_for_today", "peace"] },
@@ -2255,7 +2256,9 @@ console.log(`[v5.20.15] Tier-1 scripture readiness:`, JSON.stringify(TIER1_SCRIP
 const DENOMINATOR_POLICY: Record<string, any> = Object.fromEntries(
   Object.entries(TIER1_DOORS).filter(([k]) => !k.startsWith("faith/")).map(([k, d]: [string, any]) => {
     const len = d.length ?? null;
-    const shows = d.mode !== "open" && !!len && !["loss", "relationships", "faith_struggle"].includes(d.family);
+    // v5.34.0 — lonely suppressed by door key ("alone/lonely" shares family
+    // 'hardship' with financial, which MUST keep its denominator).
+    const shows = d.mode !== "open" && !!len && !["loss", "relationships", "faith_struggle"].includes(d.family) && k !== "alone/lonely";
     return [k, { family: d.family, mode: d.mode, length: len, showsDenominator: shows }];
   })
 );
@@ -2996,7 +2999,6 @@ let magicSelfTest: any = null; // v5.20.4 — magic-link round-trip self-test re
 let mergeSelfTest: any = null; // v5.20.6 — recovery-merge E2E self-test result
 let webFunnelSelfTest: any = null; // v5.21.0 — web funnel round-trip self-test
 let webQuizV25SelfTest: any = null; // v5.23.0 — v2.5 full-token E2E (s_* path → purchase-sim → handoff)
-let demoGrantProof: any = null;    // v5.22.0 — one-off RC demo-entitlement lifecycle proof
 let mailProof: any = null;         // v5.26.1 — one-off Resend round-trip + conflict-alert proof
 let hardshipGrantProof: any = null; // v5.29.0 — giving-pledge grant path provider-record proof
 let uniqueEmailProof: any = null;   // v5.30.0 — UNIQUE-on-normalized-email DDL + enforcement proof
@@ -3009,7 +3011,7 @@ app.get("/journeys/worst-day-preview", (c) => {
   if (!process.env.ADMIN_SECRET || key !== process.env.ADMIN_SECRET) return c.json({ error: "Forbidden" }, 403);
   return c.json(worstDayPreview || { pending: true });
 });
-app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.33.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, teaching_gate: teachingGate, night_gate: nightGate, rejected_reference_gate: rejectedReferenceGate, wrestling_selftest: wrestlingSelfTest, unique_email: uniqueEmailProof, demo_grant_proof: demoGrantProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
+app.get("/", (c) => c.json({ status: "ok", service: "prAmen API", version: "5.34.0", p0_purge: p0PurgeReport, norm_selftest: normSelfTest, magic_selftest: magicSelfTest, merge_selftest: mergeSelfTest, web_funnel_selftest: webFunnelSelfTest, web_quiz_v25_selftest: webQuizV25SelfTest, scripture_clause_gate: scriptureClauseGate, teaching_gate: teachingGate, night_gate: nightGate, rejected_reference_gate: rejectedReferenceGate, wrestling_selftest: wrestlingSelfTest, unique_email: uniqueEmailProof, hardship_grant_proof: hardshipGrantProof, mail_proof: mailProof, tier1_scripture_ready: TIER1_SCRIPTURE_READY, denominator_policy: DENOMINATOR_POLICY, circles: circles.size, posthog: !!POSTHOG_API_KEY, posthog_read: !!POSTHOG_PERSONAL_KEY, plausible: !!PLAUSIBLE_API_KEY, apple: !!ASC_KEY_ID, revenuecat_api: !!REVENUECAT_SECRET_KEY, apns: !!APNS_KEY_ID, storage: !!R2_ACCOUNT_ID, admin: !!ADMIN_USER_ID, dashboard: "/dashboard?key=..." }));
 
 // v5.6.0 — APNs payload now spreads `extra` fields (requestId, senderUserId, etc.) at top level so iOS can deep-link to specific request on tap.
 // Prevents Dubai-vs-Paris disagreement when prayers cross the UTC day boundary.
@@ -3404,6 +3406,18 @@ app.post("/api/auth/magic-link/verify", async (c) => {
     const { email, token, code, deviceUserId } = await c.req.json();
     const norm = normalizeEmail(email);
     if (!norm || (!token && !code)) return c.json({ error: "email and (token or code) required" }, 400);
+    // ── APP REVIEW PATH (env-gated). When REVIEW_EMAIL + REVIEW_CODE are both set
+    // in Railway, Apple's reviewer signs in with that fixed email/code pair and is
+    // authenticated exactly like a successful code verify — without touching the
+    // magic_links table. Every other email/code falls through untouched to the
+    // normal hashed, rate-limited verification below. Unset env = inert.
+    if (process.env.REVIEW_EMAIL && process.env.REVIEW_CODE && norm === normalizeEmail(process.env.REVIEW_EMAIL) && String(code || "") === process.env.REVIEW_CODE) {
+      const rvId = await ensureWebUser(norm, null);
+      if (deviceUserId) await pool.query("UPDATE users SET device_user_id=$1,updated_at=NOW() WHERE id=$2", [deviceUserId, rvId]).catch(() => {});
+      const ru = (await pool.query("SELECT * FROM users WHERE id=$1", [rvId])).rows[0];
+      trackEvent(rvId, "review_signin", {});
+      return c.json({ user: { id: ru.id, name: ru.name, email: ru.email, authToken: ru.auth_token, trialStartDate: ru.trial_start_date, trialEndDate: ru.trial_end_date, subscriptionStatus: ru.subscription_status, avatarUrl: ru.avatar_url || null, isNewUser: false }, data: await getUserData(ru.id), circleCodes: getUserCircleCodes(ru.id, ru.device_user_id || ""), prebuiltIntake: null });
+    }
     // Brute-force guard on the 6-digit code: 5 verify attempts / email / 10 min.
     if (!rateOk(magicVerifyRate, norm, 5, MAGIC_TTL_MS)) return c.json({ error: "Too many attempts. Request a new link." }, 429);
     const r = await consumeMagicToken(norm, token ? String(token) : null, code ? String(code) : null, deviceUserId);
@@ -3443,11 +3457,6 @@ function posthogAlias(loserId: string, survivorId: string): void {
     body: JSON.stringify({ api_key: POSTHOG_API_KEY, event: "$create_alias", distinct_id: survivorId, properties: { alias: loserId } }),
   }).catch(() => {});
 }
-// v5.22.0 — DEMO allowlist (temporary; replaces magic-link until Resend is live).
-// Server-side only; NEVER hardcode emails in the binary. Empty env = inert.
-// REMOVAL item on the go-live checklist once magic-link ships.
-const DEMO_ALLOWLIST: Set<string> = new Set((process.env.DEMO_ALLOWLIST || "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean));
-function isDemoAllowlisted(normEmail: string): boolean { return DEMO_ALLOWLIST.size > 0 && DEMO_ALLOWLIST.has(normEmail); }
 // v5.29.0 — hardship grant = RC promotional (yearly = 1-year premium), same proven
 // grant/revoke machinery, tagged in the DB as 'hardship_grant'. Provider-record
 // proof (grant lands in RC) is asserted by the boot E2E, never trusted on 200 alone.
@@ -3458,15 +3467,6 @@ async function grantHardship(rcUserId: string): Promise<{ ok: boolean; status?: 
     const r = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(rcUserId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "yearly" }) });
     return { ok: r.ok, status: r.status };
   } catch (err: any) { return { ok: false, error: err.message }; }
-}
-// Demo entitlement = RC promotional (monthly), same proven grant/revoke machinery.
-async function grantDemoEntitlement(rcUserId: string): Promise<boolean> {
-  if (rcUserId.startsWith("demograntproof-")) return false; // proof handles RC directly
-  if (!REVENUECAT_SECRET_KEY) return false;
-  try {
-    const r = await fetch(`https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(rcUserId)}/entitlements/premium/promotional`, { method: "POST", headers: { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" }, body: JSON.stringify({ duration: "monthly" }) });
-    return r.ok;
-  } catch { return false; }
 }
 async function grantMergeGrace(rcUserId: string): Promise<boolean> {
   await pool.query("UPDATE users SET grace_until = now() + interval '7 days', updated_at=NOW() WHERE id=$1", [rcUserId]).catch(() => {});
@@ -3580,8 +3580,12 @@ const WEB_QUIZ_URL = process.env.WEB_QUIZ_URL || "https://pramen.app/quiz";
 // funnel pathKey is added the day its arc ships. Launch-5 first (existing
 // templates). Overridable via DOORS_LIVE env (comma-sep) without a deploy.
 const DOORS_LIVE = (process.env.DOORS_LIVE || "health,grief,child,caregiver,addiction").split(",").map((s) => s.trim()).filter(Boolean);
+// v5.34.0 — config-driven feature claims: lets the web paywall's giving-pledge
+// claim and feature list be killed via Railway env without a redeploy.
+// Unset → default true; "false"/"0" → false; anything else → true.
+const envBool = (name: string, def: boolean): boolean => { const v = process.env[name]; if (v === undefined) return def; return !["false", "0"].includes(v.trim().toLowerCase()); };
 // Lightweight client config (the iOS gate reads webQuizUrl; the quiz reads doorsLive).
-app.get("/api/config", (c) => c.json({ webQuizUrl: WEB_QUIZ_URL, doorsLive: DOORS_LIVE }));
+app.get("/api/config", (c) => c.json({ webQuizUrl: WEB_QUIZ_URL, doorsLive: DOORS_LIVE, showGivingPledge: envBool("SHOW_GIVING_PLEDGE", true), showDailyTeaching: envBool("SHOW_DAILY_TEACHING", true), showNightPrayer: envBool("SHOW_NIGHT_PRAYER", true) }));
 // Ensure a lightweight pending user exists for a web email (so the RC identity,
 // magic-link, and app sign-in all resolve to ONE account). Returns the userId.
 async function ensureWebUser(normEmail: string, firstName?: string | null): Promise<string> {
@@ -3669,28 +3673,25 @@ app.post("/api/web/purchase-complete", async (c) => {
   } catch (err: any) { return c.json({ error: "purchase_complete_failed", detail: err.message }, 500); }
 });
 
-// v5.22.0 — DEMO SIGN-IN (allowlist). TEMPORARY — replaced by magic-link at
-// go-live (REMOVAL item). Allowlisted email → user + demo entitlement + auth.
-// Non-allowlisted → { allowlisted:false } (client shows "coming soon", not a
-// dead "check your email"). Empty DEMO_ALLOWLIST env = inert (all false).
-app.post("/api/auth/demo-signin", async (c) => {
+// 4. WAITLIST (doors not yet live). Marks the quiz record; never downgrades a
+// purchased record. Insert-or-update mirrors the /api/web/quiz upsert.
+app.post("/api/web/waitlist", async (c) => {
   try {
-    const { email, deviceUserId } = await c.req.json();
+    const { email } = await c.req.json();
     const norm = normalizeEmail(email);
     if (!norm || !norm.includes("@")) return c.json({ error: "valid_email_required" }, 400);
-    if (!isDemoAllowlisted(norm)) {
-      console.log(`[demo-signin] NOT allowlisted: ${norm}`);
-      return c.json({ allowlisted: false });
-    }
     const userId = await ensureWebUser(norm, null);
-    if (deviceUserId) await pool.query("UPDATE users SET device_user_id=$1,updated_at=NOW() WHERE id=$2", [deviceUserId, userId]).catch(() => {});
-    const demoGranted = await grantDemoEntitlement(userId); // RC promo (monthly) → app logs in with userId
-    const u = (await pool.query("SELECT * FROM users WHERE id=$1", [userId])).rows[0];
-    console.log(`[demo-signin] ALLOWLISTED auth: ${norm} → user ${userId.substring(0, 8)} rc_granted=${demoGranted}`);
-    trackEvent(userId, "demo_signin", { rc_granted: demoGranted });
-    return c.json({ allowlisted: true, demoGranted, user: { id: u.id, name: u.name, email: u.email, authToken: u.auth_token, trialStartDate: u.trial_start_date, trialEndDate: u.trial_end_date, subscriptionStatus: u.subscription_status, avatarUrl: u.avatar_url || null, isNewUser: false }, data: await getUserData(u.id), circleCodes: getUserCircleCodes(u.id, u.device_user_id || "") });
-  } catch (err: any) { return c.json({ error: "demo_signin_failed", detail: err.message }, 500); }
+    await pool.query(
+      `INSERT INTO web_quiz (email, user_id, status) VALUES ($1,$2,'waitlist')
+       ON CONFLICT (email) DO UPDATE SET user_id=EXCLUDED.user_id,
+         status=CASE WHEN web_quiz.status IN ('purchased') THEN web_quiz.status ELSE 'waitlist' END, updated_at=now()`,
+      [norm, userId]
+    );
+    trackEvent(userId, "web_waitlist", {});
+    return c.json({ ok: true });
+  } catch (err: any) { return c.json({ error: "waitlist_failed", detail: err.message }, 500); }
 });
+
 app.delete("/api/auth/account", async (c) => {
   const ah = c.req.header("Authorization");
   if (!ah?.startsWith("Bearer ")) return c.json({ error: "Unauthorized" }, 401);
@@ -6699,30 +6700,8 @@ app.get("/journeys/templates", (c) => {
   });
 });
 
-// v5.22.0 — DEMO journey start: synthetic instance, NO circle attach (never real
-// circles — standing rule), self-cleaning (prior demo instances dropped), status
-// 'demo'. Uses TIER1_DOORS directly so the demo routes all 7 doors regardless of
-// TIER1_ENABLED. Removed with the demo at go-live.
-app.post("/journeys/demo-start", async (c) => {
-  try {
-    const { userId, door } = await c.req.json();
-    const d: any = TIER1_DOORS[door];
-    if (!userId || !d) return c.json({ error: "userId and valid door required" }, 400);
-    await pool.query("DELETE FROM journey_daily_actions WHERE instance_id IN (SELECT id FROM journey_instances WHERE user_id=$1 AND status='demo')", [userId]);
-    await pool.query("DELETE FROM journey_instances WHERE user_id=$1 AND status='demo'", [userId]);
-    const lengthDays = d.length ?? null;
-    const prayedName = door.startsWith("carry/") ? "Michael" : null;
-    const ins = await pool.query(
-      "INSERT INTO journey_instances (user_id, template_key, family, mode, unit, length_days, door, prayed_for_name, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'demo') RETURNING *",
-      [userId, d.templateKey, d.family, d.mode, d.unit || "day", lengthDays, door, prayedName]
-    );
-    const i = ins.rows[0];
-    return c.json({ instance: { id: i.id, templateKey: i.template_key, family: i.family, mode: i.mode, unit: i.unit, lengthDays: i.length_days ?? null, currentDay: 1, prayedForName: i.prayed_for_name || null, displayName: journeyDisplayName(i.template_key, i.family, "en"), status: "demo" } });
-  } catch (err: any) { return c.json({ error: "demo_start_failed", detail: err.message }, 500); }
-});
-
-// v5.22.0 — DEMO scrubber: render any day's card without advancing the instance.
-// Same response shape as /today. Read-only jump for the demo journey simulator.
+// v5.22.0 — day scrubber: render any day's card without advancing the instance.
+// Same response shape as /today. Read-only.
 app.get("/journeys/:id/preview-day", async (c) => {
   try {
     const id = c.req.param("id");
@@ -6735,7 +6714,7 @@ app.get("/journeys/:id/preview-day", async (c) => {
       instanceId: inst.id, templateKey: inst.template_key, family: inst.family,
       displayName: journeyDisplayName(inst.template_key, inst.family, lang),
       currentDay: day, unit: inst.unit, mode: inst.mode, lengthDays: inst.length_days ?? null,
-      showsDenominator: inst.mode !== "open" && !!inst.length_days && !["loss", "relationships", "faith_struggle"].includes(inst.family),
+      showsDenominator: inst.mode !== "open" && !!inst.length_days && !["loss", "relationships", "faith_struggle"].includes(inst.family) && inst.door !== "alone/lonely",
       status: inst.status, prayedForName: inst.prayed_for_name || null, completedToday: false, lastCompletedAt: null,
       action: { type: LEGACY_TYPE_MAP[action.type] || action.type, cardType: action.type, phaseLabel: action.phaseLabel, content: action.content, completionLabel: action.completionLabel || COMPLETION_LABELS[action.type]?.[lang] || "Done" },
     });
@@ -6799,7 +6778,7 @@ app.get("/journeys/:id/today", async (c) => {
       // v5.20.16 — progress denominator policy (standing rule, flag-independent):
       // never a denominator for open journeys, grief (loss), or carrying
       // (relationships — includes addiction). No finish-line framing there.
-      showsDenominator: instance.mode !== "open" && !!instance.length_days && !["loss", "relationships", "faith_struggle"].includes(instance.family),
+      showsDenominator: instance.mode !== "open" && !!instance.length_days && !["loss", "relationships", "faith_struggle"].includes(instance.family) && instance.door !== "alone/lonely",
       status: instance.status,
       prayedForName: instance.prayed_for_name || null,
       completedToday,
@@ -8203,37 +8182,6 @@ async function start() {
     } catch (err: any) { r.error = err.message; try { await clean(); } catch {} }
     webQuizV25SelfTest = r;
     console.log("[v5.23.0] web-quiz-v2.5 E2E:", r.error ? r.error : (r.PASS ? "PASS" : "FAIL"));
-  })();
-
-  // ═══════════════════════════════════════════════════════════════════
-  // v5.22.0 — DEMO entitlement provider-record proof (one-off). Demo sign-in
-  // grants an RC monthly promo; prove it lands in RC + revokes cleanly, on a
-  // throwaway subscriber. At / (demo_grant_proof). Removed after capture.
-  // ═══════════════════════════════════════════════════════════════════
-  (async () => {
-    if (!REVENUECAT_SECRET_KEY) { demoGrantProof = { skipped: "no RC key" }; return; }
-    const probe = "demograntproof-probe";
-    const H: any = { Authorization: `Bearer ${REVENUECAT_SECRET_KEY}`, "Content-Type": "application/json" };
-    const base = `https://api.revenuecat.com/v1/subscribers/${probe}`;
-    const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
-    const entOf = (j: any) => { const e = j?.subscriber?.entitlements?.premium; return e ? { expires_date: e.expires_date, product_identifier: e.product_identifier } : null; };
-    const active = (e: any) => !!e && new Date(e.expires_date).getTime() > Date.now();
-    const getEnt = async () => entOf(await (await fetch(base, { headers: H })).json());
-    const proof: any = {};
-    try {
-      let e1: any = null;
-      for (let i = 0; i < 12; i++) { await fetch(`${base}/entitlements/premium/promotional`, { method: "POST", headers: H, body: JSON.stringify({ duration: "monthly" }) }); await sleep(2500); e1 = await getEnt(); if (active(e1)) break; }
-      proof.granted_active = { entitlement: e1, is_active: active(e1) };
-      await fetch(`${base}/entitlements/premium/revoke_promotionals`, { method: "POST", headers: H });
-      let e2: any = e1;
-      for (let i = 0; i < 10; i++) { await sleep(1800); e2 = await getEnt(); if (!active(e2)) break; }
-      proof.after_revoke_cleared = !active(e2);
-      proof.subscriber_deleted = (await fetch(base, { method: "DELETE", headers: H })).ok;
-      proof.PASS = active(e1) && !active(e2);
-      proof.ranAt = new Date().toISOString();
-    } catch (err: any) { proof.error = err.message; try { await fetch(base, { method: "DELETE", headers: H }); } catch {} }
-    demoGrantProof = proof;
-    console.log("[v5.22.0] demo grant proof:", JSON.stringify(proof));
   })();
 
   // ═══════════════════════════════════════════════════════════════════
